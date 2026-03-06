@@ -369,19 +369,69 @@ async fn load_skills_from_dir(
         Ok(id)
     }
 
-    fn validate_skill(&self, definition: &SkillDefinition) -> Result<(), SkillError> {
-        if definition.name.is_empty() {
-            return Err(SkillError::InvalidDefinition("Name cannot be empty".to_string()));
-        }
-        if definition.source_code.is_empty() {
-            return Err(SkillError::InvalidDefinition("Source code cannot be empty".to_string()));
-        }
-
-        match &definition.parameters {
-            serde_json::Value::Object(_) => Ok(()),
-            _ => Err(SkillError::InvalidDefinition("Parameters must be a JSON object".to_string())),
-        }
+fn validate_skill(&self, definition: &SkillDefinition) -> Result<(), SkillError> {
+    if definition.name.is_empty() {
+        return Err(SkillError::InvalidDefinition("Name cannot be empty".to_string()));
     }
+    if definition.name.len() > 64 {
+        return Err(SkillError::InvalidDefinition("Name cannot exceed 64 characters".to_string()));
+    }
+    if !definition.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err(SkillError::InvalidDefinition("Name can only contain alphanumeric, underscore, and hyphen characters".to_string()));
+    }
+    if definition.source_code.is_empty() {
+        return Err(SkillError::InvalidDefinition("Source code cannot be empty".to_string()));
+    }
+    if definition.source_code.len() > 1024 * 1024 {
+        return Err(SkillError::InvalidDefinition("Source code cannot exceed 1MB".to_string()));
+    }
+    if definition.description.len() > 512 {
+        return Err(SkillError::InvalidDefinition("Description cannot exceed 512 characters".to_string()));
+    }
+    if !self.config.allowed_languages.contains(&definition.language) {
+        return Err(SkillError::LanguageNotAllowed(definition.language.to_string()));
+    }
+
+    match &definition.parameters {
+        serde_json::Value::Object(_) => {}
+        _ => return Err(SkillError::InvalidDefinition("Parameters must be a JSON object".to_string())),
+    }
+
+    self.validate_language_syntax(&definition.language, &definition.source_code)?;
+
+    Ok(())
+}
+
+fn validate_language_syntax(&self, language: &SkillLanguage, source_code: &str) -> Result<(), SkillError> {
+    match language {
+        SkillLanguage::Shell => {
+            let dangerous_patterns = ["rm -rf /", "mkfs", ":(){:|:&};:", "> /dev/sd"];
+            for pattern in dangerous_patterns {
+                if source_code.contains(pattern) {
+                    return Err(SkillError::ValidationFailed(format!("Dangerous pattern detected: {}", pattern)));
+                }
+            }
+        }
+        SkillLanguage::Python => {
+            let dangerous_imports = ["import os", "import subprocess", "import sys", "__import__"];
+            for imp in dangerous_imports {
+                if source_code.contains(imp) {
+                    return Err(SkillError::ValidationFailed(format!("Potentially dangerous import: {}", imp)));
+                }
+            }
+        }
+        SkillLanguage::JavaScript => {
+            let dangerous_patterns = ["eval(", "Function(", "require(", "process.exit"];
+            for pattern in dangerous_patterns {
+                if source_code.contains(pattern) {
+                    return Err(SkillError::ValidationFailed(format!("Dangerous pattern detected: {}", pattern)));
+                }
+            }
+        }
+        SkillLanguage::Rust => {}
+    }
+    Ok(())
+}
 
     pub fn get_pending_skills(&self) -> Vec<SkillRecord> {
         self.pending_skills.read().values().cloned().collect()

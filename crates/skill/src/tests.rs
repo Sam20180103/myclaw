@@ -102,11 +102,78 @@ mod tests {
         assert_eq!(parsed.name, skill.name);
     }
 
-    #[test]
-    fn test_skill_language_display() {
-        assert_eq!(format!("{}", SkillLanguage::Python), "python");
-        assert_eq!(format!("{}", SkillLanguage::Shell), "shell");
-        assert_eq!(format!("{}", SkillLanguage::JavaScript), "javascript");
-        assert_eq!(format!("{}", SkillLanguage::Rust), "rust");
-    }
+#[test]
+fn test_skill_language_display() {
+    assert_eq!(format!("{}", SkillLanguage::Python), "python");
+    assert_eq!(format!("{}", SkillLanguage::Shell), "shell");
+    assert_eq!(format!("{}", SkillLanguage::JavaScript), "javascript");
+    assert_eq!(format!("{}", SkillLanguage::Rust), "rust");
+}
+
+#[test]
+fn test_skill_name_validation() {
+    let (config, _temp) = create_test_config();
+    let manager = SkillManager::new(config);
+
+    let result = manager.create_skill(
+        "",
+        "A test skill",
+        SkillLanguage::Python,
+        "print('hello')",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+
+    let long_name = "a".repeat(65);
+    let result = manager.create_skill(
+        &long_name,
+        "A test skill",
+        SkillLanguage::Python,
+        "print('hello')",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+
+    let result = manager.create_skill(
+        "test@skill!",
+        "A test skill",
+        SkillLanguage::Python,
+        "print('hello')",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_skill_dangerous_pattern_validation() {
+    let (config, _temp) = create_test_config();
+    let manager = SkillManager::new(config);
+
+    let result = manager.create_skill(
+        "dangerous_skill",
+        "A dangerous skill",
+        SkillLanguage::Shell,
+        "rm -rf /",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+
+    let result = manager.create_skill(
+        "dangerous_python",
+        "A dangerous skill",
+        SkillLanguage::Python,
+        "import os; os.system('ls')",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+
+    let result = manager.create_skill(
+        "dangerous_js",
+        "A dangerous skill",
+        SkillLanguage::JavaScript,
+        "eval('malicious code')",
+        serde_json::json!({}),
+    );
+    assert!(result.is_err());
+}
 }
