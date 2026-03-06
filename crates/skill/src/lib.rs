@@ -412,6 +412,47 @@ impl SkillManager {
 
         Err(SkillError::NotFound(id.to_string()))
     }
+
+    pub async fn hot_reload(&self) -> Result<HotReloadResult, SkillError> {
+        let before_count = self.active_skills.read().len();
+        
+        self.pending_skills.write().clear();
+        self.active_skills.write().clear();
+        
+        self.load_existing_skills().await?;
+        
+        let after_count = self.active_skills.read().len();
+        
+        info!(
+            "Hot reload completed: {} -> {} skills",
+            before_count,
+            after_count
+        );
+        
+        Ok(HotReloadResult {
+            loaded: after_count,
+            previous: before_count,
+        })
+    }
+
+    pub fn stats(&self) -> SkillStats {
+        SkillStats {
+            pending: self.pending_skills.read().len(),
+            active: self.active_skills.read().len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HotReloadResult {
+    pub loaded: usize,
+    pub previous: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillStats {
+    pub pending: usize,
+    pub active: usize,
 }
 
 pub struct OpenCodeGenerator {
@@ -509,3 +550,6 @@ pub struct SkillGenerateResponse {
     pub skill: Option<SkillDefinition>,
     pub error: Option<String>,
 }
+
+#[cfg(test)]
+mod tests;

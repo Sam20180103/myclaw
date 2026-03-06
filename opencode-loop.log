@@ -1,0 +1,62 @@
+[2026-03-06 23:05:51] [INFO] [0;32m🚀 OpenCode Loop 启动[0m
+[2026-03-06 23:05:51] [INFO] [0;32m工作目录: .[0m
+[2026-03-06 23:05:51] [INFO] [0;32m输出格式: default[0m
+[2026-03-06 23:05:51] [INFO] [0;32m超时: 300s[0m
+[2026-03-06 23:05:51] [INFO] [0;32m当前模型: opencode/minimax-m2.5-free[0m
+[2026-03-06 23:05:51] [INFO] [0;32m备用模型: nvidia/z-ai/glm5,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:05:51] [INFO] [0;32m🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)[0m
+[2026-03-06 23:05:51] [INFO] [0;32m备用模型: nvidia/z-ai/glm5,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:05:51] [INFO] [0;32m=== 尝试 1/3 (模型: opencode/minimax-m2.5-free) ===[0m
+[2026-03-06 23:05:51] [STEP] [0;34m执行 [opencode/minimax-m2.5-free]: 修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新[0m
+[2026-03-06 23:05:51] [INFO] [0;32m命令: opencode run "修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新" --model opencode/minimax-m2.5-free --format default --session ses_33c6dd984ffeTCxMuKK7iQVfFH --dir .[0m
+[2026-03-06 23:05:51] [INFO] [0;32m超时: 300s[0m
+[2026-03-06 23:10:57] [ERROR] [0;31m⏱️ 执行超时 (300s)[0m
+[2026-03-06 23:22:33] [INFO] [0;32m🚀 OpenCode Loop 启动[0m
+[2026-03-06 23:22:33] [INFO] [0;32m工作目录: .[0m
+[2026-03-06 23:22:33] [INFO] [0;32m输出格式: default[0m
+[2026-03-06 23:22:33] [INFO] [0;32m超时: 3600s[0m
+[2026-03-06 23:22:33] [INFO] [0;32m当前模型: opencode/minimax-m2.5-free[0m
+[2026-03-06 23:22:33] [INFO] [0;32m备用模型: nvidia/z-ai/glm5,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:22:33] [INFO] [0;32m🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)[0m
+[2026-03-06 23:22:33] [INFO] [0;32m备用模型: nvidia/z-ai/glm5,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:22:33] [INFO] [0;32m=== 尝试 1/3 (模型: opencode/minimax-m2.5-free) ===[0m
+[2026-03-06 23:22:33] [STEP] [0;34m执行 [opencode/minimax-m2.5-free]: 修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新[0m
+[2026-03-06 23:22:33] [INFO] [0;32m命令: opencode run "修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新" --model opencode/minimax-m2.5-free --format default --session ses_33c6dd984ffeTCxMuKK7iQVfFH --dir .[0m
+[2026-03-06 23:22:33] [INFO] [0;32m超时: 3600s[0m
+[2026-03-06 23:34:55] [INFO] [0;32m🚀 OpenCode Loop 启动[0m
+[2026-03-06 23:34:55] [INFO] [0;32m工作目录: .[0m
+[2026-03-06 23:34:55] [INFO] [0;32m输出格式: default[0m
+[2026-03-06 23:34:55] [INFO] [0;32m超时: 3600s[0m
+[2026-03-06 23:34:55] [INFO] [0;32m当前模型: nvidia/z-ai/glm5[0m
+[2026-03-06 23:34:55] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:34:55] [INFO] [0;32m🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)[0m
+[2026-03-06 23:34:55] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-06 23:34:55] [INFO] [0;32m=== 尝试 1/3 (模型: nvidia/z-ai/glm5) ===[0m
+[2026-03-06 23:34:55] [STEP] [0;34m执行 [nvidia/z-ai/glm5]: 修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新[0m
+[2026-03-06 23:34:55] [INFO] [0;32m命令: opencode run "修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新" --model nvidia/z-ai/glm5 --format default --session ses_33c6dd984ffeTCxMuKK7iQVfFH --dir .[0m
+[2026-03-06 23:34:55] [INFO] [0;32m超时: 3600s[0m
+[2026-03-07 00:08:39] [INFO] [0;32m🚀 OpenCode Loop 启动[0m
+[2026-03-07 00:08:39] [INFO] [0;32m工作目录: .[0m
+[2026-03-07 00:08:39] [INFO] [0;32m输出格式: default[0m
+[2026-03-07 00:08:39] [INFO] [0;32m超时: 3600s[0m
+[2026-03-07 00:08:39] [INFO] [0;32m当前模型: nvidia/z-ai/glm5[0m
+[2026-03-07 00:08:39] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-07 00:08:39] [INFO] [0;32m🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)[0m
+[2026-03-07 00:08:39] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-07 00:08:39] [INFO] [0;32m=== 尝试 1/3 (模型: nvidia/z-ai/glm5) ===[0m
+[2026-03-07 00:08:39] [STEP] [0;34m执行 [nvidia/z-ai/glm5]: 修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新[0m
+[2026-03-07 00:08:39] [INFO] [0;32m命令: opencode run "修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新" --model nvidia/z-ai/glm5 --format default --session ses_33c6dd984ffeTCxMuKK7iQVfFH --dir .[0m
+[2026-03-07 00:08:39] [INFO] [0;32m超时: 3600s[0m
+[2026-03-07 00:08:39] [INFO] [0;32m⏳ 等待模型响应 (opencode 输出会延迟显示)...[0m
+[2026-03-07 00:18:45] [INFO] [0;32m🚀 OpenCode Loop 启动[0m
+[2026-03-07 00:18:45] [INFO] [0;32m工作目录: .[0m
+[2026-03-07 00:18:45] [INFO] [0;32m输出格式: default[0m
+[2026-03-07 00:18:45] [INFO] [0;32m超时: 3600s[0m
+[2026-03-07 00:18:45] [INFO] [0;32m当前模型: nvidia/z-ai/glm5[0m
+[2026-03-07 00:18:45] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-07 00:18:45] [INFO] [0;32m🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)[0m
+[2026-03-07 00:18:45] [INFO] [0;32m备用模型: opencode/minimax-m2.5-free,opencode/trinity-large-preview-free[0m
+[2026-03-07 00:18:45] [INFO] [0;32m=== 尝试 1/3 (模型: nvidia/z-ai/glm5) ===[0m
+[2026-03-07 00:18:45] [STEP] [0;34m执行 [nvidia/z-ai/glm5]: 修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新[0m
+[2026-03-07 00:18:45] [INFO] [0;32m命令: opencode run "修复遗留的bug,然后根据架构设文档和任务进度文档,继续完成功能开发,并更新文档,最后进行github的提交更新" --model nvidia/z-ai/glm5 --format default --session ses_33c6dd984ffeTCxMuKK7iQVfFH --dir .[0m
+[2026-03-07 00:18:45] [INFO] [0;32m⏳ 执行中...[0m

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{AgentConfig, Config, GatewayConfig, ToolConfig};
+    use crate::Config;
 
     #[test]
     fn test_default_config() {

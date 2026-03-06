@@ -205,32 +205,15 @@ execute_prompt() {
     fi
     
     log_info "命令: $cmd"
-    log_info "超时: ${TIMEOUT}s"
+    log_info "⏳ 执行中..."
     
-    local output
     local exit_code=0
     
-    if [[ -n "$OUTPUT_FILE" ]]; then
-        output=$(timeout "$TIMEOUT" bash -c "$cmd" 2>&1) || exit_code=$?
-        echo "$output" | tee -a "$OUTPUT_FILE"
-    else
-        output=$(timeout "$TIMEOUT" bash -c "$cmd" 2>&1) || exit_code=$?
-    fi
-    
-    if [[ $exit_code -eq 124 ]]; then
-        log_error "⏱️ 执行超时 (${TIMEOUT}s)"
-        return 1
-    fi
-    
-    if check_error "$output"; then
-        log_error "❌ 检测到错误，可能需要切换模型"
-        log_info "输出摘要: $(echo "$output" | tail -5)"
-        return 2
-    fi
+    $cmd
+    exit_code=$?
     
     if [[ $exit_code -eq 0 ]]; then
         log_info "✅ 执行成功"
-        RETRY_COUNT=0
     else
         log_error "❌ 执行失败 (exit code: $exit_code)"
     fi
@@ -361,5 +344,12 @@ main() {
 }
 
 trap 'echo ""; log_warn "收到中断信号，退出..."; exit 0' INT TERM
+
+cleanup() {
+    pkill -P $$ 2>/dev/null
+    rm -f /tmp/opencode_output_$$ /tmp/opencode_error_$$
+}
+
+trap cleanup EXIT
 
 main "$@"
