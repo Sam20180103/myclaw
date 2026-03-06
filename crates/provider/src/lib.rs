@@ -284,12 +284,11 @@ impl LlmProvider for OpenAiProvider {
                                     let lines: Vec<&str> = buffer.split('\n').collect();
                                     for line in lines.iter().take(lines.len() - 1) {
                                         let line = line.trim();
-                                        if line.starts_with("data: ") {
-                                            let data = &line[6..];
+                                        if let Some(data) = line.strip_prefix("data: ") {
                                             if data == "[DONE]" {
                                                 return;
                                             }
-                                            
+
                                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                                                 if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
                                                     if let Some(choice) = choices.first() {
@@ -543,9 +542,7 @@ impl LlmProvider for AnthropicProvider {
                                     let lines: Vec<&str> = buffer.split('\n').collect();
                                     for line in lines.iter().take(lines.len() - 1) {
                                         let line = line.trim();
-                                        if line.starts_with("data: ") {
-                                            let data = &line[6..];
-
+                                        if let Some(data) = line.strip_prefix("data: ") {
                                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                                                 if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
                                                     for block in content {

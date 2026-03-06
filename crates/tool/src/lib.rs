@@ -81,6 +81,10 @@ impl ToolRegistry {
     pub fn len(&self) -> usize {
         self.tools.read().len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.read().is_empty()
+    }
 }
 
 impl Default for ToolRegistry {

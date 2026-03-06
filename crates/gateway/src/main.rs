@@ -1,7 +1,6 @@
 use rustclaw_gateway::Gateway;
 use rustclaw_config::Config;
 use tracing::info;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

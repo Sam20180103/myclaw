@@ -396,14 +396,15 @@ impl SkillManager {
     }
 
     pub async fn delete_skill(&self, id: &str) -> Result<(), SkillError> {
-        if let Some(record) = self.active_skills.write().remove(id) {
-            tokio::fs::remove_file(&record.path)
-                .await
-                .map_err(|e| SkillError::IoError(e.to_string()))?;
-            return Ok(());
-        }
-        
-        if let Some(record) = self.pending_skills.write().remove(id) {
+        let record = {
+            if let Some(record) = self.active_skills.write().remove(id) {
+                Some(record)
+            } else {
+                self.pending_skills.write().remove(id)
+            }
+        };
+
+        if let Some(record) = record {
             tokio::fs::remove_file(&record.path)
                 .await
                 .map_err(|e| SkillError::IoError(e.to_string()))?;
@@ -515,9 +516,9 @@ impl OpenCodeGenerator {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        
-        let skill_name = format!("generated_skill_{}", Uuid::new_v4().to_string()[..8].to_string());
-        
+
+        let skill_name = format!("generated_skill_{}", &Uuid::new_v4().to_string()[..8]);
+
         Ok(SkillDefinition {
             id: Uuid::new_v4().to_string(),
             name: skill_name,
