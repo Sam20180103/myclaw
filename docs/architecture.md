@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.2.3
+> 版本: v0.2.5
 > 日期: 2026-03-07
-> 状态: 功能完成，性能优化完成
+> 状态: 功能完成，API文档完善
 
 ---
 
@@ -395,6 +395,8 @@ struct SandboxConfig {
 - [x] 集成测试
 - [x] 审批事件订阅 (SSE)
 - [x] 性能优化 (HashMap预分配)
+- [x] Skill验证增强
+- [x] API文档完善
 
 ---
 
@@ -406,6 +408,8 @@ struct SandboxConfig {
 | v0.2.0 | 2026-03-06 | 流式响应(SSE)、沙箱执行增强、OpenCode CLI集成 |
 | v0.2.2 | 2026-03-07 | 审批事件通知(SSE)、集成测试覆盖 |
 | v0.2.3 | 2026-03-07 | 性能优化(HashMap预分配、Vec预分配) |
+| v0.2.4 | 2026-03-07 | Skill验证增强(名称检查、危险模式检测) |
+| v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
 
 ---
 
@@ -414,19 +418,152 @@ struct SandboxConfig {
 ### Health
 - `GET /health` - 健康检查
 
+**响应示例:**
+```json
+{
+  "status": "ok",
+  "service": "rustclaw-gateway",
+  "version": "0.2.4"
+}
+```
+
 ### Session
 - `GET /api/session` - 列出所有会话
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "sessions": [
+    {
+      "key": "uuid-string",
+      "lane": "lane_0",
+      "channel": "http",
+      "message_count": 5,
+      "created_at": 1678000000000,
+      "updated_at": 1678000001000
+    }
+  ]
+}
+```
+
 - `DELETE /api/session/{id}` - 删除会话
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "deleted": "session-id"
+}
+```
 
 ### Message
 - `POST /api/message` - 发送消息 (JSON-RPC)
 
+**请求示例:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "message.send",
+  "params": {
+    "channel": "http",
+    "sessionKey": "optional-session-key",
+    "content": "Hello, Agent!"
+  }
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "sessionKey": "generated-or-provided-key",
+  "response": "Agent response text",
+  "toolCalls": 0
+}
+```
+
+**方法列表:**
+- `message.send` - 发送单次消息
+- `message.send_with_loop` - 发送消息并启用Agent循环
+
 ### Skill
 - `GET /api/skill` - 列出所有Skills
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "pending": [
+    {
+      "id": "skill-uuid",
+      "name": "pending_skill",
+      "language": "shell",
+      "status": "pending"
+    }
+  ],
+  "active": [
+    {
+      "id": "skill-uuid",
+      "name": "active_skill",
+      "language": "python",
+      "status": "active"
+    }
+  ]
+}
+```
+
 - `POST /api/skill` - 创建新Skill
+
+**请求示例:**
+```json
+{
+  "name": "my_skill",
+  "description": "A custom skill",
+  "language": "shell",
+  "source_code": "echo 'Hello from skill'",
+  "parameters": {
+    "input": "string"
+  }
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "skillId": "generated-uuid",
+  "message": "Skill submitted for approval"
+}
+```
+
 - `POST /api/skill/{id}/approve` - 审批Skill
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Skill {id} approved"
+}
+```
+
 - `POST /api/skill/{id}/reject` - 拒绝Skill
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Skill {id} rejected"
+}
+```
+
 - `GET /api/skill/approval/subscribe` - 订阅审批事件 (SSE)
+
+**事件格式 (Server-Sent Events):**
+```
+data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requested_at":1678000000000}
+```
 
 ---
 
@@ -436,10 +573,10 @@ struct SandboxConfig {
 |------|---------|---------|
 | config | 7 | - |
 | protocol | 9 | - |
-| skill | 7 | 4 |
+| skill | 9 | 4 |
 | tool | 14 | - |
 | agent | - | 3 |
-| **总计** | **37** | **7** |
+| **总计** | **39** | **7** |
 
 ---
 
