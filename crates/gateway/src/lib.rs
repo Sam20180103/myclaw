@@ -69,12 +69,12 @@ impl Gateway {
         let agent = AgentRuntime::new(AgentConfig::default());
         let skill_manager = SkillManager::new(SkillConfig::default());
         let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
-        
+
         let skill_manager = Arc::new(skill_manager);
-        
+
         Self {
             config,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))),
             agent: Arc::new(agent),
             skill_manager,
             approval_broadcaster: approval_tx,

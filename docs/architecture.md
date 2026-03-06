@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.2.2
+> 版本: v0.2.3
 > 日期: 2026-03-07
-> 状态: 功能完成，测试覆盖
+> 状态: 功能完成，性能优化完成
 
 ---
 
@@ -394,7 +394,7 @@ struct SandboxConfig {
 - [x] 单元测试 (基础)
 - [x] 集成测试
 - [x] 审批事件订阅 (SSE)
-- [ ] 性能优化
+- [x] 性能优化 (HashMap预分配)
 
 ---
 
@@ -405,6 +405,7 @@ struct SandboxConfig {
 | v0.1.0 | 2026-03-06 | 初始版本 |
 | v0.2.0 | 2026-03-06 | 流式响应(SSE)、沙箱执行增强、OpenCode CLI集成 |
 | v0.2.2 | 2026-03-07 | 审批事件通知(SSE)、集成测试覆盖 |
+| v0.2.3 | 2026-03-07 | 性能优化(HashMap预分配、Vec预分配) |
 
 ---
 
@@ -439,3 +440,25 @@ struct SandboxConfig {
 | tool | 14 | - |
 | agent | - | 3 |
 | **总计** | **37** | **7** |
+
+---
+
+## 十、性能优化
+
+### HashMap预分配
+| 结构 | 预分配容量 | 说明 |
+|------|-----------|------|
+| SessionManager | max_sessions | 会话存储 |
+| LaneRouter | 10 | 固定10个lane |
+| Gateway::sessions | 64 | 预期并发连接 |
+| ToolRegistry | 16 | 内置工具数量 |
+| SkillManager::pending | 8 | 待审批skill |
+| SkillManager::active | 32 | 活跃skill |
+
+### Vec预分配
+| 结构 | 预分配容量 | 说明 |
+|------|-----------|------|
+| Session::messages | 16 | 消息历史 |
+
+### 锁优化
+- `get_or_create()` 先读后写，减少write锁持有时间

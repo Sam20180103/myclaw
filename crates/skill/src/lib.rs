@@ -145,8 +145,8 @@ impl SkillManager {
     pub fn new(config: SkillConfig) -> Self {
         Self {
             config: config.clone(),
-            pending_skills: Arc::new(RwLock::new(HashMap::new())),
-            active_skills: Arc::new(RwLock::new(HashMap::new())),
+            pending_skills: Arc::new(RwLock::new(HashMap::with_capacity(8))),
+            active_skills: Arc::new(RwLock::new(HashMap::with_capacity(32))),
             approval_tx: None,
         }
     }
@@ -187,16 +187,16 @@ impl SkillManager {
         Ok(())
     }
 
-    async fn load_skills_from_dir(
-        &self,
-        dir: &Path,
-        status: SkillStatus,
-    ) -> Result<HashMap<String, SkillRecord>, SkillError> {
-        let mut skills = HashMap::new();
-        
-        if !dir.exists() {
-            return Ok(skills);
-        }
+async fn load_skills_from_dir(
+    &self,
+    dir: &Path,
+    status: SkillStatus,
+) -> Result<HashMap<String, SkillRecord>, SkillError> {
+    let mut skills = HashMap::with_capacity(16);
+
+    if !dir.exists() {
+        return Ok(skills);
+    }
 
         let mut entries = tokio::fs::read_dir(dir)
             .await

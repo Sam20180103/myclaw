@@ -54,7 +54,7 @@ pub struct ToolResult {
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: Arc::new(RwLock::new(HashMap::new())),
+            tools: Arc::new(RwLock::new(HashMap::with_capacity(16))),
         }
     }
 

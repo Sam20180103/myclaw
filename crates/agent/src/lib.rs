@@ -63,7 +63,7 @@ pub struct SessionManager {
 impl SessionManager {
     pub fn new(max_sessions: usize, ttl_seconds: u64) -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::with_capacity(max_sessions))),
             max_sessions,
             ttl_seconds,
         }
@@ -73,7 +73,7 @@ impl SessionManager {
         let session = Session {
             key: Uuid::new_v4().to_string(),
             lane: lane.to_string(),
-            messages: vec![],
+            messages: Vec::with_capacity(16),
             metadata: SessionMetadata {
                 channel: channel.to_string(),
                 created_at: chrono::Utc::now().timestamp_millis(),
@@ -91,7 +91,8 @@ impl SessionManager {
     }
 
     pub fn get_or_create(&self, key: &str, channel: &str, lane: &str) -> Session {
-        if let Some(mut session) = self.get(key) {
+        if let Some(session) = self.sessions.read().get(key) {
+            let mut session = session.clone();
             session.last_accessed = Instant::now();
             self.sessions.write().insert(key.to_string(), session.clone());
             return session;
@@ -160,7 +161,7 @@ pub struct LaneTask {
 impl LaneRouter {
     pub fn new(max_concurrent: usize) -> Self {
         Self {
-            lanes: Arc::new(RwLock::new(HashMap::new())),
+            lanes: Arc::new(RwLock::new(HashMap::with_capacity(10))),
             max_concurrent,
         }
     }
