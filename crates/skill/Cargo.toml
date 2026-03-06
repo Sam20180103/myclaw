@@ -17,5 +17,6 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
+which = "6.0"
 rustclaw-protocol = { path = "../protocol" }
 rustclaw-tool = { path = "../tool" }

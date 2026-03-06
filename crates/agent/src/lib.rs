@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use tokio::sync::mpsc;
+use futures_util::stream::StreamExt;
 
 pub struct AgentRuntime {
     config: AgentConfig,
@@ -351,6 +352,48 @@ impl AgentRuntime {
 
     pub fn delete_session(&self, key: &str) {
         self.session_manager.delete(key);
+    }
+
+    pub async fn process_stream(
+        &self,
+        envelope: Envelope,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<String, AgentError>>, AgentError> {
+        let session_key = envelope.session_key.clone();
+        let lane = self.lane_router.route(&session_key);
+        
+        self.session_manager.get_or_create(
+            &session_key,
+            &envelope.channel,
+            &lane,
+        );
+
+        self.session_manager.add_message(&session_key, envelope.message);
+
+        let messages = self.session_manager.get(&session_key)
+            .map(|s| s.messages.clone())
+            .unwrap_or_default();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        
+        let provider = self.provider_client.clone();
+        tokio::spawn(async move {
+            let mut stream = provider.stream_complete(messages).await;
+            while let Some(token_result) = stream.next().await {
+                match token_result {
+                    Ok(token) => {
+                        if tx.send(Ok(token)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(AgentError::ProviderError(e.to_string()))).await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 

@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.1.0  
+> 版本: v0.2.0  
 > 日期: 2026-03-06  
-> 状态: 讨论阶段
+> 状态: 功能实现完成
 
 ---
 
@@ -119,8 +119,13 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 - Session 管理
 - Lane 路由 (sessionKey 隔离)
 - Queue 队列
-- 流式响应处理
+- 流式响应处理 (SSE)
 - Agent 循环: message → LLM → tools? → execute → continue → response
+
+**流式响应**:
+- OpenAI: 解析 `data: {...}` SSE 块
+- Anthropic: 解析 content blocks
+- 返回 `Receiver<Result<String, AgentError>>`
 
 #### Tool System (工具系统)
 
@@ -130,9 +135,21 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 
 #### Dynamic Skill System (动态Skill系统)
 
-- Skill Generate: Agent 生成 Skill 代码
+- Skill Generate: Agent 生成 Skill 代码 (通过 OpenCode CLI)
 - Skill Validate: 静态验证语法/类型
 - Skill Approve: 用户审批后才能使用
+
+**OpenCode CLI 集成**:
+```rust
+struct OpenCodeGenerator {
+    opencode_path: PathBuf,
+    timeout_seconds: u64,  // 默认 120s
+}
+```
+
+- 自动检测 opencode 路径
+- 超时保护
+- 返回 SkillDefinition
 
 ---
 
@@ -244,6 +261,57 @@ enum ToolHandler {
 }
 ```
 
+### 4.3 关键实现细节
+
+#### Provider 流式响应
+
+```rust
+// LlmProvider trait
+async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream;
+// TokenStream = Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>
+```
+
+- OpenAI: 使用 `reqwest` 流式请求，解析 SSE 块
+- Anthropic: 解析 `content` 数组中的 `text` 字段
+
+#### SandboxExecutor
+
+```rust
+pub struct SandboxExecutor {
+    config: SandboxConfig,
+}
+
+impl SandboxExecutor {
+    pub async fn execute_command(&self, command: &str) -> Result<Value, ToolError> {
+        // 1. 检查危险命令
+        // 2. 超时控制 (tokio::time::timeout)
+        // 3. 执行并返回结果
+    }
+}
+```
+
+#### OpenCodeGenerator
+
+```rust
+pub struct OpenCodeGenerator {
+    opencode_path: PathBuf,
+    timeout_seconds: u64,
+}
+
+impl OpenCodeGenerator {
+    pub async fn generate_skill(
+        &self,
+        description: &str,
+        language: SkillLanguage,
+        parameters: Value,
+    ) -> Result<SkillDefinition, SkillError> {
+        // 调用 opencode generate CLI
+        // 超时保护
+        // 返回生成的代码
+    }
+}
+```
+
 ---
 
 ## 五、安全设计
@@ -256,7 +324,30 @@ enum ToolHandler {
 4. **沙箱隔离**: 危险操作独立进程
 5. **资源限制**: 超时、内存限制
 
-### 5.2 审批工作流
+### 5.2 沙箱执行器
+
+```rust
+struct SandboxConfig {
+    timeout_ms: u64,          // 默认 30000ms
+    max_memory_mb: u64,       // 默认 512MB
+    allowed_dirs: Vec<String>, // 允许访问的目录
+    denied_commands: Vec<String>, // 禁止执行的命令
+}
+```
+
+**危险命令检测**:
+- `rm -rf /` - 递归删除根目录
+- `mkfs` - 文件系统格式化
+- `dd if=` - 裸磁盘写入
+- `:(){:|:&};:` - Fork bomb
+
+**危险模式检测**:
+- `curl | sh` - 远程脚本执行
+- `wget | sh` - 远程脚本执行
+- `chmod 777` - 过度权限
+- `chown -R` - 递归修改所有者
+
+### 5.3 审批工作流
 
 - 所有 Agent 生成的 Skills 需要用户审批
 - 审批前进行静态验证 (语法检查)
@@ -266,41 +357,41 @@ enum ToolHandler {
 
 ## 六、开发路线图
 
-### Phase 1: 核心框架 (2-3周)
+### Phase 1: 核心框架 (2-3周) ✅ 完成
 
-- [ ] 项目初始化，workspace 搭建
-- [ ] 配置系统
-- [ ] Gateway WebSocket 服务器
-- [ ] 基础协议实现 (JSON-RPC)
-- [ ] 日志系统
+- [x] 项目初始化，workspace 搭建
+- [x] 配置系统
+- [x] Gateway WebSocket 服务器
+- [x] 基础协议实现 (JSON-RPC)
+- [x] 日志系统
 
-### Phase 2: Agent 运行时 (2-3周)
+### Phase 2: Agent 运行时 (2-3周) ✅ 完成
 
-- [ ] Session 管理
-- [ ] Lane/Queue 实现
-- [ ] Agent 循环逻辑
-- [ ] 流式响应处理
-- [ ] 基础 Provider 客户端
+- [x] Session 管理
+- [x] Lane/Queue 实现
+- [x] Agent 循环逻辑
+- [x] 流式响应处理 (SSE)
+- [x] 基础 Provider 客户端
 
-### Phase 3: 工具系统 (2-3周)
+### Phase 3: 工具系统 (2-3周) ✅ 完成
 
-- [ ] Tool trait 定义
-- [ ] 工具注册表
-- [ ] 内置工具实现
-- [ ] 沙箱执行器
-- [ ] 工具策略引擎
+- [x] Tool trait 定义
+- [x] 工具注册表
+- [x] 内置工具实现
+- [x] 沙箱执行器
+- [x] 工具策略引擎
 
-### Phase 4: 动态 Skill (2周)
+### Phase 4: 动态 Skill (2周) ✅ 完成
 
-- [ ] Skill 定义格式
-- [ ] OpenCode 集成 (外部CLI)
-- [ ] 静态验证
-- [ ] 审批流程
-- [ ] 动态注册
+- [x] Skill 定义格式
+- [x] OpenCode 集成 (外部CLI)
+- [x] 静态验证
+- [x] 审批流程
+- [x] 动态注册
 
-### Phase 5: 测试与优化 (1周)
+### Phase 5: 测试与优化 (1周) 🔄 进行中
 
-- [ ] 单元测试
+- [x] 单元测试 (基础)
 - [ ] 集成测试
 - [ ] 性能优化
 
@@ -310,4 +401,5 @@ enum ToolHandler {
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| v0.1.0 | 2026-03-06 | 初始讨论稿 |
+| v0.1.0 | 2026-03-06 | 初始版本 |
+| v0.2.0 | 2026-03-06 | 流式响应(SSE)、沙箱执行增强、OpenCode CLI集成 |

@@ -47,6 +47,7 @@ parking_lot = "0.12"
 uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
+async-stream = "0.3"
 
 # Process
 tokio-process = "0.3"

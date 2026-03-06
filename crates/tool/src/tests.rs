@@ -68,9 +68,12 @@ mod tests {
 
     #[test]
     fn test_shell_exec_tool_schema() {
-        let tool = ShellExecTool;
+        let tool = ShellExecTool::default();
         assert_eq!(tool.name(), "shell_exec");
-        assert_eq!(tool.description(), "Execute a shell command");
+        assert_eq!(
+            tool.description(),
+            "Execute a shell command with sandbox protection"
+        );
     }
 
     #[test]

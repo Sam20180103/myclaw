@@ -1,17 +1,48 @@
 #!/bin/bash
 set -e
 
-MODEL="${OPENCODE_MODEL:-}"
-FORMAT="${OPENCODE_FORMAT:-default}"
-WORKDIR="${OPENCODE_DIR:-.}"
-EXTRA_OPTS="${OPENCODE_OPTS:-}"
-LOG_FILE="${OPENCODE_LOG_FILE:-/tmp/opencode-loop.log}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+load_config() {
+    local config_file="${SCRIPT_DIR}/opencode-loop.env"
+    
+    if [[ -f "$config_file" ]]; then
+        set -a
+        source "$config_file"
+        set +a
+        return 0
+    fi
+    return 1
+}
+
+DEFAULT_MODEL=""
+DEFAULT_FORMAT="default"
+DEFAULT_WORKDIR="."
+DEFAULT_EXTRA_OPTS=""
+DEFAULT_LOG_FILE="/tmp/opencode-loop.log"
+DEFAULT_TIMEOUT="300"
+DEFAULT_FALLBACK_MODELS="opencode/gpt-5-nano,opencode/trinity-large-preview-free"
+
+load_config
+
+MODEL="${OPENCODE_MODEL:-${MODEL:-$DEFAULT_MODEL}}"
+FORMAT="${OPENCODE_FORMAT:-${FORMAT:-$DEFAULT_FORMAT}}"
+WORKDIR="${OPENCODE_DIR:-${WORKDIR:-$DEFAULT_WORKDIR}}"
+EXTRA_OPTS="${OPENCODE_OPTS:-${EXTRA_OPTS:-$DEFAULT_EXTRA_OPTS}}"
+LOG_FILE="${OPENCODE_LOG_FILE:-${LOG_FILE:-$DEFAULT_LOG_FILE}}"
+TIMEOUT="${OPENCODE_TIMEOUT:-${TIMEOUT:-$DEFAULT_TIMEOUT}}"
+FALLBACK_MODELS="${OPENCODE_FALLBACK:-${FALLBACK_MODELS:-$DEFAULT_FALLBACK_MODELS}}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
+
+CURRENT_MODEL=""
+RETRY_COUNT=0
+MAX_RETRIES=2
 
 log() {
     local level="$1"
@@ -40,6 +71,8 @@ Options:
     -s, --session ID        Continue specific session
     --format FORMAT         Output format (default/json)
     --no-exec               Dry-run mode
+    --timeout SEC           执行超时秒数 (默认 300)
+    --fallback MODEL        备用模型列表逗号分隔
 EOF
 }
 
@@ -50,6 +83,8 @@ SESSION_ID=""
 DRY_RUN=false
 OUTPUT_FILE=""
 FORCE_LOOP=false
+TIMEOUT_ARG=""
+FALLBACK_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -93,6 +128,14 @@ while [[ $# -gt 0 ]]; do
             FORCE_LOOP=true
             shift
             ;;
+        --timeout)
+            TIMEOUT_ARG="$2"
+            shift 2
+            ;;
+        --fallback)
+            FALLBACK_ARG="$2"
+            shift 2
+            ;;
         *)
             PROMPT="$1"
             shift
@@ -100,11 +143,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+[[ -n "$TIMEOUT_ARG" ]] && TIMEOUT="$TIMEOUT_ARG"
+[[ -n "$FALLBACK_ARG" ]] && FALLBACK_MODELS="$FALLBACK_ARG"
+CURRENT_MODEL="$MODEL"
+
 build_cmd() {
     local prompt="$1"
+    local model="$2"
     local cmd="opencode run"
     cmd="$cmd \"$prompt\""
-    [[ -n "$MODEL" ]] && cmd="$cmd --model $MODEL"
+    [[ -n "$model" ]] && cmd="$cmd --model $model"
     cmd="$cmd --format $FORMAT"
     [[ -n "$EXTRA_OPTS" ]] && cmd="$cmd $EXTRA_OPTS"
     [[ -n "$CONTINUE_SESSION" ]] && cmd="$cmd $CONTINUE_SESSION"
@@ -113,12 +161,43 @@ build_cmd() {
     echo "$cmd"
 }
 
+check_error() {
+    local output="$1"
+    
+    if echo "$output" | grep -qiE "quota|token.*(limit|exceed|insufficient)|credits?|rate.*limit|api.*(error|key).*(invalid|expired)|authentication.*fail|unauthorized|401|429|403"; then
+        return 0
+    fi
+    return 1
+}
+
+get_next_model() {
+    local current="$1"
+    local found=false
+    
+    IFS=',' read -ra MODELS <<< "$FALLBACK_MODELS"
+    for m in "${MODELS[@]}"; do
+        m=$(echo "$m" | xargs)
+        [[ -z "$m" ]] && continue
+        if [[ "$found" == "true" ]]; then
+            echo "$m"
+            return 0
+        fi
+        if [[ "$m" == "$current" ]]; then
+            found=true
+        fi
+    done
+    
+    echo ""
+    return 1
+}
+
 execute_prompt() {
     local prompt="$1"
+    local model="$2"
     local cmd
-    cmd=$(build_cmd "$prompt")
+    cmd=$(build_cmd "$prompt" "$model")
     
-    log_step "执行: $prompt"
+    log_step "执行 [$model]: $prompt"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] $cmd"
@@ -126,27 +205,90 @@ execute_prompt() {
     fi
     
     log_info "命令: $cmd"
+    log_info "超时: ${TIMEOUT}s"
+    
+    local output
+    local exit_code=0
     
     if [[ -n "$OUTPUT_FILE" ]]; then
-        eval "$cmd" 2>&1 | tee -a "$OUTPUT_FILE"
+        output=$(timeout "$TIMEOUT" bash -c "$cmd" 2>&1) || exit_code=$?
+        echo "$output" | tee -a "$OUTPUT_FILE"
     else
-        eval "$cmd" 2>&1
+        output=$(timeout "$TIMEOUT" bash -c "$cmd" 2>&1) || exit_code=$?
     fi
     
-    local exit_code=$?
+    if [[ $exit_code -eq 124 ]]; then
+        log_error "⏱️ 执行超时 (${TIMEOUT}s)"
+        return 1
+    fi
+    
+    if check_error "$output"; then
+        log_error "❌ 检测到错误，可能需要切换模型"
+        log_info "输出摘要: $(echo "$output" | tail -5)"
+        return 2
+    fi
+    
     if [[ $exit_code -eq 0 ]]; then
         log_info "✅ 执行成功"
+        RETRY_COUNT=0
     else
         log_error "❌ 执行失败 (exit code: $exit_code)"
     fi
+    
     return $exit_code
+}
+
+run_with_fallback() {
+    local prompt="$1"
+    local model="$2"
+    local attempt=1
+    local model_count
+    model_count=$(echo "$FALLBACK_MODELS" | awk -F',' '{print NF}')
+    local max_attempts=$((model_count + 1))
+    
+    while true; do
+        log_info "=== 尝试 $attempt/$max_attempts (模型: $model) ==="
+        
+        local result
+        execute_prompt "$prompt" "$model"
+        result=$?
+        
+        if [[ $result -eq 0 ]]; then
+            return 0
+        fi
+        
+        if [[ $result -eq 2 ]]; then
+            local next_model
+            next_model=$(get_next_model "$model")
+            
+            if [[ -n "$next_model" ]]; then
+                log_warn "🔄 切换模型: $model -> $next_model"
+                model="$next_model"
+                CURRENT_MODEL="$model"
+            else
+                log_error "没有更多备用模型"
+                return 1
+            fi
+        fi
+        
+        attempt=$((attempt + 1))
+        
+        if [[ $attempt -gt $max_attempts ]]; then
+            log_error "已达到最大尝试次数"
+            return 1
+        fi
+        
+        sleep 2
+    done
 }
 
 main() {
     log_info "🚀 OpenCode Loop 启动"
     log_info "工作目录: $WORKDIR"
     log_info "输出格式: $FORMAT"
-    [[ -n "$MODEL" ]] && log_info "模型: $MODEL"
+    log_info "超时: ${TIMEOUT}s"
+    [[ -n "$CURRENT_MODEL" ]] && log_info "当前模型: $CURRENT_MODEL"
+    [[ -n "$FALLBACK_MODELS" ]] && log_info "备用模型: $FALLBACK_MODELS"
     echo ""
     
     if [[ -n "$INPUT_FILE" ]]; then
@@ -161,7 +303,7 @@ main() {
             [[ -z "$line" ]] && continue
             [[ "$line" =~ ^# ]] && continue
             log_info "--- 第 $line_num 行 ---"
-            execute_prompt "$line"
+            run_with_fallback "$line" "$CURRENT_MODEL"
             echo ""
             sleep 1
         done < "$INPUT_FILE"
@@ -171,18 +313,19 @@ main() {
     
     if [[ "$FORCE_LOOP" == "true" && -n "$PROMPT" ]]; then
         log_info "🔄 无限循环模式: 自动重复执行 (Ctrl+C 退出)"
+        log_info "备用模型: $FALLBACK_MODELS"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         while true; do
             echo -e "${BLUE}▶ 执行: $PROMPT${NC}"
-            execute_prompt "$PROMPT"
+            run_with_fallback "$PROMPT" "$CURRENT_MODEL"
             echo ""
             sleep 2
         done
         log_info "👋 退出循环"
     elif [[ -n "$PROMPT" || "$FORCE_LOOP" == "true" ]]; then
         if [[ -n "$PROMPT" ]]; then
-            execute_prompt "$PROMPT"
+            run_with_fallback "$PROMPT" "$CURRENT_MODEL"
             echo ""
         fi
         log_info "🔄 无限循环模式: 输入提示词继续 (Ctrl+C 退出)"
@@ -192,7 +335,7 @@ main() {
             echo -n -e "${BLUE}>> ${NC}"
             if IFS= read -r PROMPT; then
                 if [[ -n "$PROMPT" ]]; then
-                    execute_prompt "$PROMPT"
+                    run_with_fallback "$PROMPT" "$CURRENT_MODEL"
                     echo ""
                 fi
             else
@@ -207,7 +350,7 @@ main() {
             echo -n -e "${BLUE}>> ${NC}"
             if IFS= read -r PROMPT; then
                 if [[ -n "$PROMPT" ]]; then
-                    execute_prompt "$PROMPT"
+                    run_with_fallback "$PROMPT" "$CURRENT_MODEL"
                     echo ""
                 fi
             else

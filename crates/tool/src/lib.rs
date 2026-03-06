@@ -184,7 +184,17 @@ impl Tool for FileWriteTool {
     }
 }
 
-pub struct ShellExecTool;
+pub struct ShellExecTool {
+    sandbox: SandboxExecutor,
+}
+
+impl Default for ShellExecTool {
+    fn default() -> Self {
+        Self {
+            sandbox: SandboxExecutor::new(SandboxConfig::default()),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ShellExecTool {
@@ -193,13 +203,13 @@ impl Tool for ShellExecTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command"
+        "Execute a shell command with sandbox protection"
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "shell_exec".to_string(),
-            description: "Execute a shell command".to_string(),
+            description: "Execute a shell command with sandbox protection (timeout: 30s)".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -219,18 +229,7 @@ impl Tool for ShellExecTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'command' parameter".to_string()))?;
 
-        let output = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-
-        Ok(serde_json::json!({
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-            "exit_code": output.status.code()
-        }))
+        self.sandbox.execute_command(command).await
     }
 }
 
@@ -238,7 +237,7 @@ impl ToolRegistry {
     pub fn register_builtin_tools(&self) {
         self.register(Arc::new(FileReadTool));
         self.register(Arc::new(FileWriteTool));
-        self.register(Arc::new(ShellExecTool));
+        self.register(Arc::new(ShellExecTool::default()));
     }
 
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {
@@ -320,6 +319,128 @@ impl ToolExecutor {
 
     pub fn policy(&self) -> &ToolPolicy {
         &self.policy
+    }
+}
+
+#[derive(Clone)]
+pub struct SandboxConfig {
+    pub timeout_ms: u64,
+    pub max_memory_mb: u64,
+    pub allowed_dirs: Vec<String>,
+    pub denied_commands: Vec<String>,
+    pub env_whitelist: Vec<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 30000,
+            max_memory_mb: 512,
+            allowed_dirs: vec![],
+            denied_commands: vec![
+                "rm -rf /".to_string(),
+                "mkfs".to_string(),
+                "dd if=".to_string(),
+                ":(){:|:&};:".to_string(),
+            ],
+            env_whitelist: vec![
+                "HOME".to_string(),
+                "PATH".to_string(),
+                "USER".to_string(),
+            ],
+        }
+    }
+}
+
+pub struct SandboxExecutor {
+    config: SandboxConfig,
+}
+
+impl SandboxExecutor {
+    pub fn new(config: SandboxConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn execute_command(
+        &self,
+        command: &str,
+    ) -> Result<serde_json::Value, ToolError> {
+        if self.is_command_denied(command) {
+            return Err(ToolError::SandboxViolation(
+                "Command is not allowed".to_string(),
+            ));
+        }
+
+        let timeout = std::time::Duration::from_millis(self.config.timeout_ms);
+        
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .output()
+        )
+        .await
+        .map_err(|_| ToolError::Timeout)?
+        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        if !output.status.success() && output.status.code() != Some(0) {
+            return Ok(serde_json::json!({
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+                "exit_code": output.status.code(),
+                "killed": false,
+                "timeout": false,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "stdout": String::from_utf8_lossy(&output.stdout),
+            "stderr": String::from_utf8_lossy(&output.stderr),
+            "exit_code": output.status.code(),
+            "killed": false,
+            "timeout": false,
+        }))
+    }
+
+    fn is_command_denied(&self, command: &str) -> bool {
+        let cmd_lower = command.to_lowercase();
+        for denied in &self.config.denied_commands {
+            if cmd_lower.contains(&denied.to_lowercase()) {
+                return true;
+            }
+        }
+        
+        let dangerous_patterns = [
+            "curl | sh",
+            "wget | sh",
+            "chmod 777",
+            "chown -R",
+            "mkfs",
+            "> /dev/sd",
+        ];
+        
+        for pattern in dangerous_patterns {
+            if cmd_lower.contains(pattern) {
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    pub fn is_path_allowed(&self, path: &str) -> bool {
+        if self.config.allowed_dirs.is_empty() {
+            return true;
+        }
+        
+        for allowed in &self.config.allowed_dirs {
+            if path.starts_with(allowed) {
+                return true;
+            }
+        }
+        
+        false
     }
 }
 

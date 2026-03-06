@@ -413,3 +413,99 @@ impl SkillManager {
         Err(SkillError::NotFound(id.to_string()))
     }
 }
+
+pub struct OpenCodeGenerator {
+    opencode_path: PathBuf,
+    timeout_seconds: u64,
+}
+
+impl OpenCodeGenerator {
+    pub fn new(opencode_path: Option<PathBuf>) -> Self {
+        let opencode_path = opencode_path.unwrap_or_else(|| {
+            which::which("opencode")
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| PathBuf::from("opencode"))
+        });
+        
+        Self {
+            opencode_path,
+            timeout_seconds: 120,
+        }
+    }
+
+    pub async fn generate_skill(
+        &self,
+        description: &str,
+        language: SkillLanguage,
+        parameters: serde_json::Value,
+    ) -> Result<SkillDefinition, SkillError> {
+        let prompt = format!(
+            "Generate a {} skill that: {}\n\
+            The skill should be a complete, working implementation.\n\
+            Return ONLY the code, no explanations.\n\
+            Parameters schema: {}",
+            language,
+            description,
+            parameters
+        );
+
+        let timeout = std::time::Duration::from_secs(self.timeout_seconds);
+        
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new(&self.opencode_path)
+                .arg("generate")
+                .arg("--language")
+                .arg(language.to_string())
+                .arg("--prompt")
+                .arg(&prompt)
+                .output()
+        )
+        .await
+        .map_err(|_| SkillError::ExecutionFailed("OpenCode timeout".to_string()))?
+        .map_err(|e| SkillError::ExecutionFailed(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SkillError::ExecutionFailed(format!(
+                "OpenCode failed: {}",
+                stderr
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        let skill_name = format!("generated_skill_{}", Uuid::new_v4().to_string()[..8].to_string());
+        
+        Ok(SkillDefinition {
+            id: Uuid::new_v4().to_string(),
+            name: skill_name,
+            description: description.to_string(),
+            version: "1.0.0".to_string(),
+            language,
+            source_code: stdout.to_string(),
+            parameters,
+            created_at: chrono::Utc::now().timestamp_millis(),
+            author: Some("opencode".to_string()),
+            test_cases: vec![],
+        })
+    }
+
+    pub fn is_available(&self) -> bool {
+        std::path::Path::new(&self.opencode_path).exists()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillGenerateRequest {
+    pub description: String,
+    pub language: SkillLanguage,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillGenerateResponse {
+    pub success: bool,
+    pub skill: Option<SkillDefinition>,
+    pub error: Option<String>,
+}

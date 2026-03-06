@@ -216,8 +216,111 @@ impl LlmProvider for OpenAiProvider {
             .ok_or_else(|| ProviderError::ParseError("No choices in response".to_string()))
     }
 
-    async fn stream_complete(&self, _messages: Vec<Message>) -> TokenStream {
-        Box::pin(futures_util::stream::iter(vec![]))
+    async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
+        use async_stream::stream;
+        use futures_util::stream::StreamExt;
+        
+        let openai_messages: Vec<OpenAiMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                OpenAiMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = OpenAiRequest {
+            model: self.model.clone(),
+            messages: openai_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: true,
+        };
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+        
+        Box::pin(stream! {
+            let result = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        yield Err(ProviderError::ApiError(format!(
+                            "Status {}",
+                            response.status()
+                        )));
+                        return;
+                    }
+
+                    let mut stream = response.bytes_stream();
+                    let mut buffer = String::new();
+                    
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(bytes) => {
+                                if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                                    buffer.push_str(&text);
+                                    
+                                    let lines: Vec<&str> = buffer.split('\n').collect();
+                                    for line in lines.iter().take(lines.len() - 1) {
+                                        let line = line.trim();
+                                        if line.starts_with("data: ") {
+                                            let data = &line[6..];
+                                            if data == "[DONE]" {
+                                                return;
+                                            }
+                                            
+                                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                                if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                                                    if let Some(choice) = choices.first() {
+                                                        if let Some(delta) = choice.get("delta") {
+                                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                                yield Ok(content.to_string());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if let Some(last) = lines.last() {
+                                        buffer = last.to_string();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(ProviderError::ApiError(e.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Err(ProviderError::ApiError(e.to_string()));
+                }
+            }
+        })
     }
 
     async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
@@ -291,6 +394,15 @@ struct AnthropicRequest {
     temperature: Option<f32>,
 }
 
+#[derive(Serialize)]
+struct AnthropicStreamRequest {
+    model: String,
+    messages: Vec<AnthropicMessage>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    stream: bool,
+}
+
 #[derive(Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
@@ -362,8 +474,107 @@ impl LlmProvider for AnthropicProvider {
             .ok_or_else(|| ProviderError::ParseError("No content in response".to_string()))
     }
 
-    async fn stream_complete(&self, _messages: Vec<Message>) -> TokenStream {
-        Box::pin(futures_util::stream::iter(vec![]))
+    async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
+        use async_stream::stream;
+        use futures_util::stream::StreamExt;
+
+        let anthropic_messages: Vec<AnthropicMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                AnthropicMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = AnthropicStreamRequest {
+            model: self.model.clone(),
+            messages: anthropic_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: true,
+        };
+
+        let url = format!("{}/v1/messages", self.base_url);
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+
+        Box::pin(stream! {
+            let result = client
+                .post(&url)
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        yield Err(ProviderError::ApiError(format!(
+                            "Status {}",
+                            response.status()
+                        )));
+                        return;
+                    }
+
+                    let mut stream = response.bytes_stream();
+                    let mut buffer = String::new();
+
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(bytes) => {
+                                if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                                    buffer.push_str(&text);
+
+                                    let lines: Vec<&str> = buffer.split('\n').collect();
+                                    for line in lines.iter().take(lines.len() - 1) {
+                                        let line = line.trim();
+                                        if line.starts_with("data: ") {
+                                            let data = &line[6..];
+
+                                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                                if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
+                                                    for block in content {
+                                                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                                            yield Ok(text.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(last) = lines.last() {
+                                        buffer = last.to_string();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(ProviderError::ApiError(e.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Err(ProviderError::ApiError(e.to_string()));
+                }
+            }
+        })
     }
 
     async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
@@ -378,6 +589,7 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+#[derive(Clone)]
 pub struct ProviderClient {
     provider: Option<Arc<dyn LlmProvider>>,
 }
@@ -392,6 +604,16 @@ impl ProviderClient {
             provider.complete(messages).await
         } else {
             Ok("Provider not configured".to_string())
+        }
+    }
+
+    pub async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
+        if let Some(ref provider) = self.provider {
+            provider.stream_complete(messages).await
+        } else {
+            Box::pin(futures_util::stream::iter(vec![Ok(
+                "Provider not configured".to_string()
+            )]))
         }
     }
 }
