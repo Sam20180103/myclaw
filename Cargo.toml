@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gateway",
+    "crates/channel",
+    "crates/agent",
+    "crates/tool",
+    "crates/provider",
+    "crates/protocol",
+    "crates/config",
+    "crates/storage",
+    "crates/cli",
+    "crates/skill",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["RustClaw Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+
+# Web server
+axum = "0.7"
+tokio-tungstenite = "0.21"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utils
+thiserror = "1.0"
+anyhow = "1.0"
+once_cell = "1.19"
+parking_lot = "0.12"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+
+# Process
+tokio-process = "0.3"
+
+# Directories
+dirs = "5.0"

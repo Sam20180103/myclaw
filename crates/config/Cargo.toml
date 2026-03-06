@@ -1,0 +1,13 @@
+[package]
+name = "rustclaw-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+dirs = "5.0"
+toml = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,26 @@
+[package]
+name = "rustclaw-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustclaw-gateway"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+rustclaw-protocol = { path = "../protocol" }
+rustclaw-config = { path = "../config" }
+rustclaw-agent = { path = "../agent" }
+rustclaw-skill = { path = "../skill" }

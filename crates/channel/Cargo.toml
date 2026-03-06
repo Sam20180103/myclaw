@@ -1,0 +1,12 @@
+[package]
+name = "rustclaw-channel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+rustclaw-protocol = { path = "../protocol" }

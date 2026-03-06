@@ -1,0 +1,365 @@
+use axum::{
+    extract::State,
+    routing::get,
+    Json, Router,
+};
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{info, error};
+
+use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
+use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
+use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage};
+
+#[derive(Clone)]
+pub struct Gateway {
+    config: GatewayConfig,
+    sessions: Arc<RwLock<HashMap<String, GatewaySession>>>,
+    agent: Arc<AgentRuntime>,
+    skill_manager: Arc<SkillManager>,
+}
+
+pub struct GatewayConfig {
+    pub host: String,
+    pub port: u16,
+    pub device_id: String,
+}
+
+impl Clone for GatewayConfig {
+    fn clone(&self) -> Self {
+        Self {
+            host: self.host.clone(),
+            port: self.port,
+            device_id: self.device_id.clone(),
+        }
+    }
+}
+
+pub struct GatewaySession {
+    pub id: String,
+    pub channel: String,
+    pub authenticated: bool,
+    pub agent_session_key: Option<String>,
+}
+
+impl Gateway {
+    pub fn new(config: GatewayConfig) -> Self {
+        let agent = AgentRuntime::new(AgentConfig::default());
+        let skill_manager = SkillManager::new(SkillConfig::default());
+        Self {
+            config,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            agent: Arc::new(agent),
+            skill_manager: Arc::new(skill_manager),
+        }
+    }
+
+    pub fn with_agent(mut self, agent: Arc<AgentRuntime>) -> Self {
+        self.agent = agent;
+        self
+    }
+
+    pub fn with_skill_manager(mut self, skill_manager: Arc<SkillManager>) -> Self {
+        self.skill_manager = skill_manager;
+        self
+    }
+
+    pub async fn start(&self) -> anyhow::Result<()> {
+        self.skill_manager.init().await?;
+        
+        let addr = SocketAddr::new(self.config.host.parse().unwrap(), self.config.port);
+
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
+        let app = Router::new()
+            .route("/health", get(health_handler))
+            .route("/api/message", axum::routing::post(message_handler))
+            .route("/api/session", axum::routing::get(session_list_handler))
+            .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
+            .route("/api/skill", axum::routing::get(skill_list_handler))
+            .route("/api/skill", axum::routing::post(skill_create_handler))
+            .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
+            .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
+            .layer(cors)
+            .with_state(Arc::new(self.clone()));
+
+        info!("Starting Gateway on {}", addr);
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
+
+        Ok(())
+    }
+
+    pub fn sessions(&self) -> &Arc<RwLock<HashMap<String, GatewaySession>>> {
+        &self.sessions
+    }
+
+    pub fn agent(&self) -> &Arc<AgentRuntime> {
+        &self.agent
+    }
+
+    pub fn skill_manager(&self) -> &Arc<SkillManager> {
+        &self.skill_manager
+    }
+}
+
+async fn health_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ 
+        "status": "ok", 
+        "service": "rustclaw-gateway",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
+}
+
+async fn session_list_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let agent_sessions = state.agent.list_sessions();
+    Json(serde_json::json!({
+        "success": true,
+        "sessions": agent_sessions.iter().map(|s| serde_json::json!({
+            "key": s.key,
+            "lane": s.lane,
+            "channel": s.metadata.channel,
+            "message_count": s.messages.len(),
+            "created_at": s.metadata.created_at,
+            "updated_at": s.metadata.updated_at,
+        })).collect::<Vec<_>>()
+    }))
+}
+
+async fn session_delete_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    state.agent.delete_session(&id);
+    Json(serde_json::json!({ "success": true, "deleted": id }))
+}
+
+async fn message_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let request: Result<JsonRpcRequest, _> = serde_json::from_value(payload);
+
+    match request {
+        Ok(JsonRpcRequest::Standard(req)) => {
+            match req.method.as_str() {
+                "message.send" => {
+                    let channel = req.params.get("channel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("http");
+                    
+                    let session_key = req.params.get("sessionKey")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    
+                    let content = req.params.get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let envelope = Envelope::new(
+                        channel,
+                        &session_key,
+                        Message {
+                            role: Role::User,
+                            content: Content::text(content),
+                        },
+                    );
+
+                    match state.agent.process(envelope).await {
+                        Ok(AgentResponse { session_key, message, tool_calls }) => {
+                            let response_content = match message.content {
+                                Content::Text(s) => s,
+                                Content::Structured { text, .. } => text.unwrap_or_default(),
+                            };
+                            Json(serde_json::json!({
+                                "success": true,
+                                "sessionKey": session_key,
+                                "response": response_content,
+                                "toolCalls": tool_calls.len(),
+                            }))
+                        }
+                        Err(e) => {
+                            error!("Agent error: {}", e);
+                            Json(serde_json::json!({ 
+                                "success": false, 
+                                "error": e.to_string() 
+                            }))
+                        }
+                    }
+                }
+                "message.send_with_loop" => {
+                    let channel = req.params.get("channel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("http");
+                    
+                    let session_key = req.params.get("sessionKey")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    
+                    let content = req.params.get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let envelope = Envelope::new(
+                        channel,
+                        &session_key,
+                        Message {
+                            role: Role::User,
+                            content: Content::text(content),
+                        },
+                    );
+
+                    match state.agent.process_with_loop(envelope).await {
+                        Ok(AgentResponse { session_key, message, tool_calls }) => {
+                            let response_content = match message.content {
+                                Content::Text(s) => s,
+                                Content::Structured { text, .. } => text.unwrap_or_default(),
+                            };
+                            Json(serde_json::json!({
+                                "success": true,
+                                "sessionKey": session_key,
+                                "response": response_content,
+                                "toolCalls": tool_calls.len(),
+                            }))
+                        }
+                        Err(e) => {
+                            error!("Agent error: {}", e);
+                            Json(serde_json::json!({ 
+                                "success": false, 
+                                "error": e.to_string() 
+                            }))
+                        }
+                    }
+                }
+                "session.list" => {
+                    let sessions: Vec<_> = state.sessions.read().values()
+                        .map(|s| serde_json::json!({
+                            "id": s.id,
+                            "channel": s.channel,
+                            "authenticated": s.authenticated,
+                        }))
+                        .collect();
+                    Json(serde_json::json!({ "sessions": sessions }))
+                }
+                _ => Json(serde_json::json!({ "error": "method not found", "method": req.method }))
+            }
+        }
+        _ => Json(serde_json::json!({ "error": "invalid request" }))
+    }
+}
+
+async fn skill_list_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let pending = state.skill_manager.get_pending_skills();
+    let active = state.skill_manager.get_active_skills();
+    
+    Json(serde_json::json!({
+        "success": true,
+        "pending": pending.iter().map(|s| serde_json::json!({
+            "id": s.definition.id,
+            "name": s.definition.name,
+            "language": s.definition.language.to_string(),
+            "status": "pending",
+        })).collect::<Vec<_>>(),
+        "active": active.iter().map(|s| serde_json::json!({
+            "id": s.definition.id,
+            "name": s.definition.name,
+            "language": s.definition.language.to_string(),
+            "status": "active",
+        })).collect::<Vec<_>>()
+    }))
+}
+
+async fn skill_create_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let name = payload.get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    
+    let description = payload.get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    
+    let language_str = payload.get("language")
+        .and_then(|v| v.as_str())
+        .unwrap_or("shell");
+    
+    let language = match language_str {
+        "rust" => SkillLanguage::Rust,
+        "python" => SkillLanguage::Python,
+        "javascript" => SkillLanguage::JavaScript,
+        _ => SkillLanguage::Shell,
+    };
+    
+    let source_code = payload.get("source_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    
+    let parameters = payload.get("parameters").cloned().unwrap_or(serde_json::json!({}));
+
+    match state.skill_manager.create_skill(name, description, language, source_code, parameters) {
+        Ok(definition) => {
+            match state.skill_manager.submit_skill(definition).await {
+                Ok(id) => Json(serde_json::json!({ 
+                    "success": true, 
+                    "skillId": id,
+                    "message": "Skill submitted for approval"
+                })),
+                Err(e) => Json(serde_json::json!({ 
+                    "success": false, 
+                    "error": e.to_string() 
+                })),
+            }
+        }
+        Err(e) => Json(serde_json::json!({ 
+            "success": false, 
+            "error": e.to_string() 
+        })),
+    }
+}
+
+async fn skill_approve_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    match state.skill_manager.approve_skill(&id, "admin").await {
+        Ok(()) => Json(serde_json::json!({ 
+            "success": true, 
+            "message": format!("Skill {} approved", id) 
+        })),
+        Err(e) => Json(serde_json::json!({ 
+            "success": false, 
+            "error": e.to_string() 
+        })),
+    }
+}
+
+async fn skill_reject_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    match state.skill_manager.reject_skill(&id, "admin", Some("Rejected by admin")).await {
+        Ok(()) => Json(serde_json::json!({ 
+            "success": true, 
+            "message": format!("Skill {} rejected", id) 
+        })),
+        Err(e) => Json(serde_json::json!({ 
+            "success": false, 
+            "error": e.to_string() 
+        })),
+    }
+}
