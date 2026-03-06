@@ -104,6 +104,7 @@ impl Default for SkillConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillApprovalRequest {
     pub skill_id: String,
     pub skill_name: String,

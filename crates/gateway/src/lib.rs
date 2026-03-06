@@ -2,17 +2,23 @@ use axum::{
     extract::State,
     routing::get,
     Json, Router,
+    response::sse::{Event, Sse},
 };
+use futures::stream::Stream;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::convert::Infallible;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, error};
 
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
 use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
-use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage};
+use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequest};
+
+const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
 #[derive(Clone)]
 pub struct Gateway {
@@ -20,6 +26,7 @@ pub struct Gateway {
     sessions: Arc<RwLock<HashMap<String, GatewaySession>>>,
     agent: Arc<AgentRuntime>,
     skill_manager: Arc<SkillManager>,
+    approval_broadcaster: broadcast::Sender<SkillApprovalRequest>,
 }
 
 pub struct GatewayConfig {
@@ -45,15 +52,32 @@ pub struct GatewaySession {
     pub agent_session_key: Option<String>,
 }
 
+/// Create an approval subscription stream that yields approval requests
+fn create_approval_stream(
+    mut rx: tokio::sync::broadcast::Receiver<SkillApprovalRequest>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        while let Ok(request) = rx.recv().await {
+            let json = serde_json::to_string(&request).unwrap_or_default();
+            yield Ok(Event::default().data(json));
+        }
+    }
+}
+
 impl Gateway {
     pub fn new(config: GatewayConfig) -> Self {
         let agent = AgentRuntime::new(AgentConfig::default());
         let skill_manager = SkillManager::new(SkillConfig::default());
+        let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
+        
+        let skill_manager = Arc::new(skill_manager);
+        
         Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             agent: Arc::new(agent),
-            skill_manager: Arc::new(skill_manager),
+            skill_manager,
+            approval_broadcaster: approval_tx,
         }
     }
 
@@ -86,6 +110,7 @@ impl Gateway {
             .route("/api/skill", axum::routing::post(skill_create_handler))
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
             .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
+            .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
             .layer(cors)
             .with_state(Arc::new(self.clone()));
 
@@ -287,47 +312,61 @@ async fn skill_create_handler(
     Json(payload): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let name = payload.get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+
     let description = payload.get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+
     let language_str = payload.get("language")
-        .and_then(|v| v.as_str())
-        .unwrap_or("shell");
-    
+    .and_then(|v| v.as_str())
+    .unwrap_or("shell");
+
     let language = match language_str {
         "rust" => SkillLanguage::Rust,
         "python" => SkillLanguage::Python,
         "javascript" => SkillLanguage::JavaScript,
         _ => SkillLanguage::Shell,
     };
-    
+
     let source_code = payload.get("source_code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+
     let parameters = payload.get("parameters").cloned().unwrap_or(serde_json::json!({}));
 
     match state.skill_manager.create_skill(name, description, language, source_code, parameters) {
         Ok(definition) => {
+            let definition_clone = definition.clone();
             match state.skill_manager.submit_skill(definition).await {
-                Ok(id) => Json(serde_json::json!({ 
-                    "success": true, 
-                    "skillId": id,
-                    "message": "Skill submitted for approval"
-                })),
-                Err(e) => Json(serde_json::json!({ 
-                    "success": false, 
-                    "error": e.to_string() 
+                Ok(id) => {
+                    let request = SkillApprovalRequest {
+                        skill_id: id.clone(),
+                        skill_name: definition_clone.name.clone(),
+                        skill_definition: definition_clone,
+                        requested_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                    };
+                    let _ = state.approval_broadcaster.send(request);
+                    
+                    Json(serde_json::json!({
+                        "success": true,
+                        "skillId": id,
+                        "message": "Skill submitted for approval"
+                    }))
+                }
+                Err(e) => Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
                 })),
             }
         }
-        Err(e) => Json(serde_json::json!({ 
-            "success": false, 
-            "error": e.to_string() 
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
         })),
     }
 }
@@ -353,13 +392,21 @@ async fn skill_reject_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
     match state.skill_manager.reject_skill(&id, "admin", Some("Rejected by admin")).await {
-        Ok(()) => Json(serde_json::json!({ 
-            "success": true, 
-            "message": format!("Skill {} rejected", id) 
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Skill {} rejected", id)
         })),
-        Err(e) => Json(serde_json::json!({ 
-            "success": false, 
-            "error": e.to_string() 
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
         })),
     }
+}
+
+async fn skill_approval_subscribe_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.approval_broadcaster.subscribe();
+    let stream = create_approval_stream(rx);
+    Sse::new(stream)
 }

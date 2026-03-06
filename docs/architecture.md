@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.2.0  
-> 日期: 2026-03-06  
-> 状态: 功能实现完成
+> 版本: v0.2.2
+> 日期: 2026-03-07
+> 状态: 功能完成，测试覆盖
 
 ---
 
@@ -389,10 +389,11 @@ struct SandboxConfig {
 - [x] 审批流程
 - [x] 动态注册
 
-### Phase 5: 测试与优化 (1周) 🔄 进行中
+### Phase 5: 测试与优化 (1周) ✅ 完成
 
 - [x] 单元测试 (基础)
-- [ ] 集成测试
+- [x] 集成测试
+- [x] 审批事件订阅 (SSE)
 - [ ] 性能优化
 
 ---
@@ -403,3 +404,38 @@ struct SandboxConfig {
 |------|------|------|
 | v0.1.0 | 2026-03-06 | 初始版本 |
 | v0.2.0 | 2026-03-06 | 流式响应(SSE)、沙箱执行增强、OpenCode CLI集成 |
+| v0.2.2 | 2026-03-07 | 审批事件通知(SSE)、集成测试覆盖 |
+
+---
+
+## 八、API 端点
+
+### Health
+- `GET /health` - 健康检查
+
+### Session
+- `GET /api/session` - 列出所有会话
+- `DELETE /api/session/{id}` - 删除会话
+
+### Message
+- `POST /api/message` - 发送消息 (JSON-RPC)
+
+### Skill
+- `GET /api/skill` - 列出所有Skills
+- `POST /api/skill` - 创建新Skill
+- `POST /api/skill/{id}/approve` - 审批Skill
+- `POST /api/skill/{id}/reject` - 拒绝Skill
+- `GET /api/skill/approval/subscribe` - 订阅审批事件 (SSE)
+
+---
+
+## 九、测试覆盖
+
+| 模块 | 单元测试 | 集成测试 |
+|------|---------|---------|
+| config | 7 | - |
+| protocol | 9 | - |
+| skill | 7 | 4 |
+| tool | 14 | - |
+| agent | - | 3 |
+| **总计** | **37** | **7** |

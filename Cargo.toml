@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/gateway",
-    "crates/channel",
-    "crates/agent",
-    "crates/tool",
-    "crates/provider",
-    "crates/protocol",
-    "crates/config",
-    "crates/storage",
-    "crates/cli",
-    "crates/skill",
+"crates/gateway",
+"crates/channel",
+"crates/agent",
+"crates/tool",
+"crates/provider",
+"crates/protocol",
+"crates/config",
+"crates/storage",
+"crates/cli",
+"crates/skill",
 ]
 
 [workspace.package]
@@ -54,3 +54,25 @@ tokio-process = "0.3"
 
 # Directories
 dirs = "5.0"
+
+# Testing
+tempfile = "3.8"
+reqwest = { version = "0.11", features = ["json"] }
+
+[package]
+name = "rustclaw"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rustclaw-gateway = { path = "crates/gateway" }
+rustclaw-agent = { path = "crates/agent" }
+rustclaw-skill = { path = "crates/skill" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true }
