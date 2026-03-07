@@ -187,7 +187,8 @@ impl LlmProvider for OpenAiProvider {
             stream: false,
         };
 
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/chat/completions", base);
         
         let response = self.client
             .post(&url)
@@ -249,7 +250,8 @@ impl LlmProvider for OpenAiProvider {
             stream: true,
         };
 
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/chat/completions", base);
         let client = self.client.clone();
         let api_key = self.api_key.clone();
         

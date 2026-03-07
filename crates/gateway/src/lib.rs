@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::convert::Infallible;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
 use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};

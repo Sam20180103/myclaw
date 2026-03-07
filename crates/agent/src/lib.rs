@@ -94,10 +94,14 @@ impl SessionManager {
         if let Some(session) = self.sessions.read().get(key) {
             let mut session = session.clone();
             session.last_accessed = Instant::now();
+            session.key = key.to_string();
             self.sessions.write().insert(key.to_string(), session.clone());
             return session;
         }
-        self.create(channel, lane)
+        let mut session = self.create(channel, lane);
+        session.key = key.to_string();
+        self.sessions.write().insert(key.to_string(), session.clone());
+        session
     }
 
     pub fn add_message(&self, key: &str, message: Message) {

@@ -1,0 +1,33 @@
+[gateway]
+host = "127.0.0.1"
+port = 18789
+device_id = "afb17257-9475-4bdf-b436-40053d88a28f"
+
+[gateway.auth]
+require_pairing = true
+allowed_devices = []
+
+[agent]
+max_concurrent_sessions = 100
+default_model = "z-ai/glm4.7"
+max_loop_iterations = 100
+tool_timeout_ms = 60000
+
+[tools]
+enabled_tools = [
+    "file_read",
+    "file_write",
+    "shell_exec",
+    "web_search",
+]
+disabled_tools = []
+require_approval = ["shell_exec"]
+sandbox_enabled = true
+max_memory_mb = 512
+max_timeout_ms = 30000
+
+[[providers]]
+name = "nvidia"
+provider_type = "openai"
+base_url = "https://integrate.api.nvidia.com/v1"
+default_model = "z-ai/glm4.7"
