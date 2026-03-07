@@ -104,10 +104,15 @@ impl Gateway {
                 std::env::var("OPENAI_API_KEY").ok()
             });
             
+            info!("Provider config: name={}, type={}, model={:?}, base_url={:?}", 
+                p.name, p.provider_type, p.default_model, p.base_url);
+            
             if let Some(key) = api_key {
                 let provider: Arc<dyn LlmProvider> = match p.provider_type.as_str() {
                     "openai" | "nvidia" => {
                         let model = p.default_model.as_deref().unwrap_or("gpt-4o");
+                        info!("Creating OpenAI provider: model={}, base_url={}", 
+                            model, p.base_url.as_deref().unwrap_or("https://api.openai.com"));
                         Arc::new(
                             OpenAiProvider::new(key, model)
                                 .with_base_url(p.base_url.as_deref().unwrap_or("https://api.openai.com"))
@@ -122,6 +127,7 @@ impl Gateway {
                 return ProviderClient::new(Some(provider));
             }
         }
+        warn!("No provider configured - API key missing or no providers defined");
         ProviderClient::new(None)
     }
 
