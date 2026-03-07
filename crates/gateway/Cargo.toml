@@ -26,3 +26,4 @@ rustclaw-protocol = { path = "../protocol" }
 rustclaw-config = { path = "../config" }
 rustclaw-agent = { path = "../agent" }
 rustclaw-skill = { path = "../skill" }
+rustclaw-provider = { path = "../provider" }

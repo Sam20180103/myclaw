@@ -17,6 +17,8 @@ use tracing::{info, error};
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
 use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
 use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequest};
+use rustclaw_config::{Config, ProviderConfig};
+use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
 
 const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
@@ -65,20 +67,62 @@ fn create_approval_stream(
 }
 
 impl Gateway {
-    pub fn new(config: GatewayConfig) -> Self {
-        let agent = AgentRuntime::new(AgentConfig::default());
+    pub fn new(config: Config) -> Self {
+        let provider_client = Self::create_provider_client(&config.providers);
+        
+        let agent_config = AgentConfig {
+            max_loop_iterations: config.agent.max_loop_iterations,
+            tool_timeout_ms: config.agent.tool_timeout_ms,
+            session_ttl_seconds: 3600,
+            max_concurrent_per_lane: config.agent.max_concurrent_sessions,
+        };
+        let agent = AgentRuntime::new(agent_config)
+            .with_provider(provider_client);
+
+        let gateway_config = GatewayConfig {
+            host: config.gateway.host,
+            port: config.gateway.port,
+            device_id: config.gateway.device_id,
+        };
         let skill_manager = SkillManager::new(SkillConfig::default());
         let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
 
         let skill_manager = Arc::new(skill_manager);
 
         Self {
-            config,
+            config: gateway_config,
             sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))),
             agent: Arc::new(agent),
             skill_manager,
             approval_broadcaster: approval_tx,
         }
+    }
+
+    fn create_provider_client(providers: &[ProviderConfig]) -> ProviderClient {
+        for p in providers {
+            let api_key = p.api_key.clone().or_else(|| {
+                std::env::var("OPENAI_API_KEY").ok()
+            });
+            
+            if let Some(key) = api_key {
+                let provider: Arc<dyn LlmProvider> = match p.provider_type.as_str() {
+                    "openai" | "nvidia" => {
+                        let model = p.default_model.as_deref().unwrap_or("gpt-4o");
+                        Arc::new(
+                            OpenAiProvider::new(key, model)
+                                .with_base_url(p.base_url.as_deref().unwrap_or("https://api.openai.com"))
+                        )
+                    }
+                    "anthropic" => {
+                        let model = p.default_model.as_deref().unwrap_or("claude-3-5-sonnet-20241022");
+                        Arc::new(AnthropicProvider::new(key, model))
+                    }
+                    _ => continue,
+                };
+                return ProviderClient::new(Some(provider));
+            }
+        }
+        ProviderClient::new(None)
     }
 
     pub fn with_agent(mut self, agent: Arc<AgentRuntime>) -> Self {

@@ -15,11 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load(None)?;
     
-    let gateway = Gateway::new(rustclaw_gateway::GatewayConfig {
-        host: config.gateway.host,
-        port: config.gateway.port,
-        device_id: config.gateway.device_id,
-    });
+    let gateway = Gateway::new(config);
 
     gateway.start().await?;
 
