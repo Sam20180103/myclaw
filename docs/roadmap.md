@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.2.5
+> 版本: v0.3.0
 > 日期: 2026-03-07
-> 状态: Phase 1-5 完成，API文档完善
+> 状态: Phase 1-5 完成，OpenCode工具集成完成
 
 ---
 
@@ -15,6 +15,7 @@
 | Phase 3 | 工具系统 | 2-3周 | ✅ 完成 |
 | Phase 4 | 动态 Skill | 2周 | ✅ 完成 |
 | Phase 5 | 测试与优化 | 1周 | ✅ 完成 |
+| Phase 6 | OpenCode工具集成 | 1天 | ✅ 完成 |
 
 **预计总周期: 9-12 周**
 
@@ -94,6 +95,7 @@
 | | | - 内置工具自动注册 | ✅ |
 | 3.3 | 内置工具 | - 文件读写工具 | ✅ |
 | | | - Shell 执行工具 | ✅ |
+| | | - OpenCode生成工具 | ✅ |
 | 3.4 | 工具执行 | - ToolExecutor 实现 | ✅ |
 | | | - ToolPolicy 策略 | ✅ |
 | | | - 权限检查 | ✅ |
@@ -192,6 +194,29 @@
 
 ---
 
+## Phase 6: OpenCode工具集成
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 6.1 | OpenCodeTool | - Tool trait实现 | ✅ |
+| | | - 参数定义(language, prompt) | ✅ |
+| | | - 执行逻辑(opencode generate) | ✅ |
+| 6.2 | Agent集成 | - 自动注册内置工具 | ✅ |
+| | | - Gateway启动时加载工具 | ✅ |
+| 6.3 | 测试验证 | - 编译通过 | ✅ |
+| | | - 单元测试通过 | ✅ |
+| | | - API调用正常 | ✅ |
+
+### 验收标准
+
+- [x] OpenCodeTool 可以被Agent调用
+- [x] 工具返回生成的代码
+- [x] 支持多种语言(rust/python/javascript/shell)
+
+---
+
 ## 进度记录
 
 | 日期 | Phase | 变更 | 完成度 |
@@ -209,13 +234,14 @@
 | 2026-03-07 | Phase 5.2 | 集成测试覆盖 | 100% |
 | 2026-03-07 | Phase 5.3 | 性能优化(HashMap预分配) | 100% |
 | 2026-03-07 | Phase 4.3 | Skill验证增强 | 100% |
+| 2026-03-07 | Phase 6 | OpenCode工具集成完成 | 100% |
 
 ---
 
 ## 统计
 
-- 总任务数: 50+
-- 已完成: 50
+- 总任务数: 55+
+- 已完成: 55
 - 进行中: 0
 - 待开始: 0
 
@@ -228,7 +254,7 @@
 
 ## 当前功能状态
 
-### 已实现 (v0.2.1)
+### 已实现 (v0.3.0)
 - ✅ Gateway HTTP 服务器
 - ✅ JSON-RPC 协议处理
 - ✅ Session 管理 (创建/获取/删除/TTL清理)
@@ -236,8 +262,10 @@
 - ✅ Agent 循环逻辑 (process, process_with_loop, process_stream)
 - ✅ OpenAI Provider (完整API调用 + 流式)
 - ✅ Anthropic Provider (完整API调用 + 流式)
+- ✅ NVIDIA NIM Provider支持 (OpenAI兼容)
 - ✅ Tool Registry (注册/执行)
-- ✅ 内置工具 (file_read, file_write, shell_exec)
+- ✅ 内置工具 (file_read, file_write, shell_exec, opencode_generate)
+- ✅ OpenCode生成工具 (自动调用OpenCode CLI生成代码)
 - ✅ Tool Policy (权限检查/审批列表)
 - ✅ SandboxExecutor (超时/危险命令检测)
 - ✅ TOML 配置加载
@@ -277,9 +305,10 @@
 | v0.2.3 | 2026-03-07 | 性能优化(HashMap预分配、Vec预分配) |
 | v0.2.4 | 2026-03-07 | Skill验证增强(名称检查、危险模式检测) |
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
+| v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持 |
 
 ### 待完善
-- ⏳ 版本发布
+- 无 (核心功能已完成)
 
 ---
 

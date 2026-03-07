@@ -195,11 +195,13 @@ impl Clone for Lane {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Self {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_builtin_tools();
         Self {
             config: config.clone(),
             session_manager: SessionManager::new(100, config.session_ttl_seconds),
             lane_router: LaneRouter::new(config.max_concurrent_per_lane),
-            tool_registry: Arc::new(ToolRegistry::new()),
+            tool_registry: registry,
             provider_client: ProviderClient::new(None),
         }
     }

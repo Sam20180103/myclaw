@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.2.5
+> 版本: v0.3.0
 > 日期: 2026-03-07
-> 状态: 功能完成，API文档完善
+> 状态: 核心功能完成，OpenCode工具集成完成
 
 ---
 
@@ -377,7 +377,7 @@ struct SandboxConfig {
 
 - [x] Tool trait 定义
 - [x] 工具注册表
-- [x] 内置工具实现
+- [x] 内置工具实现 (file_read, file_write, shell_exec, opencode_generate)
 - [x] 沙箱执行器
 - [x] 工具策略引擎
 
@@ -398,6 +398,12 @@ struct SandboxConfig {
 - [x] Skill验证增强
 - [x] API文档完善
 
+### Phase 6: OpenCode工具集成 (1天) ✅ 完成
+
+- [x] OpenCodeTool 实现
+- [x] Agent自动注册内置工具
+- [x] NVIDIA Provider支持
+
 ---
 
 ## 七、版本历史
@@ -410,6 +416,7 @@ struct SandboxConfig {
 | v0.2.3 | 2026-03-07 | 性能优化(HashMap预分配、Vec预分配) |
 | v0.2.4 | 2026-03-07 | Skill验证增强(名称检查、危险模式检测) |
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
+| v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持、配置修复 |
 
 ---
 

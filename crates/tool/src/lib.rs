@@ -237,11 +237,100 @@ impl Tool for ShellExecTool {
     }
 }
 
+pub struct OpenCodeTool {
+    opencode_path: String,
+    timeout_seconds: u64,
+}
+
+impl Default for OpenCodeTool {
+    fn default() -> Self {
+        let opencode_path = std::env::var("OPENCODE_PATH")
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(".opencode/bin/opencode")
+                    .canonicalize()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "opencode".to_string())
+            });
+        Self {
+            opencode_path,
+            timeout_seconds: 120,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for OpenCodeTool {
+    fn name(&self) -> &str {
+        "opencode_generate"
+    }
+
+    fn description(&self) -> &str {
+        "Generate code using OpenCode AI. Use this when you need to create new code files, functions, or scripts based on user requirements."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "opencode_generate".to_string(),
+            description: "Generate code using OpenCode AI".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "description": "Programming language: rust, python, javascript, shell, typescript"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Description of what code to generate"
+                    }
+                },
+                "required": ["language", "prompt"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let language = params
+            .get("language")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'language' parameter".to_string()))?;
+
+        let prompt = params
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'prompt' parameter".to_string()))?;
+
+        let output = tokio::process::Command::new(&self.opencode_path)
+            .arg("generate")
+            .arg("--language")
+            .arg(language)
+            .arg("--prompt")
+            .arg(prompt)
+            .output()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to run opencode: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ToolError::ExecutionFailed(format!("OpenCode error: {}", stderr)));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+        Ok(serde_json::json!({
+            "success": true,
+            "code": stdout,
+            "language": language
+        }))
+    }
+}
+
 impl ToolRegistry {
     pub fn register_builtin_tools(&self) {
         self.register(Arc::new(FileReadTool));
         self.register(Arc::new(FileWriteTool));
         self.register(Arc::new(ShellExecTool::default()));
+        self.register(Arc::new(OpenCodeTool::default()));
     }
 
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {
