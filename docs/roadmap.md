@@ -405,6 +405,33 @@
 - [x] start/stop/restart 命令可用
 - [x] 所有子命令层级正常
 
+---
+
+## Phase 8: CLI 进程管理
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 8.1 | 进程检测 | - PID文件管理 | ✅ |
+| | | - 进程扫描 (pgrep) | ✅ |
+| 8.2 | 进程启动 | - 前台启动 | ✅ |
+| | | - 后台启动 (--detach) | ✅ |
+| | | - 指定端口/配置 | ✅ |
+| 8.3 | 进程停止 | - 正常停止 (SIGTERM) | ✅ |
+| | | - 强制停止 (SIGKILL) | ✅ |
+| 8.4 | 进程重启 | - stop + start | ✅ |
+| 8.5 | 状态查询 | - 运行状态检测 | ✅ |
+| | | - 健康检查集成 | ✅ |
+
+### 验收标准
+
+- [x] `rustclaw status` 正确检测Gateway运行状态
+- [x] `rustclaw start` 启动Gateway
+- [x] `rustclaw stop` 停止Gateway
+- [x] `rustclaw restart` 重启Gateway
+- [x] `rustclaw health` 显示健康状态
+
 ### CLI 命令统计
 
 | 分类 | 命令数 |

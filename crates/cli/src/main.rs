@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
+use std::fs;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+const PID_FILE: &str = "rustclaw.pid";
 
 #[derive(Parser)]
 #[command(name = "rustclaw")]
@@ -12,7 +16,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the RustClaw gateway server
     Start {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -22,12 +25,16 @@ enum Commands {
         
         #[arg(long)]
         config: Option<PathBuf>,
+        
+        #[arg(long)]
+        detach: bool,
+        
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
     
-    /// Stop the RustClaw gateway server
     Stop,
     
-    /// Restart the RustClaw gateway server
     Restart,
     
     /// Configuration management
@@ -413,22 +420,184 @@ enum OpenCodeSessionsSubcommands {
     },
 }
 
+fn get_pid_path() -> PathBuf {
+    let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join(PID_FILE)
+}
+
+fn get_gateway_binary() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("rustclaw-gateway")))
+        .unwrap_or_else(|| PathBuf::from("rustclaw-gateway"))
+}
+
+fn is_gateway_running() -> bool {
+    let pid_path = get_pid_path();
+    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            if kill_process(pid, 0).is_ok() {
+                return true;
+            }
+        }
+    }
+    
+    if let Ok(output) = Command::new("pgrep").arg("-f").arg("rustclaw-gateway").output() {
+        return output.status.success();
+    }
+    
+    false
+}
+
+fn kill_process(pid: u32, signal: i32) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .arg(format!("-{}", signal))
+            .arg(format!("{}", pid))
+            .status()
+            .map(|_| ())
+    }
+    #[cfg(not(unix))]
+    {
+        Command::new("taskkill")
+            .arg(format!("/PID {}", pid))
+            .status()
+            .map(|_| ())
+    }
+}
+
+fn save_pid(pid: u32) -> Result<(), std::io::Error> {
+    let pid_path = get_pid_path();
+    if let Some(parent) = pid_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(pid_path, pid.to_string())
+}
+
+fn remove_pid() -> Result<(), std::io::Error> {
+    let pid_path = get_pid_path();
+    fs::remove_file(pid_path)
+}
+
+fn start_gateway(host: &str, port: u16, config: Option<PathBuf>, detach: bool, log: Option<PathBuf>) -> anyhow::Result<()> {
+    if is_gateway_running() {
+        anyhow::bail!("Gateway is already running");
+    }
+    
+    let gateway_bin = get_gateway_binary();
+    
+    if !gateway_bin.exists() {
+        anyhow::bail!("Gateway binary not found: {}", gateway_bin.display());
+    }
+    
+    let mut cmd = Command::new(&gateway_bin);
+    cmd.arg("--host").arg(host)
+       .arg("--port").arg(port.to_string());
+    
+    if let Some(cfg) = config {
+        cmd.arg("--config").arg(cfg);
+    }
+    
+    if let Some(log_path) = log {
+        cmd.arg("--log").arg(log_path);
+    }
+    
+    if detach {
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        
+        let child = cmd.spawn()?;
+        
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        
+        if is_gateway_running() {
+            save_pid(child.id())?;
+            println!("Gateway started in background");
+        } else {
+            anyhow::bail!("Failed to start gateway");
+        }
+    } else {
+        cmd.status()?;
+    }
+    
+    Ok(())
+}
+
+fn stop_gateway() -> anyhow::Result<()> {
+    let pid_path = get_pid_path();
+    
+    if !pid_path.exists() {
+        println!("Gateway is not running (no PID file)");
+        return Ok(());
+    }
+    
+    let pid_str = fs::read_to_string(&pid_path)?;
+    let pid: u32 = pid_str.trim().parse()?;
+    
+    println!("Stopping gateway (PID: {})...", pid);
+    
+    kill_process(pid, 15)?;
+    
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    
+    if !is_gateway_running() {
+        let _ = remove_pid();
+        println!("Gateway stopped");
+    } else {
+        let _ = kill_process(pid, 9);
+        let _ = remove_pid();
+        println!("Gateway force killed");
+    }
+    
+    Ok(())
+}
+
+fn restart_gateway() -> anyhow::Result<()> {
+    println!("Restarting gateway...");
+    let _ = stop_gateway();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start_gateway("127.0.0.1", 18789, None, false, None)
+}
+
+fn show_status() {
+    if is_gateway_running() {
+        let pid_path = get_pid_path();
+        let pid = fs::read_to_string(&pid_path).unwrap_or_default();
+        println!("RustClaw Gateway: running (PID: {})", pid.trim());
+        println!("URL: http://127.0.0.1:18789");
+    } else {
+        println!("RustClaw Gateway: stopped");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { host, port, config } => {
-            println!("Starting RustClaw on {}:{}", host, port);
-            if let Some(config_path) = config {
-                println!("Using config: {}", config_path.display());
+        Commands::Start { host, port, config, detach, log } => {
+            if is_gateway_running() {
+                println!("Gateway is already running. Use 'rustclaw restart' to restart.");
+            } else {
+                start_gateway(&host, port, config, detach, log)?;
+                if !detach {
+                    println!("Gateway started on {}:{}", host, port);
+                }
             }
         }
         Commands::Stop => {
-            println!("Stopping RustClaw gateway...");
+            stop_gateway()?;
         }
         Commands::Restart => {
-            println!("Restarting RustClaw gateway...");
+            restart_gateway()?;
+            println!("Gateway restarted");
         }
         Commands::Config { show, path, get, set } => {
             if path {
@@ -468,11 +637,27 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Gateway { subcommand } => {
             match subcommand {
-                Some(GatewaySubcommands::Status) => println!("Gateway: running"),
-                Some(GatewaySubcommands::Start) => println!("Starting gateway..."),
-                Some(GatewaySubcommands::Stop) => println!("Stopping gateway..."),
-                Some(GatewaySubcommands::Restart) => println!("Restarting gateway..."),
-                Some(GatewaySubcommands::Health) => println!("Gateway health: ok"),
+                Some(GatewaySubcommands::Status) => show_status(),
+                Some(GatewaySubcommands::Start) => {
+                    if is_gateway_running() {
+                        println!("Gateway is already running");
+                    } else {
+                        start_gateway("127.0.0.1", 18789, None, false, None)?;
+                        println!("Gateway started");
+                    }
+                }
+                Some(GatewaySubcommands::Stop) => stop_gateway()?,
+                Some(GatewaySubcommands::Restart) => {
+                    restart_gateway()?;
+                    println!("Gateway restarted");
+                }
+                Some(GatewaySubcommands::Health) => {
+                    if is_gateway_running() {
+                        println!("Gateway health: ok");
+                    } else {
+                        println!("Gateway health: not running");
+                    }
+                }
                 Some(GatewaySubcommands::Call { method, body }) => {
                     println!("Calling gateway: {} with body: {:?}", method, body);
                 }
@@ -559,17 +744,20 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Health { verbose } => {
-            if verbose {
-                println!("Detailed health check...");
+            if is_gateway_running() {
+                if verbose {
+                    println!("Detailed health check...");
+                } else {
+                    println!("Health: ok");
+                }
             } else {
-                println!("Health: ok");
+                println!("Health: gateway not running");
             }
         }
         Commands::Status { detailed } => {
+            show_status();
             if detailed {
-                println!("Detailed status...");
-            } else {
-                println!("RustClaw: running");
+                println!("CLI version: {}", env!("CARGO_PKG_VERSION"));
             }
         }
         Commands::Security { subcommand } => {

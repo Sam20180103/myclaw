@@ -611,7 +611,90 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 
 ---
 
-## 十一、CLI 命令参考
+## 十一、CLI 与 Gateway 关系
+
+### 11.1 架构设计
+
+RustClaw 采用 CLI + Gateway 分离架构：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        rustclaw (CLI)                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │  进程管理    │  │  配置管理    │  │  运维工具   │     │
+│  │  start/stop │  │  config      │  │  doctor     │     │
+│  │  restart    │  │  models      │  │  logs       │     │
+│  │  status     │  │  providers   │  │  security   │     │
+│  └──────┬───────┘  └──────────────┘  └──────────────┘     │
+│         │                                                     │
+│         ▼                                                     │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │              进程管理 (Process Manager)                │  │
+│  │  • PID 文件: ~/.local/share/rustclaw.pid             │  │
+│  │  • 进程检测: pgrep -f rustclaw-gateway              │  │
+│  │  • 信号控制: SIGTERM (15) → SIGKILL (9)             │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   rustclaw-gateway (Gateway)                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   HTTP Server │  │  WebSocket   │  │  Agent Loop  │     │
+│  │   :18789     │  │  ws://...    │  │  Tool Exec   │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 二进制文件
+
+| 二进制 | 路径 | 作用 |
+|--------|------|------|
+| `rustclaw` | CLI | 命令行工具，管理Gateway |
+| `rustclaw-gateway` | Gateway | 核心服务，运行AI Agent |
+
+### 11.3 启动方式
+
+```bash
+# 方式1: 通过CLI管理 (推荐)
+rustclaw start           # 启动Gateway
+rustclaw stop            # 停止Gateway
+rustclaw restart         # 重启Gateway
+rustclaw status          # 查看状态
+
+# 方式2: 直接运行Gateway
+rustclaw-gateway --host 127.0.0.1 --port 18789
+```
+
+### 11.4 进程检测
+
+CLI 通过以下方式检测Gateway是否运行：
+1. **PID文件**: `~/.local/share/rustclaw.pid`
+2. **进程扫描**: `pgrep -f rustclaw-gateway`
+
+### 11.5 常用命令
+
+```bash
+# 启动
+rustclaw start                      # 前台启动
+rustclaw start --detach             # 后台启动
+rustclaw start --port 8080         # 指定端口
+
+# 停止
+rustclaw stop                       # 正常停止 (SIGTERM)
+rustclaw stop --force               # 强制停止 (SIGKILL)
+
+# 重启
+rustclaw restart                    # 重启Gateway
+
+# 状态
+rustclaw status                    # 查看运行状态
+rustclaw health                    # 健康检查
+```
+
+---
+
+## 十二、CLI 命令参考
 
 ### 11.1 命令结构
 

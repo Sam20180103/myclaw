@@ -51,28 +51,51 @@ cargo build --release
 
 ### 运行
 
+RustClaw 由两个二进制文件组成：
+
+| 二进制 | 说明 |
+|--------|------|
+| `rustclaw` | CLI 命令行工具 |
+| `rustclaw-gateway` | Gateway 核心服务 |
+
 ```bash
-cargo run -p rustclaw-cli -- start
+# 构建
+cargo build --release
+
+# 启动 Gateway (通过CLI)
+./target/release/rustclaw start
+
+# 或直接运行 Gateway
+./target/release/rustclaw-gateway
 ```
 
 默认端口: `127.0.0.1:18789`
 
 ## CLI 命令
 
-### 基本命令
+### 服务管理
 
 ```bash
 # 查看帮助
 rustclaw --help
 
 # 启动/停止/重启网关
-rustclaw start
-rustclaw stop
-rustclaw restart
+rustclaw start              # 启动 Gateway
+rustclaw start --detach    # 后台启动
+rustclaw start --port 8080 # 指定端口
+rustclaw stop               # 停止 Gateway
+rustclaw restart            # 重启 Gateway
 
-# 指定端口
-rustclaw start --port 8080
+# 状态检查
+rustclaw status            # 查看运行状态
+rustclaw status --detailed # 详细状态
+rustclaw health            # 健康检查
+rustclaw health --verbose  # 详细健康
+```
 
+### 配置管理
+
+```bash
 # 配置管理
 rustclaw config --show
 rustclaw config --path
