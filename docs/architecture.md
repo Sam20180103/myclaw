@@ -912,4 +912,217 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 ---
 
-*文档版本: v0.3.0*
+## 十五、Agent-Reach 集成设计
+
+### 15.1 概述
+
+Agent-Reach 是一个互联网平台访问工具集，为 AI Agent 提供多平台数据读取和搜索能力。本项目计划将其核心能力以 Rust 原生工具形式集成。
+
+**参考**: https://github.com/Panniantong/Agent-Reach
+
+### 15.2 支持的平台
+
+| 平台 | 能力 | 实现方式 |
+|------|------|----------|
+| Web | 读取任意网页 | Jina Reader (免费无API Key) |
+| YouTube | 字幕提取 + 视频搜索 | yt-dlp CLI |
+| RSS | RSS/Atom 订阅阅读 | feedparser |
+| GitHub | 仓库读取 + 搜索 | gh CLI |
+| Twitter/X | 推文读取、搜索、时间线 | xreach CLI |
+| Bilibili | 字幕 + 搜索 | yt-dlp + 代理 |
+| Reddit | 搜索 + 帖子读取 | JSON API + Exa |
+| 小红书 | 阅读、搜索、发帖 | mcporter MCP |
+| 抖音 | 视频解析 + 下载 | douyin-mcp-server |
+| LinkedIn | Profile + 公司页面 | linkedin-mcp |
+| Boss直聘 | 职位搜索 | mcp-bosszp |
+| 微信公众号 | 文章搜索 + 阅读 | camoufox + miku |
+| 微博 | 热搜、用户动态 | Direct API |
+| 小宇宙播客 | 音频转录 | Whisper |
+
+### 15.3 集成架构
+
+```
+RustClaw Tool System
+├── crates/tool/src/tools/
+│   ├── web_reach.rs       # Web读取 (Jina Reader)
+│   ├── video_reach.rs     # YouTube/Bilibili (yt-dlp)
+│   ├── social_reach.rs    # Twitter/Reddit/微博
+│   ├── github_reach.rs    # GitHub (gh CLI)
+│   ├── feed_reach.rs      # RSS/Atom
+│   ├── xhs_reach.rs       # 小红书 (MCP bridge)
+│   ├── douyin_reach.rs    # 抖音 (MCP bridge)
+│   └── search_reach.rs    # Exa语义搜索
+```
+
+### 15.4 工具实现示例
+
+#### WebReachTool
+
+```rust
+pub struct WebReachTool {
+    client: reqwest::Client,
+    endpoint: String, // https://r.jina.ai
+}
+
+impl Tool for WebReachTool {
+    fn name(&self) -> &str { "web_reach" }
+    
+    fn execute(&self, params: Value) -> Result<Value, ToolError> {
+        let url = params["url"].as_str().ok_or(ToolError::MissingParam)?;
+        let jina_url = format!("{}/{}", self.endpoint, url);
+        // 获取并返回Markdown内容
+    }
+}
+```
+
+#### VideoReachTool
+
+```rust
+pub struct VideoReachTool {
+    executor: SandboxExecutor,
+    yt_dlp_path: PathBuf,
+}
+
+impl Tool for VideoReachTool {
+    fn name(&self) -> &str { "video_reach" }
+    
+    fn execute(&self, params: Value) -> Result<Value, ToolError> {
+        let url = params["url"].as_str().ok_or(ToolError::MissingParam)?;
+        let cmd = format!("{} --dump-json --write-sub --skip-download \"{}\"", 
+            self.yt_dlp_path.display(), url);
+        self.executor.execute_command(&cmd).await
+    }
+}
+```
+
+### 15.5 MCP 桥接架构
+
+对于需要 MCP 服务器的平台（小红书、抖音、LinkedIn）：
+
+```rust
+pub struct McpClient {
+    endpoint: String,
+    client: reqwest::Client,
+}
+
+impl McpClient {
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": uuid::Uuid::new_v4()
+        });
+        self.client.post(&self.endpoint).json(&request).send().await?.json().await
+    }
+}
+```
+
+### 15.6 配置 Schema
+
+```toml
+[reach]
+enabled = true
+
+[reach.web]
+endpoint = "https://r.jina.ai"
+timeout_ms = 30000
+
+[reach.video]
+yt_dlp_path = "/usr/bin/yt-dlp"
+timeout_ms = 60000
+
+[reach.twitter]
+xreach_path = "/usr/local/bin/xreach"
+cookie_file = "~/.rustclaw/credentials/twitter.json"
+
+[reach.search]
+mcp_endpoint = "http://127.0.0.1:8080/mcp"
+```
+
+### 15.7 安全设计
+
+#### 沙箱执行
+
+所有外部 CLI 调用通过 `SandboxExecutor`：
+- 超时: 视频60s, Web30s, 搜索10s
+- 内存限制: 512MB
+- 禁止模式: `rm -rf`, fork bombs 等
+
+#### 凭据管理
+
+- Cookie 存储在 `~/.rustclaw/credentials/`
+- 文件权限: 600 (仅所有者可读写)
+- MCP 端点仅本地绑定 (127.0.0.1)
+
+#### 速率限制
+
+```rust
+pub struct RateLimiter {
+    requests_per_minute: u32,
+    burst_capacity: u32,
+}
+
+// Twitter: 30 req/min, burst 10
+// Reddit: 60 req/min, burst 20
+// Web: 120 req/min, burst 30
+```
+
+### 15.8 实现优先级
+
+| Phase | 功能 | 优先级 |
+|-------|------|--------|
+| Phase 11 | WebReachTool (Jina Reader) | P0 |
+| Phase 11 | VideoReachTool (yt-dlp) | P0 |
+| Phase 11 | GitHubReachTool (gh CLI) | P0 |
+| Phase 11 | FeedReachTool (RSS) | P0 |
+| Phase 12 | TwitterReachTool (xreach) | P1 |
+| Phase 12 | RedditReachTool (JSON API) | P1 |
+| Phase 12 | WeiboReachTool (Direct API) | P1 |
+| Phase 13 | McpClient 实现 | P1 |
+| Phase 13 | XhsReachTool (小红书) | P1 |
+| Phase 13 | DouyinReachTool (抖音) | P1 |
+| Phase 13 | SearchReachTool (Exa) | P1 |
+| Phase 14 | LinkedInReachTool | P2 |
+| Phase 14 | WeChatReachTool | P2 |
+| Phase 14 | BossZhipinReachTool | P2 |
+| Phase 14 | PodcastReachTool (小宇宙) | P2 |
+
+### 15.9 依赖项
+
+```toml
+[dependencies]
+# RSS解析
+feed-rs = "1.4"
+
+# MCP客户端
+jsonrpc-client-transports = "0.6"
+
+# 速率限制
+governor = "0.6"
+```
+
+### 15.10 测试策略
+
+每个工具需要：
+1. Mock 后端测试 (模拟 HTTP 响应)
+2. 参数验证测试
+3. 错误处理测试
+
+集成测试：
+```rust
+#[tokio::test]
+async fn test_web_reach_integration() {
+    let tool = WebReachTool::new(Default::default());
+    let result = tool.execute(json!({"url": "https://example.com"})).await;
+    assert!(result.is_ok());
+}
+```
+
+### 15.11 设计文档
+
+详细设计文档位于: `/usr/local/project/lab/myclaw_desigh/AGENTS.md`
+
+---
+
+*文档版本: v0.4.0*

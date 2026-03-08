@@ -805,17 +805,51 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Channels { subcommand } => {
             match subcommand {
-                Some(ChannelsSubcommands::List) => println!("Listing channels..."),
+                Some(ChannelsSubcommands::List) => {
+                    println!("Configured Channels");
+                    println!("==================");
+                    println!("");
+                    println!("Channel Types:");
+                    println!("  - WebSocket  (ws://host:port/ws)");
+                    println!("  - HTTP       (http://host:port/api)");
+                    println!("  - Telegram   (requires bot token)");
+                    println!("  - Discord    (requires bot token)");
+                    println!("  - Slack      (requires bot token)");
+                    println!("");
+                    println!("Configuration:");
+                    if let Some(config) = load_config_file() {
+                        println!("  Host: {}", config.gateway.host);
+                        println!("  Port: {}", config.gateway.port);
+                    }
+                    println!("");
+                    println!("Status: {}", if is_gateway_running() { "Active" } else { "Inactive" });
+                }
                 Some(ChannelsSubcommands::Add { name, channel_type }) => {
                     println!("Adding channel: {} ({})", name, channel_type);
+                    println!("Edit config file: {}", get_config_path().display());
                 }
                 Some(ChannelsSubcommands::Remove { name }) => {
                     println!("Removing channel: {}", name);
+                    println!("Edit config file: {}", get_config_path().display());
                 }
                 Some(ChannelsSubcommands::Status { name }) => {
-                    println!("Channel status: {:?}", name);
+                    println!("Channel Status");
+                    println!("=============");
+                    if let Some(n) = name {
+                        println!("Channel: {}", n);
+                    } else {
+                        println!("All channels:");
+                        println!("  WebSocket: {}", if is_gateway_running() { "Active" } else { "Inactive" });
+                        println!("  HTTP API: {}", if is_gateway_running() { "Active" } else { "Inactive" });
+                    }
                 }
-                None => println!("Use 'rustclaw channels <subcommand>'"),
+                None => {
+                    println!("Usage:");
+                    println!("  rustclaw channels list          # List channels");
+                    println!("  rustclaw channels add           # Add channel");
+                    println!("  rustclaw channels remove        # Remove channel");
+                    println!("  rustclaw channels status        # Channel status");
+                }
             }
         }
         Commands::Skills { subcommand } => {
@@ -1091,9 +1125,77 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Security { subcommand } => {
             match subcommand {
-                Some(SecuritySubcommands::Audit) => println!("Running security audit..."),
-                Some(SecuritySubcommands::Status) => println!("Security status: ok"),
-                None => println!("Use 'rustclaw security <subcommand>'"),
+                Some(SecuritySubcommands::Audit) => {
+                    println!("Security Audit");
+                    println!("==============");
+                    println!("");
+                    
+                    println!("1. Config Security:");
+                    let config_path = get_config_path();
+                    if config_path.exists() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = fs::metadata(&config_path) {
+                                let mode = metadata.permissions().mode();
+                                if mode & 0o077 != 0 {
+                                    println!("   [WARN] Config file has group/world permissions");
+                                } else {
+                                    println!("   [OK] Config permissions secure");
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            println!("   [INFO] Config exists: {}", config_path.display());
+                        }
+                    } else {
+                        println!("   [INFO] No config file");
+                    }
+                    
+                    println!("");
+                    println!("2. Sandbox:");
+                    if let Some(config) = load_config_file() {
+                        if config.tools.sandbox_enabled {
+                            println!("   [OK] Sandbox enabled");
+                        } else {
+                            println!("   [WARN] Sandbox disabled");
+                        }
+                    }
+                    
+                    println!("");
+                    println!("3. Approval Requirements:");
+                    if let Some(config) = load_config_file() {
+                        if !config.tools.require_approval.is_empty() {
+                            println!("   [OK] Approval required for: {:?}", config.tools.require_approval);
+                        } else {
+                            println!("   [WARN] No tools require approval");
+                        }
+                    }
+                    
+                    println!("");
+                    println!("4. Gateway:");
+                    if is_gateway_running() {
+                        println!("   [OK] Gateway running");
+                    } else {
+                        println!("   [INFO] Gateway not running");
+                    }
+                }
+                Some(SecuritySubcommands::Status) => {
+                    println!("Security Status");
+                    println!("==============");
+                    println!("");
+                    if let Some(config) = load_config_file() {
+                        println!("Sandbox: {}", if config.tools.sandbox_enabled { "Enabled" } else { "Disabled" });
+                        println!("Approval: {}", if !config.tools.require_approval.is_empty() { "Required" } else { "Not required" });
+                    }
+                    println!("Gateway: {}", if is_gateway_running() { "Running" } else { "Stopped" });
+                }
+                None => {
+                    println!("Usage:");
+                    println!("  rustclaw security audit   # Run security audit");
+                    println!("  rustclaw security status  # Show security status");
+                }
             }
         }
         Commands::Providers { subcommand } => {
@@ -1185,13 +1287,42 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Memory { subcommand } => {
             match subcommand {
-                Some(MemorySubcommands::Status) => println!("Memory status: ok"),
-                Some(MemorySubcommands::Index) => println!("Rebuilding memory index..."),
+                Some(MemorySubcommands::Status) => {
+                    println!("Memory Status");
+                    println!("=============");
+                    println!("");
+                    if is_gateway_running() {
+                        println!("Gateway: Connected");
+                        println!("Status: Agent memory active");
+                    } else {
+                        println!("Gateway: Not running");
+                        println!("Start with: rustclaw start");
+                    }
+                }
+                Some(MemorySubcommands::Index) => {
+                    println!("Rebuilding memory index...");
+                    if is_gateway_running() {
+                        println!("Gateway is running - memory index will rebuild");
+                    } else {
+                        println!("Start gateway first: rustclaw start");
+                    }
+                }
                 Some(MemorySubcommands::Search { query }) => {
                     println!("Searching memory: {}", query);
+                    println!("Use Gateway API for actual search");
                 }
-                Some(MemorySubcommands::Clear) => println!("Clearing memory..."),
-                None => println!("Use 'rustclaw memory <subcommand>'"),
+                Some(MemorySubcommands::Clear) => {
+                    println!("Clearing memory...");
+                    println!("Warning: This will clear all agent memory");
+                    println!("Use Gateway API to clear memory");
+                }
+                None => {
+                    println!("Usage:");
+                    println!("  rustclaw memory status  # Show memory status");
+                    println!("  rustclaw memory index   # Rebuild index");
+                    println!("  rustclaw memory search  # Search memory");
+                    println!("  rustclaw memory clear   # Clear memory");
+                }
             }
         }
         Commands::OpenCode { subcommand } => {

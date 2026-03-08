@@ -14,6 +14,14 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 - **审批流程**: 用户审批后 Skill 才可使用
 - **Provider 抽象**: 支持多种 LLM 提供商
 - **安全沙箱**: 进程隔离、权限控制、工具策略
+- **Agent-Reach 集成** (规划中): 多平台互联网访问能力
+  - Web 网页读取 (Jina Reader)
+  - YouTube/Bilibili 视频字幕提取 (yt-dlp)
+  - Twitter/Reddit/微博 社交平台读取
+  - GitHub 仓库访问 (gh CLI)
+  - RSS 订阅阅读
+  - 小红书/抖音 MCP 桥接
+  - 语义搜索 (Exa)
 
 ## 系统架构
 
@@ -168,13 +176,17 @@ rustclaw open-code sessions list
 
 ## 开发路线图
 
-- **Phase 1**: 核心框架 (项目初始化、配置系统、Gateway WebSocket 服务器)
-- **Phase 2**: Agent 运行时 (Session 管理、Agent 循环逻辑)
-- **Phase 3**: 工具系统 (Tool trait、注册表、沙箱执行器)
-- **Phase 4**: 动态 Skill (Skill 生成、验证、审批流程)
-- **Phase 5**: 测试与优化
-- **Phase 6**: OpenCode工具集成
-- **Phase 7**: CLI完善 (当前)
+- **Phase 1**: 核心框架 (项目初始化、配置系统、Gateway WebSocket 服务器) ✅
+- **Phase 2**: Agent 运行时 (Session 管理、Agent 循环逻辑) ✅
+- **Phase 3**: 工具系统 (Tool trait、注册表、沙箱执行器) ✅
+- **Phase 4**: 动态 Skill (Skill 生成、验证、审批流程) ✅
+- **Phase 5**: 测试与优化 ✅
+- **Phase 6**: OpenCode工具集成 ✅
+- **Phase 7-10**: CLI完善 ✅
+- **Phase 11**: Agent-Reach 核心工具集成 (规划中)
+- **Phase 12**: 社交平台工具集成 (规划中)
+- **Phase 13**: MCP 桥接集成 (规划中)
+- **Phase 14**: 高级平台工具集成 (规划中)
 
 ## 安全设计
 

@@ -529,4 +529,163 @@
 
 ---
 
-*版本: v0.3.0*
+## Phase 11: Agent-Reach 核心工具集成
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 11.1 | WebReachTool | - Jina Reader API集成 | ⏳ |
+| | | - HTTP客户端配置 | ⏳ |
+| | | - Markdown解析 | ⏳ |
+| | | - 单元测试 | ⏳ |
+| 11.2 | VideoReachTool | - yt-dlp CLI封装 | ⏳ |
+| | | - SandboxExecutor集成 | ⏳ |
+| | | - 字幕提取功能 | ⏳ |
+| | | - 元数据获取 | ⏳ |
+| 11.3 | GitHubReachTool | - gh CLI封装 | ⏳ |
+| | | - 仓库读取功能 | ⏳ |
+| | | - 搜索功能 | ⏳ |
+| | | - 认证管理 | ⏳ |
+| 11.4 | FeedReachTool | - feed-rs依赖添加 | ⏳ |
+| | | - RSS/Atom解析 | ⏳ |
+| | | - 订阅管理 | ⏳ |
+
+### 验收标准
+
+- [ ] WebReachTool 可以读取任意网页
+- [ ] VideoReachTool 可以提取YouTube/Bilibili字幕
+- [ ] GitHubReachTool 可以读取GitHub仓库
+- [ ] FeedReachTool 可以解析RSS订阅
+
+---
+
+## Phase 12: 社交平台工具集成
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 12.1 | TwitterReachTool | - xreach CLI封装 | ⏳ |
+| | | - Cookie认证管理 | ⏳ |
+| | | - 推文读取功能 | ⏳ |
+| | | - 搜索功能 | ⏳ |
+| 12.2 | RedditReachTool | - JSON API集成 | ⏳ |
+| | | - 帖子读取功能 | ⏳ |
+| | | - 搜索功能(Exa) | ⏳ |
+| | | - 代理支持 | ⏳ |
+| 12.3 | WeiboReachTool | - Direct API集成 | ⏳ |
+| | | - 热搜获取 | ⏳ |
+| | | - 用户动态读取 | ⏳ |
+| | | - 搜索功能 | ⏳ |
+| 12.4 | 速率限制 | - RateLimiter实现 | ⏳ |
+| | | - governor依赖 | ⏳ |
+| | | - 平台配置 | ⏳ |
+
+### 验收标准
+
+- [ ] TwitterReachTool 可以读取推文
+- [ ] RedditReachTool 可以搜索帖子
+- [ ] WeiboReachTool 可以获取热搜
+- [ ] 速率限制正常工作
+
+---
+
+## Phase 13: MCP 桥接集成
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 13.1 | McpClient | - jsonrpc依赖添加 | ⏳ |
+| | | - JSON-RPC客户端实现 | ⏳ |
+| | | - 错误处理 | ⏳ |
+| | | - 连接管理 | ⏳ |
+| 13.2 | XhsReachTool | - 小红书MCP桥接 | ⏳ |
+| | | - 笔记读取功能 | ⏳ |
+| | | - 搜索功能 | ⏳ |
+| | | - MCP端点配置 | ⏳ |
+| 13.3 | DouyinReachTool | - 抖音MCP桥接 | ⏳ |
+| | | - 视频解析功能 | ⏳ |
+| | | - 无水印下载链接 | ⏳ |
+| | | - MCP端点配置 | ⏳ |
+| 13.4 | SearchReachTool | - Exa搜索MCP桥接 | ⏳ |
+| | | - 语义搜索功能 | ⏳ |
+| | | - 结果格式化 | ⏳ |
+| | | - 免费Key配置 | ⏳ |
+| 13.5 | 配置管理 | - reach配置schema | ⏳ |
+| | | - 凭据目录管理 | ⏳ |
+| | | - 安全存储 | ⏳ |
+
+### 验收标准
+
+- [ ] McpClient 可以连接MCP服务
+- [ ] XhsReachTool 可以读取小红书笔记
+- [ ] DouyinReachTool 可以解析抖音视频
+- [ ] SearchReachTool 可以进行语义搜索
+
+---
+
+## Phase 14: 高级平台工具集成
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 14.1 | LinkedInReachTool | - LinkedIn MCP桥接 | ⏳ |
+| | | - Profile读取 | ⏳ |
+| | | - 公司页面读取 | ⏳ |
+| | | - 职位搜索 | ⏳ |
+| 14.2 | WeChatReachTool | - 公众号文章读取 | ⏳ |
+| | | - camoufox集成 | ⏳ |
+| | | - miku集成 | ⏳ |
+| | | - 搜索功能 | ⏳ |
+| 14.3 | BossZhipinReachTool | - Boss直聘MCP桥接 | ⏳ |
+| | | - 职位搜索 | ⏳ |
+| | | - 打招呼功能 | ⏳ |
+| | | - MCP端点配置 | ⏳ |
+| 14.4 | PodcastReachTool | - 小宇宙播客集成 | ⏳ |
+| | | - Whisper转录 | ⏳ |
+| | | - 音频处理 | ⏳ |
+| | | - 结果格式化 | ⏳ |
+
+### 验收标准
+
+- [ ] LinkedInReachTool 可以读取Profile
+- [ ] WeChatReachTool 可以读取公众号文章
+- [ ] BossZhipinReachTool 可以搜索职位
+- [ ] PodcastReachTool 可以转录播客
+
+---
+
+## Agent-Reach 集成进度
+
+| Phase | 名称 | 预计周期 | 状态 |
+|-------|------|----------|------|
+| Phase 11 | 核心Reach工具 | 2周 | ⏳ 待开始 |
+| Phase 12 | 社交平台工具 | 1周 | ⏳ 待开始 |
+| Phase 13 | MCP桥接集成 | 2周 | ⏳ 待开始 |
+| Phase 14 | 高级平台工具 | 1周 | ⏳ 待开始 |
+
+**预计总周期: 6周**
+
+---
+
+## 新增依赖
+
+| Crate | 版本 | 用途 |
+|-------|------|------|
+| feed-rs | 1.4 | RSS/Atom解析 |
+| jsonrpc-client-transports | 0.6 | MCP客户端 |
+| governor | 0.6 | 速率限制 |
+
+---
+
+## 设计文档
+
+- Agent-Reach集成设计: `/usr/local/project/lab/myclaw_desigh/AGENTS.md`
+- Agent-Reach源项目: https://github.com/Panniantong/Agent-Reach
+
+---
+
+*版本: v0.4.0*
