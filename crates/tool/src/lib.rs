@@ -239,6 +239,7 @@ impl Tool for ShellExecTool {
 
 pub struct OpenCodeTool {
     opencode_path: String,
+    #[allow(dead_code)]
     timeout_seconds: u64,
 }
 

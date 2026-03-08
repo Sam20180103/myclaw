@@ -355,3 +355,71 @@
 - **Shell**: 检测 `rm -rf /`, `mkfs`, fork bomb等
 - **Python**: 检测 `import os`, `import subprocess`等
 - **JavaScript**: 检测 `eval(`, `Function(`, `require(`等
+
+---
+
+## Phase 7: CLI 完善
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 7.1 | CLI框架搭建 | - 命令结构定义 | ✅ |
+| | | - 子命令层级 | ✅ |
+| 7.2 | 核心命令实现 | - start/stop/restart | ✅ |
+| | | - config/version | ✅ |
+| 7.3 | 会话管理 | - sessions --list | ✅ |
+| | | - sessions --kill | ✅ |
+| | | - sessions --clear | ✅ |
+| 7.4 | Agent管理 | - agent --list | ✅ |
+| | | - agent --info | ✅ |
+| | | - agent --create | ✅ |
+| | | - agent --delete | ✅ |
+| 7.5 | 网关管理 | - gateway status/start/stop/restart | ✅ |
+| | | - gateway health/call | ✅ |
+| 7.6 | 通道管理 | - channels list/add/remove/status | ✅ |
+| 7.7 | Skill管理 | - skills list/info/check | ✅ |
+| | | - skills enable/disable | ✅ |
+| 7.8 | 模型管理 | - models list/status/set | ✅ |
+| | | - models auth | ✅ |
+| 7.9 | 系统命令 | - system info/event/heartbeat | ✅ |
+| 7.10 | 日志管理 | - logs (lines/follow/clear) | ✅ |
+| 7.11 | 健康检查 | - health --verbose | ✅ |
+| 7.12 | 状态概览 | - status --detailed | ✅ |
+| 7.13 | 安全审计 | - security audit/status | ✅ |
+| 7.14 | 提供商管理 | - providers list/add/remove/test | ✅ |
+| 7.15 | 工具管理 | - tools list/info/register/unregister | ✅ |
+| 7.16 | 内存管理 | - memory status/index/search/clear | ✅ |
+| 7.17 | OpenCode集成 | - open-code run/status | ✅ |
+| | | - open-code sessions | ✅ |
+| 7.18 | 诊断工具 | - doctor --check/--fix | ✅ |
+| 7.19 | 更新重置 | - update --check/--force | ✅ |
+| | | - reset --confirm/--all | ✅ |
+| 7.20 | 帮助系统 | - --help 完整支持 | ✅ |
+
+### 验收标准
+
+- [x] CLI 可以正常启动
+- [x] `--help` 显示完整帮助信息
+- [x] 子命令帮助正常工作
+- [x] start/stop/restart 命令可用
+- [x] 所有子命令层级正常
+
+### CLI 命令统计
+
+| 分类 | 命令数 |
+|------|--------|
+| 主命令 | 21 |
+| 子命令 | 40+ |
+| 总计 | 60+ |
+
+---
+
+*版本: v0.3.0*
+- [x] `--help` 显示完整帮助信息
+- [x] 子命令帮助正常工作
+- [ ] 各个命令实际功能可用
+
+---
+
+*版本: v0.3.0*

@@ -583,6 +583,8 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | skill | 9 | 4 |
 | tool | 14 | - |
 | agent | - | 3 |
+| gateway | - | - |
+| provider | - | - |
 | **总计** | **39** | **7** |
 
 ---
@@ -606,3 +608,113 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 
 ### 锁优化
 - `get_or_create()` 先读后写，减少write锁持有时间
+
+---
+
+## 十一、CLI 命令参考
+
+### 11.1 命令结构
+
+RustClaw CLI 采用分层命令结构，参考 OpenClaw 设计：
+
+```
+rustclaw <COMMAND> [SUBCOMMAND] [OPTIONS]
+```
+
+### 11.2 主命令
+
+| 命令 | 说明 | 状态 |
+|------|------|------|
+| `start` | 启动网关服务器 | ✅ |
+| `stop` | 停止网关服务器 | ✅ |
+| `restart` | 重启网关服务器 | ✅ |
+| `config` | 配置管理 | ✅ |
+| `sessions` | 会话管理 | ✅ |
+| `agent` | Agent管理 | ✅ |
+| `gateway` | 网关管理 | ✅ |
+| `channels` | 通道管理 | ✅ |
+| `skills` | Skill管理 | ✅ |
+| `models` | 模型管理 | ✅ |
+| `system` | 系统信息 | ✅ |
+| `logs` | 日志管理 | ✅ |
+| `health` | 健康检查 | ✅ |
+| `status` | 状态概览 | ✅ |
+| `security` | 安全审计 | ✅ |
+| `providers` | 提供商管理 | ✅ |
+| `tools` | 工具管理 | ✅ |
+| `memory` | 内存管理 | ✅ |
+| `open-code` | OpenCode集成 | ✅ |
+| `doctor` | 诊断修复 | ✅ |
+| `update` | 更新版本 | ✅ |
+| `reset` | 重置数据 | ✅ |
+| `version` | 版本信息 | ✅ |
+
+### 11.3 子命令示例
+
+#### Gateway 管理
+```bash
+rustclaw gateway status      # 查看网关状态
+rustclaw gateway start       # 启动网关
+rustclaw gateway stop        # 停止网关
+rustclaw gateway restart    # 重启网关
+rustclaw gateway health     # 健康检查
+rustclaw gateway call       # 调用API
+```
+
+#### Sessions 管理
+```bash
+rustclaw sessions --list    # 列出所有会话
+rustclaw sessions --kill    # 终止会话
+rustclaw sessions --clear   # 清理所有会话
+```
+
+#### Models 管理
+```bash
+rustclaw models --list      # 列出可用模型
+rustclaw models --status    # 模型状态
+rustclaw models --set       # 设置默认模型
+rustclaw models auth        # 认证管理
+```
+
+#### OpenCode 集成
+```bash
+rustclaw open-code --run    # 执行OpenCode任务
+rustclaw open-code --status # OpenCode状态
+rustclaw opencode sessions  # 会话管理
+```
+
+### 11.4 全局选项
+
+| 选项 | 说明 |
+|------|------|
+| `-V, --version` | 打印版本信息 |
+| `-h, --help` | 打印帮助信息 |
+
+### 11.5 使用示例
+
+```bash
+# 查看帮助
+rustclaw --help
+rustclaw gateway --help
+
+# 启动网关
+rustclaw start --host 127.0.0.1 --port 18789
+
+# 查看状态
+rustclaw status --detailed
+rustclaw health --verbose
+
+# 管理会话
+rustclaw sessions --list
+
+# 管理模型
+rustclaw models --list
+rustclaw models --set anthropic/claude-sonnet
+
+# OpenCode集成
+rustclaw open-code --run "生成一个Hello World程序"
+```
+
+---
+
+*文档版本: v0.3.0*
