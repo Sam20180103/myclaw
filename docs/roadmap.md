@@ -481,4 +481,52 @@
 
 ---
 
+## Phase 10: CLI 功能完善
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 10.1 | 服务管理 | - start/stop/restart | ✅ |
+| | | - status/health | ✅ |
+| | | - doctor | ✅ |
+| 10.2 | 配置管理 | - config --show/--path | ✅ |
+| | | - config --get/--set | 🔄 |
+| 10.3 | 模型管理 | - models list/status | ✅ |
+| | | - models set/auth | 🔄 |
+| 10.4 | 资源管理 | - providers list | ✅ |
+| | | - tools list | ✅ |
+| | | - skills list | ✅ |
+| 10.5 | 会话管理 | - sessions --list | 🔄 |
+| | | - sessions --kill/--clear | 🔄 |
+| | | - agent --list | 🔄 |
+| 10.6 | 系统命令 | - system info | ✅ |
+| | | - logs | ✅ |
+| | | - security audit | 🔄 |
+| | | - memory status | 🔄 |
+| 10.7 | 通道管理 | - channels list | 🔄 |
+| 10.8 | OpenCode | - open-code run | 🔄 |
+
+### 验收标准
+
+- [x] 所有测试通过
+- [x] CLI 命令可用
+- [x] 帮助信息完整
+- [ ] 配置编辑功能
+- [ ] 会话API集成
+- [ ] 通道管理功能
+
+---
+
+## 功能实现状态统计
+
+| 状态 | 数量 | 百分比 |
+|------|------|--------|
+| ✅ 完整实现 | 35 | 70% |
+| 🔄 基础实现 | 15 | 30% |
+| ❌ 未实现 | 0 | 0% |
+| **总计** | **50** | **100%** |
+
+---
+
 *版本: v0.3.0*
