@@ -859,8 +859,9 @@ rustclaw open-code --run "生成一个Hello World程序"
 | `system event` | 事件日志 | ✅ 完整实现 | |
 | `system heartbeat` | 心跳状态 | ✅ 完整实现 | |
 | `logs` | 日志管理 | ✅ 完整实现 | 支持清理、跟踪 |
-| `security audit` | 安全审计 | 🔄 基础实现 | 显示审计信息 |
-| `memory status` | 内存状态 | 🔄 基础实现 | |
+| `security audit` | 安全审计 | ✅ 完整实现 | 完整安全检查 |
+| `security status` | 安全状态 | ✅ 完整实现 | |
+| `memory status` | 内存状态 | ✅ 完整实现 | Gateway连接状态 |
 
 ### 13.7 其他命令
 
@@ -868,19 +869,21 @@ rustclaw open-code --run "生成一个Hello World程序"
 |------|------|----------|------|
 | `gateway status` | Gateway状态 | ✅ 完整实现 | |
 | `gateway start/stop` | Gateway控制 | ✅ 完整实现 | |
-| `channels list` | 列出通道 | 🔄 基础实现 | |
+| `channels list` | 列出通道 | ✅ 完整实现 | 显示通道类型和配置 |
+| `channels status` | 通道状态 | ✅ 完整实现 | |
 | `open-code run` | OpenCode执行 | 🔄 基础实现 | 显示参数 |
 | `update` | 更新版本 | 🔄 基础实现 | 显示构建命令 |
 | `reset` | 重置数据 | ✅ 完整实现 | 支持清理日志 |
 | `version` | 版本信息 | ✅ 完整实现 | |
 
-### 13.8 实现状态图例
+### 13.8 实现状态统计
 
-| 图标 | 含义 |
-|------|------|
-| ✅ 完整实现 | 功能完整可用 |
-| 🔄 基础实现 | 有基础框架，需要完善 |
-| ❌ 未实现 | 需要开发 |
+| 状态 | 数量 | 百分比 |
+|------|------|--------|
+| ✅ 完整实现 | 40 | 80% |
+| 🔄 基础实现 | 10 | 20% |
+| ❌ 未实现 | 0 | 0% |
+| **总计** | **50** | **100%** |
 
 ---
 
