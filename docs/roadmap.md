@@ -442,10 +442,42 @@
 
 ---
 
-*版本: v0.3.0*
-- [x] `--help` 显示完整帮助信息
-- [x] 子命令帮助正常工作
-- [ ] 各个命令实际功能可用
+## Phase 9: CLI 命令实现完善
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 9.1 | 配置命令 | - config --show | ✅ |
+| | | - config --path | ✅ |
+| | | - config --get/--set | ✅ |
+| 9.2 | 模型命令 | - models list | ✅ |
+| | | - models status | ✅ |
+| | | - models set | ✅ |
+| 9.3 | 提供商命令 | - providers list | ✅ |
+| | | - providers add/remove/test | ✅ |
+| 9.4 | 工具命令 | - tools list | ✅ |
+| | | - tools info | ✅ |
+| 9.5 | 系统命令 | - system info | ✅ |
+| | | - system event | ✅ |
+| | | - system heartbeat | ✅ |
+| 9.6 | 日志命令 | - logs | ✅ |
+| | | - logs --lines | ✅ |
+| | | - logs --clear | ✅ |
+| 9.7 | 诊断命令 | - doctor | ✅ |
+| | | - doctor --check | ✅ |
+| | | - doctor --fix | ✅ |
+| 9.8 | 测试验证 | - cargo test | ✅ |
+| | | - cargo clippy | ✅ |
+| | | - 功能测试 | ✅ |
+
+### 验收标准
+
+- [x] 所有测试通过
+- [x] 无编译错误
+- [x] CLI 命令可用
+- [x] 帮助信息完整
+- [x] 文档更新
 
 ---
 

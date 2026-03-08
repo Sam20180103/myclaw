@@ -88,47 +88,51 @@ rustclaw restart            # 重启 Gateway
 
 # 状态检查
 rustclaw status            # 查看运行状态
-rustclaw status --detailed # 详细状态
 rustclaw health            # 健康检查
-rustclaw health --verbose  # 详细健康
+rustclaw doctor            # 诊断检查
 ```
 
 ### 配置管理
 
 ```bash
-# 配置管理
-rustclaw config --show
-rustclaw config --path
-
-# 版本信息
-rustclaw version
+rustclaw config --show    # 显示配置
+rustclaw config --path    # 显示配置路径
+rustclaw config --get KEY # 获取配置项
+rustclaw config --set KEY=VALUE # 设置配置项
 ```
 
 ### 常用命令
 
 ```bash
-# 状态检查
+# 服务管理
+rustclaw start/stop/restart
 rustclaw status
-rustclaw status --detailed
 rustclaw health
-rustclaw health --verbose
 
-# 会话管理
-rustclaw sessions --list
-rustclaw sessions --kill <session_id>
-rustclaw sessions --clear
+# 系统信息
+rustclaw system info      # 系统信息
+rustclaw system event    # 查看事件
+rustclaw logs            # 日志管理
+rustclaw doctor          # 诊断工具
+
+# 配置管理
+rustclaw config --show  # 显示配置
+rustclaw config --path  # 配置路径
 
 # 模型管理
-rustclaw models --list
-rustclaw models --set anthropic/claude-sonnet
+rustclaw models list    # 列出可用模型
+rustclaw models status  # 模型状态
+rustclaw models set    # 设置默认模型
 
-# Skill管理
-rustclaw skills --list
-rustclaw skills --info <skill_name>
+# 提供商管理
+rustclaw providers list # 列出提供商
+
+# 工具管理
+rustclaw tools list    # 列出工具
 
 # OpenCode集成
-rustclaw open-code --run "生成Hello World程序"
-rustclaw open-code sessions --list
+rustclaw open-code run --prompt "生成Hello World程序"
+rustclaw open-code sessions list
 ```
 
 ### 完整命令列表
@@ -136,19 +140,23 @@ rustclaw open-code sessions --list
 | 命令 | 说明 |
 |------|------|
 | `start` | 启动网关服务器 |
+| `stop` | 停止网关服务器 |
+| `restart` | 重启网关服务器 |
+| `status` | 状态概览 |
+| `health` | 健康检查 |
+| `doctor` | 诊断工具 |
 | `config` | 配置管理 |
+| `models` | 模型管理 |
+| `providers` | 提供商管理 |
+| `tools` | 工具管理 |
+| `skills` | Skill管理 |
 | `sessions` | 会话管理 |
 | `agent` | Agent管理 |
 | `gateway` | 网关管理 |
 | `channels` | 通道管理 |
-| `skills` | Skill管理 |
-| `models` | 模型管理 |
 | `system` | 系统信息 |
 | `logs` | 日志管理 |
-| `health` | 健康检查 |
-| `status` | 状态概览 |
 | `security` | 安全审计 |
-| `providers` | 提供商管理 |
 | `tools` | 工具管理 |
 | `memory` | 内存管理 |
 | `open-code` | OpenCode集成 |
