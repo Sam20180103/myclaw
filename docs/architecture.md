@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.3.0
-> 日期: 2026-03-07
-> 状态: 核心功能完成，OpenCode工具集成完成
+> 版本: v0.4.0
+> 日期: 2026-03-09
+> 状态: Agent-Reach核心工具集成完成
 
 ---
 
@@ -404,6 +404,15 @@ struct SandboxConfig {
 - [x] Agent自动注册内置工具
 - [x] NVIDIA Provider支持
 
+### Phase 11: Agent-Reach核心工具集成 (1天) ✅ 完成
+
+- [x] WebReachTool (Jina Reader API集成)
+- [x] VideoReachTool (yt-dlp CLI封装)
+- [x] GitHubReachTool (gh CLI封装)
+- [x] FeedReachTool (RSS/Atom解析)
+- [x] 工具注册和配置支持
+- [x] 单元测试覆盖
+
 ---
 
 ## 七、版本历史
@@ -417,6 +426,7 @@ struct SandboxConfig {
 | v0.2.4 | 2026-03-07 | Skill验证增强(名称检查、危险模式检测) |
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持、配置修复 |
+| v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 
 ---
 
@@ -581,11 +591,11 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | config | 7 | - |
 | protocol | 9 | - |
 | skill | 9 | 4 |
-| tool | 14 | - |
+| tool | 20 | - |
 | agent | - | 3 |
 | gateway | - | - |
 | provider | - | - |
-| **总计** | **39** | **7** |
+| **总计** | **45** | **7** |
 
 ---
 
@@ -891,27 +901,47 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 ### 14.1 高优先级 (P0)
 
-| 功能 | 描述 | 依赖 |
-|------|------|------|
-| 会话API | 通过Gateway API管理会话 | Gateway HTTP接口 |
-| Agent API | Agent创建和管理 | Gateway HTTP接口 |
-| 通道管理 | 实际的通道配置 | Channel模块 |
+| 功能 | 描述 | 依赖 | 状态 |
+|------|------|------|------|
+| 会话API | 通过Gateway API管理会话 | Gateway HTTP接口 | 待实现 |
+| Agent API | Agent创建和管理 | Gateway HTTP接口 | 待实现 |
+| 通道管理 | 实际的通道配置 | Channel模块 | 待实现 |
 
 ### 14.2 中优先级 (P1)
 
-| 功能 | 描述 | 依赖 |
-|------|------|------|
-| 配置编辑 | 直接修改配置文件 | 配置系统 |
-| 模型切换 | 运行时切换模型 | Provider管理 |
-| 安全审计 | 实际安全检查 | 安全模块 |
+| 功能 | 描述 | 依赖 | 状态 |
+|------|------|------|------|
+| 配置编辑 | 直接修改配置文件 | 配置系统 | 待实现 |
+| 模型切换 | 运行时切换模型 | Provider管理 | 待实现 |
+| 安全审计 | 实际安全检查 | 安全模块 | 待实现 |
 
-### 14.3 低优先级 (P2)
+### 14.3 Agent-Reach集成进度
 
-| 功能 | 描述 | 依赖 |
-|------|------|------|
-| 内存管理 | Agent内存状态 | Agent运行时 |
-| OpenCode集成 | 实际调用OpenCode | OpenCode工具 |
-| 自动更新 | 检查并更新版本 | 构建系统 |
+| Phase | 功能 | 状态 |
+|-------|------|------|
+| Phase 11 | WebReachTool (Jina Reader) | ✅ 完成 |
+| Phase 11 | VideoReachTool (yt-dlp) | ✅ 完成 |
+| Phase 11 | GitHubReachTool (gh CLI) | ✅ 完成 |
+| Phase 11 | FeedReachTool (RSS/Atom) | ✅ 完成 |
+| Phase 12 | TwitterReachTool (xreach) | ⏳ 待开始 |
+| Phase 12 | RedditReachTool (JSON API) | ⏳ 待开始 |
+| Phase 12 | WeiboReachTool (Direct API) | ⏳ 待开始 |
+| Phase 13 | McpClient 实现 | ⏳ 待开始 |
+| Phase 13 | XhsReachTool (小红书) | ⏳ 待开始 |
+| Phase 13 | DouyinReachTool (抖音) | ⏳ 待开始 |
+| Phase 13 | SearchReachTool (Exa) | ⏳ 待开始 |
+| Phase 14 | LinkedInReachTool | ⏳ 待开始 |
+| Phase 14 | WeChatReachTool | ⏳ 待开始 |
+| Phase 14 | BossZhipinReachTool | ⏳ 待开始 |
+| Phase 14 | PodcastReachTool (小宇宙) | ⏳ 待开始 |
+
+### 14.4 低优先级 (P2)
+
+| 功能 | 描述 | 依赖 | 状态 |
+|------|------|------|------|
+| 内存管理 | Agent内存状态 | Agent运行时 | 待实现 |
+| OpenCode集成 | 实际调用OpenCode | OpenCode工具 | ✅ 完成 |
+| 自动更新 | 检查并更新版本 | 构建系统 | 待实现 |
 
 ---
 

@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod reach;
+pub use reach::*;
+
 pub struct ToolRegistry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
 }
@@ -334,12 +337,17 @@ impl ToolRegistry {
         self.register(Arc::new(OpenCodeTool::default()));
     }
 
+    pub fn register_all_tools(&self) {
+        self.register_builtin_tools();
+        crate::reach::register_reach_tools(self, None);
+    }
+
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {
         let tool = self.get(&tool_call.name)
             .ok_or_else(|| ToolError::NotFound(tool_call.name.clone()))?;
-        
+
         let result = tool.execute(tool_call.arguments.clone()).await?;
-        
+
         Ok(ToolResult {
             id: tool_call.id.clone(),
             result: Some(result),
@@ -362,6 +370,10 @@ impl Default for ToolPolicy {
                 "file_read".to_string(),
                 "file_write".to_string(),
                 "shell_exec".to_string(),
+                "web_reach".to_string(),
+                "video_reach".to_string(),
+                "github_reach".to_string(),
+                "feed_reach".to_string(),
             ],
             denied_tools: vec![],
             require_approval: vec!["shell_exec".to_string()],

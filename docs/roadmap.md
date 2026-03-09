@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.3.0
-> 日期: 2026-03-07
-> 状态: Phase 1-5 完成，OpenCode工具集成完成
+> 版本: v0.4.0
+> 日期: 2026-03-09
+> 状态: Agent-Reach核心工具集成完成
 
 ---
 
@@ -16,6 +16,8 @@
 | Phase 4 | 动态 Skill | 2周 | ✅ 完成 |
 | Phase 5 | 测试与优化 | 1周 | ✅ 完成 |
 | Phase 6 | OpenCode工具集成 | 1天 | ✅ 完成 |
+| Phase 7-10 | CLI完善 | 1周 | ✅ 完成 |
+| Phase 11 | Agent-Reach核心工具 | 1天 | ✅ 完成 |
 
 **预计总周期: 9-12 周**
 
@@ -235,6 +237,7 @@
 | 2026-03-07 | Phase 5.3 | 性能优化(HashMap预分配) | 100% |
 | 2026-03-07 | Phase 4.3 | Skill验证增强 | 100% |
 | 2026-03-07 | Phase 6 | OpenCode工具集成完成 | 100% |
+| 2026-03-09 | Phase 11 | Agent-Reach核心工具集成 | 100% |
 
 ---
 
@@ -306,6 +309,7 @@
 | v0.2.4 | 2026-03-07 | Skill验证增强(名称检查、危险模式检测) |
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持 |
+| v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -319,9 +323,9 @@
 | config | 7 | ✅ |
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
-| tool | 14 | ✅ |
+| tool | 20 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **45** | ✅ |
+| **总计** | **51** | ✅ |
 
 ---
 
@@ -538,28 +542,32 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 11.1 | WebReachTool | - Jina Reader API集成 | ⏳ |
-| | | - HTTP客户端配置 | ⏳ |
-| | | - Markdown解析 | ⏳ |
-| | | - 单元测试 | ⏳ |
-| 11.2 | VideoReachTool | - yt-dlp CLI封装 | ⏳ |
-| | | - SandboxExecutor集成 | ⏳ |
-| | | - 字幕提取功能 | ⏳ |
-| | | - 元数据获取 | ⏳ |
-| 11.3 | GitHubReachTool | - gh CLI封装 | ⏳ |
-| | | - 仓库读取功能 | ⏳ |
-| | | - 搜索功能 | ⏳ |
-| | | - 认证管理 | ⏳ |
-| 11.4 | FeedReachTool | - feed-rs依赖添加 | ⏳ |
-| | | - RSS/Atom解析 | ⏳ |
-| | | - 订阅管理 | ⏳ |
+| 11.1 | WebReachTool | - Jina Reader API集成 | ✅ |
+| | | - HTTP客户端配置 | ✅ |
+| | | - Markdown解析 | ✅ |
+| | | - 单元测试 | ✅ |
+| 11.2 | VideoReachTool | - yt-dlp CLI封装 | ✅ |
+| | | - SandboxExecutor集成 | ✅ |
+| | | - 字幕提取功能 | ✅ |
+| | | - 元数据获取 | ✅ |
+| 11.3 | GitHubReachTool | - gh CLI封装 | ✅ |
+| | | - 仓库读取功能 | ✅ |
+| | | - 搜索功能 | ✅ |
+| | | - 认证管理 | ✅ |
+| 11.4 | FeedReachTool | - feed-rs依赖添加 | ✅ |
+| | | - RSS/Atom解析 | ✅ |
+| | | - 订阅管理 | ✅ |
+| 11.5 | 工具注册 | - register_all_tools() | ✅ |
+| | | - ToolPolicy更新 | ✅ |
+| | | - 单元测试 | ✅ |
 
 ### 验收标准
 
-- [ ] WebReachTool 可以读取任意网页
-- [ ] VideoReachTool 可以提取YouTube/Bilibili字幕
-- [ ] GitHubReachTool 可以读取GitHub仓库
-- [ ] FeedReachTool 可以解析RSS订阅
+- [x] WebReachTool 可以读取任意网页
+- [x] VideoReachTool 可以提取YouTube/Bilibili字幕
+- [x] GitHubReachTool 可以读取GitHub仓库
+- [x] FeedReachTool 可以解析RSS订阅
+- [x] 所有单元测试通过
 
 ---
 
@@ -665,7 +673,7 @@
 
 | Phase | 名称 | 预计周期 | 状态 |
 |-------|------|----------|------|
-| Phase 11 | 核心Reach工具 | 2周 | ⏳ 待开始 |
+| Phase 11 | 核心Reach工具 | 2周 | ✅ 完成 |
 | Phase 12 | 社交平台工具 | 1周 | ⏳ 待开始 |
 | Phase 13 | MCP桥接集成 | 2周 | ⏳ 待开始 |
 | Phase 14 | 高级平台工具 | 1周 | ⏳ 待开始 |
@@ -679,8 +687,9 @@
 | Crate | 版本 | 用途 |
 |-------|------|------|
 | feed-rs | 1.4 | RSS/Atom解析 |
-| jsonrpc-client-transports | 0.6 | MCP客户端 |
-| governor | 0.6 | 速率限制 |
+| base64 | 0.21 | Base64解码 |
+| jsonrpc-client-transports | 0.6 | MCP客户端 (待用) |
+| governor | 0.6 | 速率限制 (待用) |
 
 ---
 
