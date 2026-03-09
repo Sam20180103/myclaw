@@ -1517,49 +1517,49 @@ Commands::System { subcommand } => {
         }
     Commands::OpenCode { subcommand } => {
         match subcommand {
-            Some(OpenCodeSubcommands::Run { prompt, model, session }) => {
-                println!("Running OpenCode task...");
-                println!("  Prompt: {}", prompt);
-                if let Some(m) = model {
-                    println!("  Model: {}", m);
-                }
-                if let Some(s) = session {
-                    println!("  Session: {}", s);
-                }
-                println!("");
-                
-                let mut args = vec!["run", "--prompt", &prompt];
-                if let Some(m) = model {
-                    args.push("--model");
-                    args.push(&m);
-                }
-                if let Some(s) = session {
-                    args.push("--session");
-                    args.push(&s);
-                }
-                
-                println!("Executing: opencode {}", args.join(" "));
-                println!("");
-                
-                match Command::new("opencode").args(&args).status() {
-                    Ok(status) => {
-                        if status.success() {
-                            println!("OpenCode task completed successfully");
-                        } else {
-                            println!("OpenCode task failed with exit code: {:?}", status.code());
-                        }
+Some(OpenCodeSubcommands::Run { prompt, model, session }) => {
+            println!("Running OpenCode task...");
+            println!("  Prompt: {}", prompt);
+            if let Some(ref m) = model {
+                println!("  Model: {}", m);
+            }
+            if let Some(ref s) = session {
+                println!("  Session: {}", s);
+            }
+            println!("");
+
+            let mut args = vec!["run", "--prompt", &prompt];
+            if let Some(ref m) = model {
+                args.push("--model");
+                args.push(m);
+            }
+            if let Some(ref s) = session {
+                args.push("--session");
+                args.push(s);
+            }
+
+            println!("Executing: opencode {}", args.join(" "));
+            println!("");
+
+            match Command::new("opencode").args(&args).status() {
+                Ok(status) => {
+                    if status.success() {
+                        println!("OpenCode task completed successfully");
+                    } else {
+                        println!("OpenCode task failed with exit code: {:?}", status.code());
                     }
-                    Err(e) => {
-                        println!("Failed to execute opencode: {}", e);
-                        println!("");
-                        println!("Make sure OpenCode is installed:");
-                        println!("  npm install -g @anthropic-ai/opencode");
-                        println!("  or");
-                        println!("  cargo install opencode");
-                    }
+                }
+                Err(e) => {
+                    println!("Failed to execute opencode: {}", e);
+                    println!("");
+                    println!("Make sure OpenCode is installed:");
+                    println!("  npm install -g @anthropic-ai/opencode");
+                    println!("  or");
+                    println!("  cargo install opencode");
                 }
             }
-            Some(OpenCodeSubcommands::Status) => {
+        }
+        Some(OpenCodeSubcommands::Status) => {
                 println!("OpenCode Status");
                 println!("===============");
                 println!("");

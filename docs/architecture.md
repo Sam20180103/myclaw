@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.14.0
+> 版本: v0.14.1
 > 日期: 2026-03-10
-> 状态: Phase 14 工具集成完成
+> 状态: Phase 14 工具集成完成 + CLI编译修复
 
 ---
 
@@ -468,6 +468,7 @@ struct SandboxConfig {
 | v0.12.0 | 2026-03-09 | CLI全部完成(providers add/tools info/update功能) |
 | v0.13.0 | 2026-03-09 | CLI命令增强(models auth/open-code实际执行) |
 | v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
+| v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 
 ---
 
