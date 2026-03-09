@@ -1059,13 +1059,63 @@ async fn main() -> anyhow::Result<()> {
                 println!("Gateway not running. Edit {} to change model", config_path.display());
             }
         }
-                Some(ModelsSubcommands::Auth { subcommand }) => {
-                    match subcommand {
-                        Some(ModelAuthSubcommands::Add) => {
-                            println!("Adding model auth...");
-                            println!("Set API key in config file:");
-                            println!("  {}", get_config_path().display());
-                        }
+        Some(ModelsSubcommands::Auth { subcommand }) => {
+            match subcommand {
+                Some(ModelAuthSubcommands::Add) => {
+                    println!("Adding model authentication...");
+                    println!("");
+                    println!("Supported providers:");
+                    println!("  - openai (OpenAI API)");
+                    println!("  - anthropic (Anthropic/Claude API)");
+                    println!("  - nvidia (NVIDIA NIM API)");
+                    println!("  - google (Google Gemini API)");
+                    println!("");
+                    println!("Config file: {}", get_config_path().display());
+                    println!("");
+                    println!("Example config:");
+                    println!("  [[providers]]");
+                    println!("  name = \"openai\"");
+                    println!("  provider_type = \"openai\"");
+                    println!("  api_key = \"sk-...\"");
+                    println!("  default_model = \"gpt-4o\"");
+                }
+                Some(ModelAuthSubcommands::SetupToken) => {
+                    println!("Setting up authentication token...");
+                    println!("");
+                    println!("Steps:");
+                    println!("  1. Get your API key from the provider's website");
+                    println!("  2. Edit config file: {}", get_config_path().display());
+                    println!("  3. Add the api_key field to your provider config");
+                    println!("");
+                    println!("Example:");
+                    println!("  providers:");
+                    println!("    - name: openai");
+                    println!("      api_key: sk-your-key-here");
+                }
+                Some(ModelAuthSubcommands::PasteToken) => {
+                    println!("Paste token setup...");
+                    println!("");
+                    println!("Config file location: {}", get_config_path().display());
+                    println!("");
+                    println!("Open the config file and add your API key:");
+                    println!("  api_key = \"your-api-key-here\"");
+                    println!("");
+                    println!("After editing, restart the gateway:");
+                    println!("  rustclaw restart");
+                }
+                None => {
+                    println!("Model Authentication Management");
+                    println!("==============================");
+                    println!("");
+                    println!("Commands:");
+                    println!("  rustclaw models auth add         # Add new auth");
+                    println!("  rustclaw models auth setup-token # Setup token guide");
+                    println!("  rustclaw models auth paste-token # Paste token help");
+                    println!("");
+                    println!("Config file: {}", get_config_path().display());
+                }
+            }
+        }
                         Some(ModelAuthSubcommands::SetupToken) => {
                             println!("Setting up token...");
                             println!("Set API key in config file:");
@@ -1483,36 +1533,99 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::OpenCode { subcommand } => {
-            match subcommand {
-                Some(OpenCodeSubcommands::Run { prompt, model, session }) => {
-                    println!("Running OpenCode task...");
-                    println!("  Prompt: {}", prompt);
-                    if let Some(m) = model {
-                        println!("  Model: {}", m);
+    Commands::OpenCode { subcommand } => {
+        match subcommand {
+            Some(OpenCodeSubcommands::Run { prompt, model, session }) => {
+                println!("Running OpenCode task...");
+                println!("  Prompt: {}", prompt);
+                if let Some(m) = model {
+                    println!("  Model: {}", m);
+                }
+                if let Some(s) = session {
+                    println!("  Session: {}", s);
+                }
+                println!("");
+                
+                let mut args = vec!["run", "--prompt", &prompt];
+                if let Some(m) = model {
+                    args.push("--model");
+                    args.push(&m);
+                }
+                if let Some(s) = session {
+                    args.push("--session");
+                    args.push(&s);
+                }
+                
+                println!("Executing: opencode {}", args.join(" "));
+                println!("");
+                
+                match Command::new("opencode").args(&args).status() {
+                    Ok(status) => {
+                        if status.success() {
+                            println!("OpenCode task completed successfully");
+                        } else {
+                            println!("OpenCode task failed with exit code: {:?}", status.code());
+                        }
                     }
-                    if let Some(s) = session {
-                        println!("  Session: {}", s);
+                    Err(e) => {
+                        println!("Failed to execute opencode: {}", e);
+                        println!("");
+                        println!("Make sure OpenCode is installed:");
+                        println!("  npm install -g @anthropic-ai/opencode");
+                        println!("  or");
+                        println!("  cargo install opencode");
                     }
                 }
-                Some(OpenCodeSubcommands::Status) => println!("OpenCode status: ready"),
-                Some(OpenCodeSubcommands::Sessions { subcommand }) => {
-                    match subcommand {
-                        Some(OpenCodeSessionsSubcommands::List) => {
-                            println!("Listing OpenCode sessions...");
-                        }
-                        Some(OpenCodeSessionsSubcommands::Continue { id }) => {
-                            println!("Continuing session: {}", id);
-                        }
-                        Some(OpenCodeSessionsSubcommands::Delete { id }) => {
-                            println!("Deleting session: {}", id);
-                        }
-                        None => println!("Use 'rustclaw opencode sessions <subcommand>'"),
+            }
+            Some(OpenCodeSubcommands::Status) => {
+                println!("OpenCode Status");
+                println!("===============");
+                println!("");
+                match Command::new("opencode").arg("--version").output() {
+                    Ok(output) => {
+                        let version = String::from_utf8_lossy(&output.stdout);
+                        println!("Version: {}", version.trim());
+                    }
+                    Err(_) => {
+                        println!("Status: Not installed");
+                        println!("");
+                        println!("Install OpenCode:");
+                        println!("  npm install -g @anthropic-ai/opencode");
                     }
                 }
-                None => println!("Use 'rustclaw opencode <subcommand>'"),
+            }
+            Some(OpenCodeSubcommands::Sessions { subcommand }) => {
+                match subcommand {
+                    Some(OpenCodeSessionsSubcommands::List) => {
+                        println!("Listing OpenCode sessions...");
+                        match Command::new("opencode").args(["sessions", "list"]).status() {
+                            Ok(_) => {}
+                            Err(_) => println!("Failed to list sessions. Is opencode installed?")
+                        }
+                    }
+                    Some(OpenCodeSessionsSubcommands::Continue { id }) => {
+                        println!("Continuing session: {}", id);
+                        let _ = Command::new("opencode").args(["sessions", "continue", &id]).status();
+                    }
+                    Some(OpenCodeSessionsSubcommands::Delete { id }) => {
+                        println!("Deleting session: {}", id);
+                        let _ = Command::new("opencode").args(["sessions", "delete", &id]).status();
+                    }
+                    None => println!("Use 'rustclaw opencode sessions <subcommand>'"),
+                }
+            }
+            None => {
+                println!("OpenCode Integration");
+                println!("===================");
+                println!("");
+                println!("Commands:");
+                println!("  rustclaw opencode run --prompt TEXT    # Run task");
+                println!("  rustclaw opencode run --prompt TEXT --model NAME");
+                println!("  rustclaw opencode status                # Check status");
+                println!("  rustclaw opencode sessions list         # List sessions");
             }
         }
+    }
         Commands::Doctor { fix, check } => {
             println!("RustClaw Doctor - Diagnostics");
             println!("============================");

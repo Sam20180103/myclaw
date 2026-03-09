@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.12.0
+> 版本: v0.13.0
 > 日期: 2026-03-09
-> 状态: CLI全部功能完成
+> 状态: 所有CLI命令增强完成
 
 ---
 
@@ -458,6 +458,7 @@ struct SandboxConfig {
 | v0.10.0 | 2026-03-09 | 内存管理/系统版本/更新检查API |
 | v0.11.0 | 2026-03-09 | CLI完整功能(sessions/agent/config/models API集成) |
 | v0.12.0 | 2026-03-09 | CLI全部完成(providers add/tools info/update功能) |
+| v0.13.0 | 2026-03-09 | CLI命令增强(models auth/open-code实际执行) |
 
 ---
 
@@ -1207,7 +1208,7 @@ rustclaw open-code --run "生成一个Hello World程序"
 | `models list` | 列出模型 | ✅ 完整实现 | 显示可用模型列表 |
 | `models status` | 模型状态 | ✅ 完整实现 | 显示当前配置 |
 | `models set` | 设置模型 | ✅ 完整实现 | 调用API切换模型 |
-| `models auth` | 模型认证 | 🔄 基础实现 | 显示配置路径 |
+| `models auth` | 模型认证 | ✅ 完整实现 | 显示详细配置指南 |
 
 ### 13.4 资源管理命令
 
@@ -1249,7 +1250,7 @@ rustclaw open-code --run "生成一个Hello World程序"
 | `gateway start/stop` | Gateway控制 | ✅ 完整实现 | |
 | `channels list` | 列出通道 | ✅ 完整实现 | 显示通道类型和配置 |
 | `channels status` | 通道状态 | ✅ 完整实现 | |
-| `open-code run` | OpenCode执行 | 🔄 基础实现 | 显示参数 |
+| `open-code run` | OpenCode执行 | ✅ 完整实现 | 实际调用opencode CLI |
 | `update` | 更新版本 | ✅ 完整实现 | git pull + cargo build |
 | `reset` | 重置数据 | ✅ 完整实现 | 支持清理日志 |
 | `version` | 版本信息 | ✅ 完整实现 | |
@@ -1258,8 +1259,8 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 状态 | 数量 | 百分比 |
 |------|------|--------|
-| ✅ 完整实现 | 48 | 96% |
-| 🔄 基础实现 | 2 | 4% |
+| ✅ 完整实现 | 50 | 100% |
+| 🔄 基础实现 | 0 | 0% |
 | ❌ 未实现 | 0 | 0% |
 | **总计** | **50** | **100%** |
 
