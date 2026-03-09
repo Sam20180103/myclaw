@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.9.0
+> 版本: v0.10.0
 > 日期: 2026-03-09
-> 状态: 完整API功能实现
+> 状态: 完整功能实现完成
 
 ---
 
@@ -455,6 +455,7 @@ struct SandboxConfig {
 | v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
 | v0.8.0 | 2026-03-09 | Gateway API增强(Session GET/Agent API/Config API) |
 | v0.9.0 | 2026-03-09 | 完整API功能(Channel管理/配置保存/模型切换/安全审计) |
+| v0.10.0 | 2026-03-09 | 内存管理/系统版本/更新检查API |
 
 ---
 
@@ -754,6 +755,87 @@ struct SandboxConfig {
       "approval_tools": 1,
       "disabled_tools": 0
     }
+  }
+}
+```
+
+### Memory
+- `GET /api/memory/status` - 获取内存状态
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "memory": {
+    "total_sessions": 5,
+    "total_messages": 25,
+    "active_lanes": 3,
+    "sessions_per_lane": {
+      "lane_0": 2,
+      "lane_1": 2,
+      "lane_2": 1
+    },
+    "oldest_session": 1678000000000,
+    "newest_session": 1678000005000
+  }
+}
+```
+
+- `GET /api/memory/stats` - 获取内存统计
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "stats": {
+    "total_sessions": 5,
+    "total_messages": 25,
+    "by_channel": {
+      "http": 3,
+      "websocket": 2
+    },
+    "by_lane": {
+      "lane_0": 2,
+      "lane_1": 2,
+      "lane_2": 1
+    },
+    "config": {
+      "max_concurrent_sessions": 100,
+      "max_loop_iterations": 100,
+      "tool_timeout_ms": 60000
+    }
+  }
+}
+```
+
+### System
+- `GET /api/system/version` - 获取系统版本
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "version": {
+    "current": "0.10.0",
+    "name": "rustclaw-gateway",
+    "authors": "Your Name <you@example.com>",
+    "license": "MIT"
+  }
+}
+```
+
+- `GET /api/system/update/check` - 检查更新
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "update": {
+    "current_version": "0.10.0",
+    "latest_version": "check github releases",
+    "update_available": false,
+    "update_command": "cargo install --git https://github.com/Sam20180103/myclaw.git",
+    "repository": "https://github.com/Sam20180103/myclaw"
   }
 }
 ```
@@ -1199,8 +1281,6 @@ rustclaw open-code --run "生成一个Hello World程序"
 | 配置编辑 | 直接修改配置文件 | 配置系统 | ✅ 完成 |
 | 模型切换 | 运行时切换模型 | Provider管理 | ✅ 完成 |
 | 安全审计 | 实际安全检查 | 安全模块 | ✅ 完成 |
-| 模型切换 | 运行时切换模型 | Provider管理 | 待实现 |
-| 安全审计 | 实际安全检查 | 安全模块 | 待实现 |
 
 ### 14.3 Agent-Reach集成进度
 
@@ -1226,9 +1306,9 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 功能 | 描述 | 依赖 | 状态 |
 |------|------|------|------|
-| 内存管理 | Agent内存状态 | Agent运行时 | 待实现 |
+| 内存管理 | Agent内存状态 | Agent运行时 | ✅ 完成 |
 | OpenCode集成 | 实际调用OpenCode | OpenCode工具 | ✅ 完成 |
-| 自动更新 | 检查并更新版本 | 构建系统 | 待实现 |
+| 自动更新 | 检查并更新版本 | 构建系统 | ✅ 完成 |
 
 ---
 

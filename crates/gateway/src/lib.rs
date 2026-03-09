@@ -203,6 +203,10 @@ impl Gateway {
             .route("/api/channel/{name}", axum::routing::get(channel_get_handler))
             .route("/api/channel/{name}", axum::routing::post(channel_update_handler))
             .route("/api/security/audit", axum::routing::get(security_audit_handler))
+            .route("/api/memory/status", axum::routing::get(memory_status_handler))
+            .route("/api/memory/stats", axum::routing::get(memory_stats_handler))
+            .route("/api/system/version", axum::routing::get(system_version_handler))
+            .route("/api/system/update/check", axum::routing::get(system_update_check_handler))
             .route("/api/skill", axum::routing::get(skill_list_handler))
             .route("/api/skill", axum::routing::post(skill_create_handler))
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
@@ -868,6 +872,100 @@ async fn security_audit_handler(
                 "approval_tools": state.full_config.tools.require_approval.len(),
                 "disabled_tools": state.full_config.tools.disabled_tools.len()
             }
+        }
+    }))
+}
+
+async fn memory_status_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let sessions = state.agent.list_sessions();
+    let total_messages: usize = sessions.iter().map(|s| s.messages.len()).sum();
+    let total_sessions = sessions.len();
+    
+    let lanes: std::collections::HashSet<String> = sessions.iter().map(|s| s.lane.clone()).collect();
+    
+    let sessions_per_lane: std::collections::HashMap<String, usize> = lanes
+        .iter()
+        .map(|lane| {
+            let count = sessions.iter().filter(|s| s.lane == *lane).count();
+            (lane.clone(), count)
+        })
+        .collect();
+    
+    Json(serde_json::json!({
+        "success": true,
+        "memory": {
+            "total_sessions": total_sessions,
+            "total_messages": total_messages,
+            "active_lanes": lanes.len(),
+            "sessions_per_lane": sessions_per_lane,
+            "oldest_session": sessions.iter().map(|s| s.metadata.created_at).min(),
+            "newest_session": sessions.iter().map(|s| s.metadata.created_at).max(),
+        }
+    }))
+}
+
+async fn memory_stats_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let sessions = state.agent.list_sessions();
+    
+    let mut stats = std::collections::HashMap::new();
+    stats.insert("total_sessions", sessions.len());
+    stats.insert("total_messages", sessions.iter().map(|s| s.messages.len()).sum());
+    
+    let by_channel: std::collections::HashMap<String, usize> = sessions
+        .iter()
+        .fold(std::collections::HashMap::new(), |mut acc, s| {
+            *acc.entry(s.metadata.channel.clone()).or_insert(0) += 1;
+            acc
+        });
+    
+    let by_lane: std::collections::HashMap<String, usize> = sessions
+        .iter()
+        .fold(std::collections::HashMap::new(), |mut acc, s| {
+            *acc.entry(s.lane.clone()).or_insert(0) += 1;
+            acc
+        });
+    
+    Json(serde_json::json!({
+        "success": true,
+        "stats": {
+            "total_sessions": stats.get("total_sessions"),
+            "total_messages": stats.get("total_messages"),
+            "by_channel": by_channel,
+            "by_lane": by_lane,
+            "config": {
+                "max_concurrent_sessions": state.full_config.agent.max_concurrent_sessions,
+                "max_loop_iterations": state.full_config.agent.max_loop_iterations,
+                "tool_timeout_ms": state.full_config.agent.tool_timeout_ms,
+            }
+        }
+    }))
+}
+
+async fn system_version_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "success": true,
+        "version": {
+            "current": env!("CARGO_PKG_VERSION"),
+            "name": env!("CARGO_PKG_NAME"),
+            "authors": env!("CARGO_PKG_AUTHORS"),
+            "license": env!("CARGO_PKG_LICENSE"),
+        }
+    }))
+}
+
+async fn system_update_check_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "success": true,
+        "update": {
+            "current_version": env!("CARGO_PKG_VERSION"),
+            "latest_version": "check github releases",
+            "update_available": false,
+            "update_command": "cargo install --git https://github.com/Sam20180103/myclaw.git",
+            "repository": "https://github.com/Sam20180103/myclaw"
         }
     }))
 }
