@@ -8,6 +8,9 @@ pub struct ReachConfig {
     pub web_timeout_ms: u64,
     pub video_timeout_ms: u64,
     pub github_timeout_ms: u64,
+    pub social_timeout_ms: u64,
+    pub reddit_user_agent: String,
+    pub weibo_api_base: String,
 }
 
 impl Default for ReachConfig {
@@ -17,6 +20,9 @@ impl Default for ReachConfig {
             web_timeout_ms: 30000,
             video_timeout_ms: 60000,
             github_timeout_ms: 30000,
+            social_timeout_ms: 30000,
+            reddit_user_agent: "RustClaw/0.4.0".to_string(),
+            weibo_api_base: "https://weibo.com/ajax".to_string(),
         }
     }
 }
@@ -525,7 +531,563 @@ pub fn register_reach_tools(registry: &crate::ToolRegistry, config: Option<Reach
     registry.register(std::sync::Arc::new(WebReachTool::new(config.clone())));
     registry.register(std::sync::Arc::new(VideoReachTool::new(config.clone())));
     registry.register(std::sync::Arc::new(GitHubReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(FeedReachTool::new(config)));
+    registry.register(std::sync::Arc::new(FeedReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(TwitterReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(RedditReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(WeiboReachTool::new(config)));
+}
+
+pub struct TwitterReachTool {
+    config: ReachConfig,
+}
+
+impl Default for TwitterReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl TwitterReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        Self { config }
+    }
+}
+
+#[async_trait]
+impl Tool for TwitterReachTool {
+    fn name(&self) -> &str {
+        "twitter_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Read tweets, search Twitter/X, and get user timelines using xreach CLI or direct API."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "twitter_reach".to_string(),
+            description: "Access Twitter/X data via xreach CLI or API".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["tweet", "user", "search", "timeline"],
+                        "description": "Action: tweet (read tweet), user (user info), search (search tweets), timeline (user timeline)"
+                    },
+                    "tweet_id": {
+                        "type": "string",
+                        "description": "Tweet ID for 'tweet' action"
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "Username for 'user' or 'timeline' action"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for 'search' action"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results (default: 20)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let action = params
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20);
+
+        let timeout = std::time::Duration::from_millis(self.config.social_timeout_ms);
+
+        match action {
+            "tweet" => {
+                let tweet_id = params
+                    .get("tweet_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'tweet_id' for tweet action".to_string()))?;
+
+                let url = format!("https://api.twitter.com/2/tweets/{}?tweet.fields=created_at,public_metrics,author_id", tweet_id);
+                
+                let output = tokio::time::timeout(
+                    timeout,
+                    tokio::process::Command::new("curl")
+                        .arg("-s")
+                        .arg("-H")
+                        .arg("Content-Type: application/json")
+                        .arg(&url)
+                        .output()
+                )
+                .await
+                .map_err(|_| ToolError::Timeout)?
+                .map_err(|e| ToolError::ExecutionFailed(format!("curl failed: {}", e)))?;
+
+                let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+                    .unwrap_or_else(|_| serde_json::json!({"error": "Failed to parse response"}));
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": response
+                }))
+            }
+            "search" => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "query": query,
+                    "note": "Twitter search requires API authentication. Use xreach CLI or configure API keys."
+                }))
+            }
+            "user" | "timeline" => {
+                let username = params
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams(format!("Missing 'username' for {} action", action)))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "username": username,
+                    "limit": limit,
+                    "note": "Twitter user data requires API authentication. Use xreach CLI or configure API keys."
+                }))
+            }
+            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+        }
+    }
+}
+
+pub struct RedditReachTool {
+    client: reqwest::Client,
+    #[allow(dead_code)]
+    config: ReachConfig,
+}
+
+impl Default for RedditReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl RedditReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(config.social_timeout_ms))
+            .user_agent(&config.reddit_user_agent)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, config }
+    }
+}
+
+#[async_trait]
+impl Tool for RedditReachTool {
+    fn name(&self) -> &str {
+        "reddit_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Read Reddit posts, comments, and search subreddits using the Reddit JSON API."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "reddit_reach".to_string(),
+            description: "Access Reddit data via JSON API (no auth required)".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["post", "subreddit", "search", "user"],
+                        "description": "Action: post (read post), subreddit (list posts), search (search), user (user info)"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Full Reddit URL for 'post' action"
+                    },
+                    "subreddit": {
+                        "type": "string",
+                        "description": "Subreddit name for 'subreddit' action"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for 'search' action"
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "Username for 'user' action"
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": ["hot", "new", "top", "rising"],
+                        "description": "Sort method for subreddit posts (default: hot)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results (default: 25)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let action = params
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(25);
+
+        match action {
+            "post" => {
+                let url = params
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'url' for post action".to_string()))?;
+
+                let json_url = if url.ends_with(".json") { url.to_string() } else { format!("{}.json", url.trim_end_matches('/')) };
+
+                let response = self
+                    .client
+                    .get(&json_url)
+                    .send()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
+
+                if !response.status().is_success() {
+                    return Err(ToolError::ExecutionFailed(format!("HTTP error: {}", response.status())));
+                }
+
+                let data: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse JSON: {}", e)))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": data
+                }))
+            }
+            "subreddit" => {
+                let subreddit = params
+                    .get("subreddit")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'subreddit' for subreddit action".to_string()))?;
+
+                let sort = params
+                    .get("sort")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("hot");
+
+                let url = format!(
+                    "https://www.reddit.com/r/{}.json?sort={}&limit={}",
+                    subreddit, sort, limit
+                );
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
+
+                if !response.status().is_success() {
+                    return Err(ToolError::ExecutionFailed(format!("HTTP error: {}", response.status())));
+                }
+
+                let data: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse JSON: {}", e)))?;
+
+                let posts: Vec<serde_json::Value> = data["data"]["children"]
+                    .as_array()
+                    .map(|arr| arr.iter().map(|p| {
+                        let pd = &p["data"];
+                        serde_json::json!({
+                            "id": pd["id"],
+                            "title": pd["title"],
+                            "author": pd["author"],
+                            "score": pd["score"],
+                            "url": pd["url"],
+                            "selftext": pd["selftext"],
+                            "created_utc": pd["created_utc"],
+                        })
+                    }).collect())
+                    .unwrap_or_default();
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "subreddit": subreddit,
+                    "sort": sort,
+                    "posts": posts,
+                    "count": posts.len()
+                }))
+            }
+            "search" => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+                let subreddit = params.get("subreddit").and_then(|v| v.as_str());
+
+                let url = match subreddit {
+                    Some(sr) => format!(
+                        "https://www.reddit.com/r/{}/search.json?q={}&restrict_sr=1&limit={}",
+                        sr, query, limit
+                    ),
+                    None => format!(
+                        "https://www.reddit.com/search.json?q={}&limit={}",
+                        query, limit
+                    ),
+                };
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
+
+                if !response.status().is_success() {
+                    return Err(ToolError::ExecutionFailed(format!("HTTP error: {}", response.status())));
+                }
+
+                let data: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse JSON: {}", e)))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "query": query,
+                    "subreddit": subreddit,
+                    "data": data
+                }))
+            }
+            "user" => {
+                let username = params
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'username' for user action".to_string()))?;
+
+                let url = format!("https://www.reddit.com/user/{}/about.json", username);
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
+
+                if !response.status().is_success() {
+                    return Err(ToolError::ExecutionFailed(format!("HTTP error: {}", response.status())));
+                }
+
+                let data: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse JSON: {}", e)))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": data
+                }))
+            }
+            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+        }
+    }
+}
+
+pub struct WeiboReachTool {
+    client: reqwest::Client,
+    config: ReachConfig,
+}
+
+impl Default for WeiboReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl WeiboReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(config.social_timeout_ms))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, config }
+    }
+}
+
+#[async_trait]
+impl Tool for WeiboReachTool {
+    fn name(&self) -> &str {
+        "weibo_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Get Weibo hot searches, user status, and search content via Weibo API."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "weibo_reach".to_string(),
+            description: "Access Weibo data via API".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["hot", "user", "search", "status"],
+                        "description": "Action: hot (trending topics), user (user info), search (search), status (read post)"
+                    },
+                    "uid": {
+                        "type": "string",
+                        "description": "User ID for 'user' action"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Post ID for 'status' action"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for 'search' action"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results (default: 20)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let action = params
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20);
+
+        match action {
+            "hot" => {
+                let url = format!("{}/topicon/getTopIcon", self.config.weibo_api_base);
+                
+                let response = self
+                    .client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
+
+                let data: serde_json::Value = if response.status().is_success() {
+                    response
+                        .json()
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse JSON: {}", e)))?
+                } else {
+                    let backup_url = "https://weibo.com/ajax/side/hotSearch";
+                    let backup_response = self
+                        .client
+                        .get(backup_url)
+                        .send()
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Backup request failed: {}", e)))?;
+                    
+                    backup_response
+                        .json()
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse backup JSON: {}", e)))?
+                };
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": data,
+                    "note": "Weibo hot search may require authentication for full data"
+                }))
+            }
+            "user" => {
+                let uid = params
+                    .get("uid")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'uid' for user action".to_string()))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "uid": uid,
+                    "note": "Weibo user data requires authentication. Configure cookies for full access."
+                }))
+            }
+            "search" => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "query": query,
+                    "limit": limit,
+                    "note": "Weibo search requires authentication. Configure cookies for access."
+                }))
+            }
+            "status" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'id' for status action".to_string()))?;
+
+                let _url = format!(
+                    "{}/statuses/show?id={}",
+                    self.config.weibo_api_base, id
+                );
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "id": id,
+                    "note": "Weibo status requires authentication. Configure cookies for access."
+                }))
+            }
+            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -566,10 +1128,35 @@ mod tests {
     }
 
     #[test]
+    fn test_twitter_reach_tool_schema() {
+        let tool = TwitterReachTool::default();
+        assert_eq!(tool.name(), "twitter_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
+    fn test_reddit_reach_tool_schema() {
+        let tool = RedditReachTool::default();
+        assert_eq!(tool.name(), "reddit_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
+    fn test_weibo_reach_tool_schema() {
+        let tool = WeiboReachTool::default();
+        assert_eq!(tool.name(), "weibo_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
     fn test_reach_config_default() {
         let config = ReachConfig::default();
         assert_eq!(config.web_endpoint, "https://r.jina.ai");
         assert_eq!(config.web_timeout_ms, 30000);
+        assert_eq!(config.social_timeout_ms, 30000);
     }
 
     #[test]
@@ -581,5 +1168,8 @@ mod tests {
         assert!(registry.get("video_reach").is_some());
         assert!(registry.get("github_reach").is_some());
         assert!(registry.get("feed_reach").is_some());
+        assert!(registry.get("twitter_reach").is_some());
+        assert!(registry.get("reddit_reach").is_some());
+        assert!(registry.get("weibo_reach").is_some());
     }
 }

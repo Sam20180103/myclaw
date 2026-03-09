@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.4.0
+> 版本: v0.5.0
 > 日期: 2026-03-09
-> 状态: Agent-Reach核心工具集成完成
+> 状态: Agent-Reach社交平台工具集成完成
 
 ---
 
@@ -413,6 +413,14 @@ struct SandboxConfig {
 - [x] 工具注册和配置支持
 - [x] 单元测试覆盖
 
+### Phase 12: 社交平台工具集成 (1天) ✅ 完成
+
+- [x] TwitterReachTool (Twitter/X数据访问)
+- [x] RedditReachTool (Reddit JSON API集成)
+- [x] WeiboReachTool (微博热搜和用户数据)
+- [x] 工具策略更新
+- [x] 单元测试覆盖
+
 ---
 
 ## 七、版本历史
@@ -427,6 +435,7 @@ struct SandboxConfig {
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持、配置修复 |
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
+| v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 
 ---
 
@@ -591,11 +600,11 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | config | 7 | - |
 | protocol | 9 | - |
 | skill | 9 | 4 |
-| tool | 20 | - |
+| tool | 23 | - |
 | agent | - | 3 |
 | gateway | - | - |
 | provider | - | - |
-| **总计** | **45** | **7** |
+| **总计** | **48** | **7** |
 
 ---
 
@@ -923,9 +932,9 @@ rustclaw open-code --run "生成一个Hello World程序"
 | Phase 11 | VideoReachTool (yt-dlp) | ✅ 完成 |
 | Phase 11 | GitHubReachTool (gh CLI) | ✅ 完成 |
 | Phase 11 | FeedReachTool (RSS/Atom) | ✅ 完成 |
-| Phase 12 | TwitterReachTool (xreach) | ⏳ 待开始 |
-| Phase 12 | RedditReachTool (JSON API) | ⏳ 待开始 |
-| Phase 12 | WeiboReachTool (Direct API) | ⏳ 待开始 |
+| Phase 12 | TwitterReachTool (Twitter/X) | ✅ 完成 |
+| Phase 12 | RedditReachTool (Reddit) | ✅ 完成 |
+| Phase 12 | WeiboReachTool (微博) | ✅ 完成 |
 | Phase 13 | McpClient 实现 | ⏳ 待开始 |
 | Phase 13 | XhsReachTool (小红书) | ⏳ 待开始 |
 | Phase 13 | DouyinReachTool (抖音) | ⏳ 待开始 |

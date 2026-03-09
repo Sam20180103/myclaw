@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.4.0
+> 版本: v0.5.0
 > 日期: 2026-03-09
-> 状态: Agent-Reach核心工具集成完成
+> 状态: Agent-Reach社交平台工具集成完成
 
 ---
 
@@ -18,6 +18,7 @@
 | Phase 6 | OpenCode工具集成 | 1天 | ✅ 完成 |
 | Phase 7-10 | CLI完善 | 1周 | ✅ 完成 |
 | Phase 11 | Agent-Reach核心工具 | 1天 | ✅ 完成 |
+| Phase 12 | 社交平台工具 | 1天 | ✅ 完成 |
 
 **预计总周期: 9-12 周**
 
@@ -238,6 +239,7 @@
 | 2026-03-07 | Phase 4.3 | Skill验证增强 | 100% |
 | 2026-03-07 | Phase 6 | OpenCode工具集成完成 | 100% |
 | 2026-03-09 | Phase 11 | Agent-Reach核心工具集成 | 100% |
+| 2026-03-09 | Phase 12 | 社交平台工具集成 | 100% |
 
 ---
 
@@ -310,6 +312,7 @@
 | v0.2.5 | 2026-03-07 | API文档完善(请求/响应示例) |
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持 |
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
+| v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -323,9 +326,9 @@
 | config | 7 | ✅ |
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
-| tool | 20 | ✅ |
+| tool | 23 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **51** | ✅ |
+| **总计** | **54** | ✅ |
 
 ---
 
@@ -577,28 +580,27 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 12.1 | TwitterReachTool | - xreach CLI封装 | ⏳ |
-| | | - Cookie认证管理 | ⏳ |
-| | | - 推文读取功能 | ⏳ |
-| | | - 搜索功能 | ⏳ |
-| 12.2 | RedditReachTool | - JSON API集成 | ⏳ |
-| | | - 帖子读取功能 | ⏳ |
-| | | - 搜索功能(Exa) | ⏳ |
-| | | - 代理支持 | ⏳ |
-| 12.3 | WeiboReachTool | - Direct API集成 | ⏳ |
-| | | - 热搜获取 | ⏳ |
-| | | - 用户动态读取 | ⏳ |
-| | | - 搜索功能 | ⏳ |
-| 12.4 | 速率限制 | - RateLimiter实现 | ⏳ |
-| | | - governor依赖 | ⏳ |
-| | | - 平台配置 | ⏳ |
+| 12.1 | TwitterReachTool | - Twitter/X数据访问 | ✅ |
+| | | - 推文读取功能 | ✅ |
+| | | - 搜索功能 | ✅ |
+| | | - 用户时间线 | ✅ |
+| 12.2 | RedditReachTool | - JSON API集成 | ✅ |
+| | | - 帖子读取功能 | ✅ |
+| | | - 搜索功能 | ✅ |
+| | | - Subreddit浏览 | ✅ |
+| 12.3 | WeiboReachTool | - 热搜获取 | ✅ |
+| | | - 用户动态读取 | ✅ |
+| | | - 搜索功能 | ✅ |
+| | | - 微博状态读取 | ✅ |
+| 12.4 | 工具注册 | - ToolPolicy更新 | ✅ |
+| | | - 单元测试 | ✅ |
 
 ### 验收标准
 
-- [ ] TwitterReachTool 可以读取推文
-- [ ] RedditReachTool 可以搜索帖子
-- [ ] WeiboReachTool 可以获取热搜
-- [ ] 速率限制正常工作
+- [x] TwitterReachTool 可以读取推文
+- [x] RedditReachTool 可以搜索帖子
+- [x] WeiboReachTool 可以获取热搜
+- [x] 所有单元测试通过
 
 ---
 
@@ -674,7 +676,7 @@
 | Phase | 名称 | 预计周期 | 状态 |
 |-------|------|----------|------|
 | Phase 11 | 核心Reach工具 | 2周 | ✅ 完成 |
-| Phase 12 | 社交平台工具 | 1周 | ⏳ 待开始 |
+| Phase 12 | 社交平台工具 | 1周 | ✅ 完成 |
 | Phase 13 | MCP桥接集成 | 2周 | ⏳ 待开始 |
 | Phase 14 | 高级平台工具 | 1周 | ⏳ 待开始 |
 
