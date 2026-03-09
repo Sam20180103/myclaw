@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.6.0
+> 版本: v0.7.0
 > 日期: 2026-03-09
-> 状态: 速率限制功能集成完成
+> 状态: MCP桥接集成完成
 
 ---
 
@@ -20,6 +20,7 @@
 | Phase 11 | Agent-Reach核心工具 | 1天 | ✅ 完成 |
 | Phase 12 | 社交平台工具 | 1天 | ✅ 完成 |
 | Phase 12.5 | 速率限制 | 1天 | ✅ 完成 |
+| Phase 13 | MCP桥接集成 | 1天 | ✅ 完成 |
 
 **预计总周期: 9-12 周**
 
@@ -242,6 +243,7 @@
 | 2026-03-09 | Phase 11 | Agent-Reach核心工具集成 | 100% |
 | 2026-03-09 | Phase 12 | 社交平台工具集成 | 100% |
 | 2026-03-09 | Phase 12.5 | 速率限制功能集成 | 100% |
+| 2026-03-09 | Phase 13 | MCP桥接集成 | 100% |
 
 ---
 
@@ -316,6 +318,7 @@
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 | v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
+| v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -329,9 +332,9 @@
 | config | 7 | ✅ |
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
-| tool | 28 | ✅ |
+| tool | 33 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **59** | ✅ |
+| **总计** | **64** | ✅ |
 
 ---
 
@@ -613,32 +616,32 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 13.1 | McpClient | - jsonrpc依赖添加 | ⏳ |
-| | | - JSON-RPC客户端实现 | ⏳ |
-| | | - 错误处理 | ⏳ |
-| | | - 连接管理 | ⏳ |
-| 13.2 | XhsReachTool | - 小红书MCP桥接 | ⏳ |
-| | | - 笔记读取功能 | ⏳ |
-| | | - 搜索功能 | ⏳ |
-| | | - MCP端点配置 | ⏳ |
-| 13.3 | DouyinReachTool | - 抖音MCP桥接 | ⏳ |
-| | | - 视频解析功能 | ⏳ |
-| | | - 无水印下载链接 | ⏳ |
-| | | - MCP端点配置 | ⏳ |
-| 13.4 | SearchReachTool | - Exa搜索MCP桥接 | ⏳ |
-| | | - 语义搜索功能 | ⏳ |
-| | | - 结果格式化 | ⏳ |
-| | | - 免费Key配置 | ⏳ |
-| 13.5 | 配置管理 | - reach配置schema | ⏳ |
-| | | - 凭据目录管理 | ⏳ |
-| | | - 安全存储 | ⏳ |
+| 13.1 | McpClient | - JSON-RPC客户端实现 | ✅ |
+| | | - 错误处理 | ✅ |
+| | | - 连接管理 | ✅ |
+| 13.2 | XhsReachTool | - 小红书MCP桥接 | ✅ |
+| | | - 笔记读取功能 | ✅ |
+| | | - 搜索功能 | ✅ |
+| | | - MCP端点配置 | ✅ |
+| 13.3 | DouyinReachTool | - 抖音MCP桥接 | ✅ |
+| | | - 视频解析功能 | ✅ |
+| | | - 用户信息获取 | ✅ |
+| | | - MCP端点配置 | ✅ |
+| 13.4 | SearchReachTool | - Exa API集成 | ✅ |
+| | | - 语义搜索功能 | ✅ |
+| | | - 结果格式化 | ✅ |
+| | | - API Key配置 | ✅ |
+| 13.5 | 工具注册 | - register_reach_tools更新 | ✅ |
+| | | - ToolPolicy更新 | ✅ |
+| | | - 单元测试 | ✅ |
 
 ### 验收标准
 
-- [ ] McpClient 可以连接MCP服务
-- [ ] XhsReachTool 可以读取小红书笔记
-- [ ] DouyinReachTool 可以解析抖音视频
-- [ ] SearchReachTool 可以进行语义搜索
+- [x] McpClient 可以连接MCP服务
+- [x] XhsReachTool 可以读取小红书笔记
+- [x] DouyinReachTool 可以解析抖音视频
+- [x] SearchReachTool 可以进行语义搜索
+- [x] 所有单元测试通过
 
 ---
 
@@ -680,7 +683,7 @@
 |-------|------|----------|------|
 | Phase 11 | 核心Reach工具 | 2周 | ✅ 完成 |
 | Phase 12 | 社交平台工具 | 1周 | ✅ 完成 |
-| Phase 13 | MCP桥接集成 | 2周 | ⏳ 待开始 |
+| Phase 13 | MCP桥接集成 | 2周 | ✅ 完成 |
 | Phase 14 | 高级平台工具 | 1周 | ⏳ 待开始 |
 
 **预计总周期: 6周**

@@ -109,6 +109,8 @@ pub struct ReachConfig {
     pub social_timeout_ms: u64,
     pub reddit_user_agent: String,
     pub weibo_api_base: String,
+    pub mcp_endpoint: String,
+    pub exa_api_key: Option<String>,
 }
 
 impl Default for ReachConfig {
@@ -121,7 +123,64 @@ impl Default for ReachConfig {
             social_timeout_ms: 30000,
             reddit_user_agent: "RustClaw/0.4.0".to_string(),
             weibo_api_base: "https://weibo.com/ajax".to_string(),
+            mcp_endpoint: "http://127.0.0.1:8080".to_string(),
+            exa_api_key: None,
         }
+    }
+}
+
+pub struct McpClient {
+    client: reqwest::Client,
+    endpoint: String,
+    timeout_ms: u64,
+}
+
+impl Default for McpClient {
+    fn default() -> Self {
+        Self::new("http://127.0.0.1:8080".to_string(), 30000)
+    }
+}
+
+impl McpClient {
+    pub fn new(endpoint: String, timeout_ms: u64) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, endpoint, timeout_ms }
+    }
+
+    pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": request_id
+        });
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("MCP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", response.status())));
+        }
+
+        let result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse MCP response: {}", e)))?;
+
+        if let Some(error) = result.get("error") {
+            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", error)));
+        }
+
+        Ok(result.get("result").cloned().unwrap_or(result))
     }
 }
 
@@ -632,7 +691,10 @@ pub fn register_reach_tools(registry: &crate::ToolRegistry, config: Option<Reach
     registry.register(std::sync::Arc::new(FeedReachTool::new(config.clone())));
     registry.register(std::sync::Arc::new(TwitterReachTool::new(config.clone())));
     registry.register(std::sync::Arc::new(RedditReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(WeiboReachTool::new(config)));
+    registry.register(std::sync::Arc::new(WeiboReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(XhsReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(DouyinReachTool::new(config.clone())));
+    registry.register(std::sync::Arc::new(SearchReachTool::new(config)));
 }
 
 pub struct TwitterReachTool {
@@ -1188,6 +1250,378 @@ impl Tool for WeiboReachTool {
     }
 }
 
+pub struct XhsReachTool {
+    mcp_client: McpClient,
+    #[allow(dead_code)]
+    config: ReachConfig,
+}
+
+impl Default for XhsReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl XhsReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        let mcp_client = McpClient::new(config.mcp_endpoint.clone(), config.social_timeout_ms);
+        Self { mcp_client, config }
+    }
+}
+
+#[async_trait]
+impl Tool for XhsReachTool {
+    fn name(&self) -> &str {
+        "xhs_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Read and search Xiaohongshu (Little Red Book) notes via MCP bridge."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "xhs_reach".to_string(),
+            description: "Access Xiaohongshu data via MCP bridge".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["note", "search", "user"],
+                        "description": "Action: note (read note), search (search notes), user (user info)"
+                    },
+                    "note_id": {
+                        "type": "string",
+                        "description": "Note ID for 'note' action"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for 'search' action"
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "User ID for 'user' action"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results (default: 20)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let action = params
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20);
+
+        match action {
+            "note" => {
+                let note_id = params
+                    .get("note_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'note_id' for note action".to_string()))?;
+
+                let result = self.mcp_client.call("xhs.get_note", serde_json::json!({
+                    "note_id": note_id
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": result
+                }))
+            }
+            "search" => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+                let result = self.mcp_client.call("xhs.search", serde_json::json!({
+                    "query": query,
+                    "limit": limit
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "query": query,
+                    "data": result
+                }))
+            }
+            "user" => {
+                let user_id = params
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'user_id' for user action".to_string()))?;
+
+                let result = self.mcp_client.call("xhs.get_user", serde_json::json!({
+                    "user_id": user_id
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": result
+                }))
+            }
+            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+        }
+    }
+}
+
+pub struct DouyinReachTool {
+    mcp_client: McpClient,
+    #[allow(dead_code)]
+    config: ReachConfig,
+}
+
+impl Default for DouyinReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl DouyinReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        let mcp_client = McpClient::new(config.mcp_endpoint.clone(), config.video_timeout_ms);
+        Self { mcp_client, config }
+    }
+}
+
+#[async_trait]
+impl Tool for DouyinReachTool {
+    fn name(&self) -> &str {
+        "douyin_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Parse and download Douyin (TikTok China) videos via MCP bridge."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "douyin_reach".to_string(),
+            description: "Access Douyin video data via MCP bridge".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["video", "user", "search"],
+                        "description": "Action: video (parse video), user (user info), search (search videos)"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Video URL for 'video' action"
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "User ID for 'user' action"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for 'search' action"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let action = params
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+        match action {
+            "video" => {
+                let url = params
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'url' for video action".to_string()))?;
+
+                let result = self.mcp_client.call("douyin.parse", serde_json::json!({
+                    "url": url
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": result
+                }))
+            }
+            "user" => {
+                let user_id = params
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'user_id' for user action".to_string()))?;
+
+                let result = self.mcp_client.call("douyin.get_user", serde_json::json!({
+                    "user_id": user_id
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "data": result
+                }))
+            }
+            "search" => {
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+                let result = self.mcp_client.call("douyin.search", serde_json::json!({
+                    "query": query
+                })).await?;
+
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "query": query,
+                    "data": result
+                }))
+            }
+            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+        }
+    }
+}
+
+pub struct SearchReachTool {
+    client: reqwest::Client,
+    config: ReachConfig,
+}
+
+impl Default for SearchReachTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl SearchReachTool {
+    pub fn new(config: ReachConfig) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(config.social_timeout_ms))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, config }
+    }
+}
+
+#[async_trait]
+impl Tool for SearchReachTool {
+    fn name(&self) -> &str {
+        "search_reach"
+    }
+
+    fn description(&self) -> &str {
+        "Perform semantic search using Exa AI. Returns relevant web content based on natural language queries."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "search_reach".to_string(),
+            description: "Semantic search via Exa AI".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query"
+                    },
+                    "num_results": {
+                        "type": "integer",
+                        "description": "Number of results (default: 10)"
+                    },
+                    "use_autoprompt": {
+                        "type": "boolean",
+                        "description": "Use Exa autoprompt (default: true)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["company", "research paper", "news", "github", "tweet", "movie", "song", "personal site", "pdf"],
+                        "description": "Content category filter"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'query' parameter".to_string()))?;
+
+        let num_results = params
+            .get("num_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10);
+
+        let use_autoprompt = params
+            .get("use_autoprompt")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let api_key = match &self.config.exa_api_key {
+            Some(key) => key.clone(),
+            None => return Err(ToolError::ExecutionFailed(
+                "Exa API key not configured. Set EXA_API_KEY environment variable.".to_string()
+            )),
+        };
+
+        let mut body = serde_json::json!({
+            "query": query,
+            "numResults": num_results,
+            "useAutoprompt": use_autoprompt,
+        });
+
+        if let Some(category) = params.get("category").and_then(|v| v.as_str()) {
+            body["category"] = serde_json::json!(category);
+        }
+
+        let response = self
+            .client
+            .post("https://api.exa.ai/search")
+            .header("x-api-key", api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Exa request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(ToolError::ExecutionFailed(format!("Exa error: {}", response.status())));
+        }
+
+        let result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse Exa response: {}", e)))?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "query": query,
+            "num_results": num_results,
+            "results": result.get("results").cloned().unwrap_or_default()
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1321,5 +1755,45 @@ mod tests {
         assert!(registry.get("twitter_reach").is_some());
         assert!(registry.get("reddit_reach").is_some());
         assert!(registry.get("weibo_reach").is_some());
+        assert!(registry.get("xhs_reach").is_some());
+        assert!(registry.get("douyin_reach").is_some());
+        assert!(registry.get("search_reach").is_some());
+    }
+
+    #[test]
+    fn test_mcp_client_creation() {
+        let client = McpClient::new("http://127.0.0.1:8080".to_string(), 30000);
+        assert_eq!(client.endpoint, "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_xhs_reach_tool_schema() {
+        let tool = XhsReachTool::default();
+        assert_eq!(tool.name(), "xhs_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
+    fn test_douyin_reach_tool_schema() {
+        let tool = DouyinReachTool::default();
+        assert_eq!(tool.name(), "douyin_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
+    fn test_search_reach_tool_schema() {
+        let tool = SearchReachTool::default();
+        assert_eq!(tool.name(), "search_reach");
+        let schema = tool.schema();
+        assert!(schema.parameters.is_object());
+    }
+
+    #[test]
+    fn test_reach_config_mcp_fields() {
+        let config = ReachConfig::default();
+        assert_eq!(config.mcp_endpoint, "http://127.0.0.1:8080");
+        assert!(config.exa_api_key.is_none());
     }
 }

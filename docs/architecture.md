@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.6.0
+> 版本: v0.7.0
 > 日期: 2026-03-09
-> 状态: 速率限制功能集成完成
+> 状态: MCP桥接集成完成
 
 ---
 
@@ -428,6 +428,14 @@ struct SandboxConfig {
 - [x] 平台特定速率配置
 - [x] 单元测试覆盖
 
+### Phase 13: MCP桥接集成 (1天) ✅ 完成
+
+- [x] McpClient (JSON-RPC客户端)
+- [x] XhsReachTool (小红书MCP桥接)
+- [x] DouyinReachTool (抖音MCP桥接)
+- [x] SearchReachTool (Exa语义搜索)
+- [x] 单元测试覆盖
+
 ---
 
 ## 七、版本历史
@@ -444,6 +452,7 @@ struct SandboxConfig {
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 | v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
+| v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
 
 ---
 
@@ -608,11 +617,11 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | config | 7 | - |
 | protocol | 9 | - |
 | skill | 9 | 4 |
-| tool | 28 | - |
+| tool | 33 | - |
 | agent | - | 3 |
 | gateway | - | - |
 | provider | - | - |
-| **总计** | **53** | **7** |
+| **总计** | **58** | **7** |
 
 ---
 
@@ -943,10 +952,10 @@ rustclaw open-code --run "生成一个Hello World程序"
 | Phase 12 | TwitterReachTool (Twitter/X) | ✅ 完成 |
 | Phase 12 | RedditReachTool (Reddit) | ✅ 完成 |
 | Phase 12 | WeiboReachTool (微博) | ✅ 完成 |
-| Phase 13 | McpClient 实现 | ⏳ 待开始 |
-| Phase 13 | XhsReachTool (小红书) | ⏳ 待开始 |
-| Phase 13 | DouyinReachTool (抖音) | ⏳ 待开始 |
-| Phase 13 | SearchReachTool (Exa) | ⏳ 待开始 |
+| Phase 13 | McpClient 实现 | ✅ 完成 |
+| Phase 13 | XhsReachTool (小红书) | ✅ 完成 |
+| Phase 13 | DouyinReachTool (抖音) | ✅ 完成 |
+| Phase 13 | SearchReachTool (Exa) | ✅ 完成 |
 | Phase 14 | LinkedInReachTool | ⏳ 待开始 |
 | Phase 14 | WeChatReachTool | ⏳ 待开始 |
 | Phase 14 | BossZhipinReachTool | ⏳ 待开始 |
