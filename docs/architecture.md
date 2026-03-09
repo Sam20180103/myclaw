@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.8.0
+> 版本: v0.9.0
 > 日期: 2026-03-09
-> 状态: Gateway API增强完成
+> 状态: 完整API功能实现
 
 ---
 
@@ -454,6 +454,7 @@ struct SandboxConfig {
 | v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
 | v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
 | v0.8.0 | 2026-03-09 | Gateway API增强(Session GET/Agent API/Config API) |
+| v0.9.0 | 2026-03-09 | 完整API功能(Channel管理/配置保存/模型切换/安全审计) |
 
 ---
 
@@ -625,6 +626,135 @@ struct SandboxConfig {
   "success": true,
   "message": "Configuration update received for: agent",
   "note": "Configuration changes require gateway restart to take effect."
+}
+```
+
+- `POST /api/config/save` - 保存配置到文件
+
+**请求示例:**
+```json
+{
+  "agent": {
+    "default_model": "gpt-4o",
+    "max_loop_iterations": 50
+  },
+  "tools": {
+    "enabled_tools": ["file_read", "file_write"]
+  }
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Configuration saved successfully",
+  "path": "/home/user/.config/rustclaw/config.toml"
+}
+```
+
+- `POST /api/config/model` - 切换模型
+
+**请求示例:**
+```json
+{
+  "model": "gpt-4o",
+  "provider_type": "openai"
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Model switched to gpt-4o for openai",
+  "note": "Gateway restart required for changes to take effect"
+}
+```
+
+### Channel
+- `GET /api/channel` - 列出所有通道
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "channels": [
+    {
+      "name": "http",
+      "type": "http",
+      "enabled": true,
+      "config": {}
+    },
+    {
+      "name": "websocket",
+      "type": "websocket",
+      "enabled": true,
+      "config": {}
+    }
+  ]
+}
+```
+
+- `GET /api/channel/{name}` - 获取单个通道配置
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "channel": {
+    "name": "http",
+    "type": "http",
+    "enabled": true,
+    "config": {}
+  }
+}
+```
+
+- `POST /api/channel/{name}` - 更新通道配置
+
+**请求示例:**
+```json
+{
+  "enabled": false,
+  "config": {
+    "timeout": 30000
+  }
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Channel http updated"
+}
+```
+
+### Security
+- `GET /api/security/audit` - 安全审计
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "audit": {
+    "score": 80,
+    "status": "good",
+    "findings": [
+      {
+        "severity": "info",
+        "message": "Tool 'shell_exec' requires approval"
+      }
+    ],
+    "checks": {
+      "sandbox_enabled": true,
+      "auth_required": true,
+      "api_key_configured": true,
+      "approval_tools": 1,
+      "disabled_tools": 0
+    }
+  }
 }
 ```
 
@@ -1059,14 +1189,16 @@ rustclaw open-code --run "生成一个Hello World程序"
 |------|------|------|------|
 | 会话API | 通过Gateway API管理会话 | Gateway HTTP接口 | ✅ 完成 |
 | Agent API | Agent创建和管理 | Gateway HTTP接口 | ✅ 完成 |
-| 通道管理 | 实际的通道配置 | Channel模块 | 待实现 |
+| 通道管理 | 实际的通道配置 | Channel模块 | ✅ 完成 |
 
 ### 14.2 中优先级 (P1)
 
 | 功能 | 描述 | 依赖 | 状态 |
 |------|------|------|------|
 | 配置API | 配置获取和更新 | Gateway HTTP接口 | ✅ 完成 |
-| 配置编辑 | 直接修改配置文件 | 配置系统 | 待实现 |
+| 配置编辑 | 直接修改配置文件 | 配置系统 | ✅ 完成 |
+| 模型切换 | 运行时切换模型 | Provider管理 | ✅ 完成 |
+| 安全审计 | 实际安全检查 | 安全模块 | ✅ 完成 |
 | 模型切换 | 运行时切换模型 | Provider管理 | 待实现 |
 | 安全审计 | 实际安全检查 | 安全模块 | 待实现 |
 

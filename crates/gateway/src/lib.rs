@@ -26,10 +26,12 @@ const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 pub struct Gateway {
     config: GatewayConfig,
     full_config: Config,
+    config_path: std::path::PathBuf,
     sessions: Arc<RwLock<HashMap<String, GatewaySession>>>,
     agent: Arc<AgentRuntime>,
     skill_manager: Arc<SkillManager>,
     approval_broadcaster: broadcast::Sender<SkillApprovalRequest>,
+    channels: Arc<RwLock<HashMap<String, ChannelInfo>>>,
 }
 
 pub struct GatewayConfig {
@@ -43,8 +45,8 @@ impl Clone for GatewayConfig {
         Self {
             host: self.host.clone(),
             port: self.port,
-            device_id: self.device_id.clone(),
-        }
+    device_id: self.device_id.clone(),
+    }
     }
 }
 
@@ -53,6 +55,14 @@ pub struct GatewaySession {
     pub channel: String,
     pub authenticated: bool,
     pub agent_session_key: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChannelInfo {
+    pub name: String,
+    pub channel_type: String,
+    pub enabled: bool,
+    pub config: HashMap<String, serde_json::Value>,
 }
 
 /// Create an approval subscription stream that yields approval requests
@@ -70,7 +80,7 @@ fn create_approval_stream(
 impl Gateway {
     pub fn new(config: Config) -> Self {
         let provider_client = Self::create_provider_client(&config.providers);
-        
+
         let agent_config = AgentConfig {
             max_loop_iterations: config.agent.max_loop_iterations,
             tool_timeout_ms: config.agent.tool_timeout_ms,
@@ -80,23 +90,47 @@ impl Gateway {
         let agent = AgentRuntime::new(agent_config)
             .with_provider(provider_client);
 
-        let gateway_config = GatewayConfig { 
-            host: config.gateway.host.clone(), 
-            port: config.gateway.port, 
-            device_id: config.gateway.device_id.clone(), 
+        let gateway_config = GatewayConfig {
+            host: config.gateway.host.clone(),
+            port: config.gateway.port,
+            device_id: config.gateway.device_id.clone(),
         };
         let skill_manager = SkillManager::new(SkillConfig::default());
         let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
 
         let skill_manager = Arc::new(skill_manager);
 
-        Self { 
-            config: gateway_config, 
+        let config_path = Config::config_path();
+        
+        let mut channels = HashMap::new();
+        channels.insert("http".to_string(), ChannelInfo {
+            name: "http".to_string(),
+            channel_type: "http".to_string(),
+            enabled: true,
+            config: HashMap::new(),
+        });
+        channels.insert("websocket".to_string(), ChannelInfo {
+            name: "websocket".to_string(),
+            channel_type: "websocket".to_string(),
+            enabled: true,
+            config: HashMap::new(),
+        });
+        channels.insert("webhook".to_string(), ChannelInfo {
+            name: "webhook".to_string(),
+            channel_type: "webhook".to_string(),
+            enabled: true,
+            config: HashMap::new(),
+        });
+
+        Self {
+            config: gateway_config,
             full_config: config,
-            sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))), 
-            agent: Arc::new(agent), 
-            skill_manager, 
-            approval_broadcaster: approval_tx, 
+            config_path,
+            sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))),
+            agent: Arc::new(agent),
+            skill_manager,
+            approval_broadcaster: approval_tx,
+            channels: Arc::new(RwLock::new(channels)),
         }
     }
 
@@ -163,6 +197,12 @@ impl Gateway {
             .route("/api/agent/{id}", axum::routing::get(agent_get_handler))
             .route("/api/config", axum::routing::get(config_get_handler))
             .route("/api/config", axum::routing::post(config_update_handler))
+            .route("/api/config/save", axum::routing::post(config_save_handler))
+            .route("/api/config/model", axum::routing::post(config_model_handler))
+            .route("/api/channel", axum::routing::get(channel_list_handler))
+            .route("/api/channel/{name}", axum::routing::get(channel_get_handler))
+            .route("/api/channel/{name}", axum::routing::post(channel_update_handler))
+            .route("/api/security/audit", axum::routing::get(security_audit_handler))
             .route("/api/skill", axum::routing::get(skill_list_handler))
             .route("/api/skill", axum::routing::post(skill_create_handler))
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
@@ -612,5 +652,222 @@ async fn config_update_handler(
         "success": true,
         "message": format!("Configuration update received for: {}", updated_fields.join(", ")),
         "note": "Configuration changes require gateway restart to take effect."
+    }))
+}
+
+async fn config_save_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut config = state.full_config.clone();
+    
+    if let Some(agent) = payload.get("agent") {
+        if let Some(model) = agent.get("default_model").and_then(|m| m.as_str()) {
+            config.agent.default_model = model.to_string();
+        }
+        if let Some(iterations) = agent.get("max_loop_iterations").and_then(|i| i.as_u64()) {
+            config.agent.max_loop_iterations = iterations as u32;
+        }
+        if let Some(timeout) = agent.get("tool_timeout_ms").and_then(|t| t.as_u64()) {
+            config.agent.tool_timeout_ms = timeout;
+        }
+    }
+    
+    if let Some(tools) = payload.get("tools") {
+        if let Some(enabled) = tools.get("enabled_tools").and_then(|e| e.as_array()) {
+            config.tools.enabled_tools = enabled.iter()
+                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                .collect();
+        }
+        if let Some(disabled) = tools.get("disabled_tools").and_then(|d| d.as_array()) {
+            config.tools.disabled_tools = disabled.iter()
+                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                .collect();
+        }
+    }
+    
+    match config.save(Some(state.config_path.clone())) {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "message": "Configuration saved successfully",
+            "path": state.config_path.to_string_lossy()
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Failed to save config: {}", e)
+        }))
+    }
+}
+
+async fn config_model_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let model = payload.get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("gpt-4o");
+    
+    let provider_type = payload.get("provider_type")
+        .and_then(|p| p.as_str())
+        .unwrap_or("openai");
+    
+    let mut config = state.full_config.clone();
+    config.agent.default_model = model.to_string();
+    
+    for provider in &mut config.providers {
+        if provider.provider_type == provider_type {
+            provider.default_model = Some(model.to_string());
+        }
+    }
+    
+    match config.save(Some(state.config_path.clone())) {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Model switched to {} for {}", model, provider_type),
+            "note": "Gateway restart required for changes to take effect"
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Failed to save config: {}", e)
+        }))
+    }
+}
+
+async fn channel_list_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let channels: Vec<_> = state.channels.read().values().cloned().collect();
+    Json(serde_json::json!({
+        "success": true,
+        "channels": channels.iter().map(|c| serde_json::json!({
+            "name": c.name,
+            "type": c.channel_type,
+            "enabled": c.enabled,
+            "config": c.config
+        })).collect::<Vec<_>>()
+    }))
+}
+
+async fn channel_get_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    match state.channels.read().get(&name) {
+        Some(channel) => Json(serde_json::json!({
+            "success": true,
+            "channel": {
+                "name": channel.name,
+                "type": channel.channel_type,
+                "enabled": channel.enabled,
+                "config": channel.config
+            }
+        })),
+        None => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Channel not found: {}", name)
+        }))
+    }
+}
+
+async fn channel_update_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut channels = state.channels.write();
+    
+    match channels.get_mut(&name) {
+        Some(channel) => {
+            if let Some(enabled) = payload.get("enabled").and_then(|e| e.as_bool()) {
+                channel.enabled = enabled;
+            }
+            if let Some(config) = payload.get("config").and_then(|c| c.as_object()) {
+                for (k, v) in config {
+                    channel.config.insert(k.clone(), v.clone());
+                }
+            }
+            Json(serde_json::json!({
+                "success": true,
+                "message": format!("Channel {} updated", name)
+            }))
+        }
+        None => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Channel not found: {}", name)
+        }))
+    }
+}
+
+async fn security_audit_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let mut findings: Vec<serde_json::Value> = vec![];
+    let mut score = 100;
+    
+    if !state.full_config.tools.sandbox_enabled {
+        findings.push(serde_json::json!({
+            "severity": "warning",
+            "message": "Sandbox execution is disabled",
+            "recommendation": "Enable sandbox for safer tool execution"
+        }));
+        score -= 20;
+    }
+    
+    if state.full_config.gateway.auth.allowed_devices.is_empty() {
+        findings.push(serde_json::json!({
+            "severity": "info",
+            "message": "No devices are paired yet",
+            "recommendation": "Pair devices for secure access"
+        }));
+    }
+    
+    for tool in &state.full_config.tools.require_approval {
+        findings.push(serde_json::json!({
+            "severity": "info",
+            "message": format!("Tool '{}' requires approval", tool),
+            "recommendation": "Consider removing approval for trusted tools"
+        }));
+    }
+    
+    for tool in &state.full_config.tools.disabled_tools {
+        findings.push(serde_json::json!({
+            "severity": "info",
+            "message": format!("Tool '{}' is disabled", tool)
+        }));
+    }
+    
+    if state.full_config.tools.max_timeout_ms > 60000 {
+        findings.push(serde_json::json!({
+            "severity": "warning",
+            "message": "Tool timeout is high",
+            "recommendation": "Consider reducing timeout for better security"
+        }));
+        score -= 10;
+    }
+    
+    let has_api_key = state.full_config.providers.iter().any(|p| p.api_key.is_some());
+    if !has_api_key {
+        findings.push(serde_json::json!({
+            "severity": "error",
+            "message": "No API key configured",
+            "recommendation": "Configure API key for LLM provider"
+        }));
+        score -= 30;
+    }
+    
+    Json(serde_json::json!({
+        "success": true,
+        "audit": {
+            "score": score,
+            "status": if score >= 80 { "good" } else if score >= 50 { "moderate" } else { "poor" },
+            "findings": findings,
+            "checks": {
+                "sandbox_enabled": state.full_config.tools.sandbox_enabled,
+                "auth_required": state.full_config.gateway.auth.require_pairing,
+                "api_key_configured": has_api_key,
+                "approval_tools": state.full_config.tools.require_approval.len(),
+                "disabled_tools": state.full_config.tools.disabled_tools.len()
+            }
+        }
     }))
 }

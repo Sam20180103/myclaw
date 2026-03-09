@@ -115,6 +115,29 @@ impl Config {
         }
     }
 
+    pub fn save(&self, path: Option<PathBuf>) -> anyhow::Result<()> {
+        let config_path = path.unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("rustclaw")
+                .join("config.toml")
+        });
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(&config_path, content)?;
+        Ok(())
+    }
+
+    pub fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rustclaw")
+            .join("config.toml")
+    }
+
     pub fn skills_dir() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
