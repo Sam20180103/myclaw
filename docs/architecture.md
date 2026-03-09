@@ -956,10 +956,10 @@ rustclaw open-code --run "生成一个Hello World程序"
 | Phase 13 | XhsReachTool (小红书) | ✅ 完成 |
 | Phase 13 | DouyinReachTool (抖音) | ✅ 完成 |
 | Phase 13 | SearchReachTool (Exa) | ✅ 完成 |
-| Phase 14 | LinkedInReachTool | ⏳ 待开始 |
-| Phase 14 | WeChatReachTool | ⏳ 待开始 |
-| Phase 14 | BossZhipinReachTool | ⏳ 待开始 |
-| Phase 14 | PodcastReachTool (小宇宙) | ⏳ 待开始 |
+| Phase 14 | LinkedInReachTool | ⏳ 需要MCP服务 | 需要linkedin-mcp服务运行 |
+| Phase 14 | WeChatReachTool | ⏳ 需要MCP服务 | 需要微信公众号MCP服务 |
+| Phase 14 | BossZhipinReachTool | ⏳ 需要MCP服务 | 需要mcp-bosszp服务运行 |
+| Phase 14 | PodcastReachTool | ⏳ 需要MCP服务 | 需要小宇宙API或Whisper |
 
 ### 14.4 低优先级 (P2)
 
