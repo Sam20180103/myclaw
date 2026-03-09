@@ -1112,38 +1112,20 @@ async fn main() -> anyhow::Result<()> {
                     println!("  rustclaw models auth setup-token # Setup token guide");
                     println!("  rustclaw models auth paste-token # Paste token help");
                     println!("");
-                    println!("Config file: {}", get_config_path().display());
-                }
-            }
-        }
-                        Some(ModelAuthSubcommands::SetupToken) => {
-                            println!("Setting up token...");
-                            println!("Set API key in config file:");
-                            println!("  {}", get_config_path().display());
-                        }
-                        Some(ModelAuthSubcommands::PasteToken) => {
-                            println!("Pasting token...");
-                            println!("Set API key in config file:");
-                            println!("  {}", get_config_path().display());
-                        }
-                        None => {
-                            println!("Usage:");
-                            println!("  rustclaw models auth add          # Add auth");
-                            println!("  rustclaw models auth setup-token # Setup token");
-                            println!("  rustclaw models auth paste-token # Paste token");
-                        }
-                    }
-                }
-                None => {
-                    println!("Usage:");
-                    println!("  rustclaw models --list      # List available models");
-                    println!("  rustclaw models --status   # Show model status");
-                    println!("  rustclaw models --set NAME # Set default model");
-                    println!("  rustclaw models auth       # Auth management");
-                }
-            }
-        }
-        Commands::System { subcommand } => {
+println!("Config file: {}", get_config_path().display());
+}
+}
+}
+None => {
+println!("Usage:");
+println!(" rustclaw models --list # List available models");
+println!(" rustclaw models --status # Show model status");
+println!(" rustclaw models --set NAME # Set default model");
+println!(" rustclaw models auth # Auth management");
+}
+}
+}
+Commands::System { subcommand } => {
             match subcommand {
                 Some(SystemSubcommands::Info) => {
                     println!("RustClaw System Information");
