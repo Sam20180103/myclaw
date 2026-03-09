@@ -65,6 +65,9 @@ feed-rs = "1.4"
 # Base64 encoding/decoding
 base64 = "0.21"
 
+# Rate limiting
+governor = "0.6"
+
 [package]
 name = "rustclaw"
 version.workspace = true

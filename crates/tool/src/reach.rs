@@ -1,6 +1,104 @@
 use crate::{Tool, ToolError, ToolSchema};
 use async_trait::async_trait;
+use governor::{clock::DefaultClock, Quota, RateLimiter};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::num::NonZeroU32;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    pub requests_per_minute: u32,
+    pub burst_capacity: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_minute: 30,
+            burst_capacity: 10,
+        }
+    }
+}
+
+pub struct RateLimiterManager {
+    limiters: RwLock<HashMap<String, Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, DefaultClock>>>>,
+    default_config: RateLimitConfig,
+}
+
+impl Default for RateLimiterManager {
+    fn default() -> Self {
+        Self::new(RateLimitConfig::default())
+    }
+}
+
+impl RateLimiterManager {
+    pub fn new(default_config: RateLimitConfig) -> Self {
+        Self {
+            limiters: RwLock::new(HashMap::new()),
+            default_config,
+        }
+    }
+
+    pub fn get_or_create(&self, platform: &str) -> Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, DefaultClock>> {
+        {
+            let limiters = self.limiters.read();
+            if let Some(limiter) = limiters.get(platform) {
+                return limiter.clone();
+            }
+        }
+
+        let config = self.get_platform_config(platform);
+        let quota = Quota::per_minute(NonZeroU32::new(config.requests_per_minute).unwrap())
+            .allow_burst(NonZeroU32::new(config.burst_capacity).unwrap());
+
+        let limiter = Arc::new(RateLimiter::direct(quota));
+
+        {
+            let mut limiters = self.limiters.write();
+            limiters.insert(platform.to_string(), limiter.clone());
+        }
+
+        limiter
+    }
+
+    pub fn check_rate_limit(&self, platform: &str) -> Result<(), ToolError> {
+        let limiter = self.get_or_create(platform);
+        match limiter.check() {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ToolError::ExecutionFailed(
+                "Rate limit exceeded. Please wait before making more requests.".to_string(),
+            )),
+        }
+    }
+
+    fn get_platform_config(&self, platform: &str) -> RateLimitConfig {
+        match platform {
+            "twitter" => RateLimitConfig {
+                requests_per_minute: 30,
+                burst_capacity: 10,
+            },
+            "reddit" => RateLimitConfig {
+                requests_per_minute: 60,
+                burst_capacity: 20,
+            },
+            "weibo" => RateLimitConfig {
+                requests_per_minute: 30,
+                burst_capacity: 10,
+            },
+            "web" => RateLimitConfig {
+                requests_per_minute: 120,
+                burst_capacity: 30,
+            },
+            "github" => RateLimitConfig {
+                requests_per_minute: 60,
+                burst_capacity: 20,
+            },
+            _ => self.default_config.clone(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReachConfig {
@@ -1152,6 +1250,58 @@ mod tests {
     }
 
     #[test]
+    fn test_rate_limit_config_default() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.requests_per_minute, 30);
+        assert_eq!(config.burst_capacity, 10);
+    }
+
+    #[test]
+    fn test_rate_limiter_manager_creation() {
+        let manager = RateLimiterManager::default();
+        assert!(manager.limiters.read().is_empty());
+    }
+
+    #[test]
+    fn test_rate_limiter_manager_get_or_create() {
+        let manager = RateLimiterManager::default();
+        
+        let limiter1 = manager.get_or_create("reddit");
+        let limiter2 = manager.get_or_create("reddit");
+        
+        assert_eq!(manager.limiters.read().len(), 1);
+    }
+
+    #[test]
+    fn test_rate_limiter_manager_platform_configs() {
+        let manager = RateLimiterManager::default();
+        
+        let reddit_config = manager.get_platform_config("reddit");
+        assert_eq!(reddit_config.requests_per_minute, 60);
+        assert_eq!(reddit_config.burst_capacity, 20);
+        
+        let twitter_config = manager.get_platform_config("twitter");
+        assert_eq!(twitter_config.requests_per_minute, 30);
+        assert_eq!(twitter_config.burst_capacity, 10);
+        
+        let unknown_config = manager.get_platform_config("unknown");
+        assert_eq!(unknown_config.requests_per_minute, 30);
+        assert_eq!(unknown_config.burst_capacity, 10);
+    }
+
+    #[test]
+    fn test_rate_limiter_check() {
+        let manager = RateLimiterManager::new(RateLimitConfig {
+            requests_per_minute: 10,
+            burst_capacity: 5,
+        });
+        
+        for _ in 0..5 {
+            assert!(manager.check_rate_limit("test").is_ok());
+        }
+    }
+
+    #[test]
     fn test_reach_config_default() {
         let config = ReachConfig::default();
         assert_eq!(config.web_endpoint, "https://r.jina.ai");
@@ -1163,7 +1313,7 @@ mod tests {
     fn test_register_reach_tools() {
         let registry = ToolRegistry::new();
         register_reach_tools(&registry, None);
-        
+
         assert!(registry.get("web_reach").is_some());
         assert!(registry.get("video_reach").is_some());
         assert!(registry.get("github_reach").is_some());

@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.5.0
+> 版本: v0.6.0
 > 日期: 2026-03-09
-> 状态: Agent-Reach社交平台工具集成完成
+> 状态: 速率限制功能集成完成
 
 ---
 
@@ -19,6 +19,7 @@
 | Phase 7-10 | CLI完善 | 1周 | ✅ 完成 |
 | Phase 11 | Agent-Reach核心工具 | 1天 | ✅ 完成 |
 | Phase 12 | 社交平台工具 | 1天 | ✅ 完成 |
+| Phase 12.5 | 速率限制 | 1天 | ✅ 完成 |
 
 **预计总周期: 9-12 周**
 
@@ -240,6 +241,7 @@
 | 2026-03-07 | Phase 6 | OpenCode工具集成完成 | 100% |
 | 2026-03-09 | Phase 11 | Agent-Reach核心工具集成 | 100% |
 | 2026-03-09 | Phase 12 | 社交平台工具集成 | 100% |
+| 2026-03-09 | Phase 12.5 | 速率限制功能集成 | 100% |
 
 ---
 
@@ -313,6 +315,7 @@
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持 |
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
+| v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -326,9 +329,9 @@
 | config | 7 | ✅ |
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
-| tool | 23 | ✅ |
+| tool | 28 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **54** | ✅ |
+| **总计** | **59** | ✅ |
 
 ---
 

@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.5.0
+> 版本: v0.6.0
 > 日期: 2026-03-09
-> 状态: Agent-Reach社交平台工具集成完成
+> 状态: 速率限制功能集成完成
 
 ---
 
@@ -421,6 +421,13 @@ struct SandboxConfig {
 - [x] 工具策略更新
 - [x] 单元测试覆盖
 
+### Phase 12.5: 速率限制集成 (1天) ✅ 完成
+
+- [x] governor依赖添加
+- [x] RateLimiterManager实现
+- [x] 平台特定速率配置
+- [x] 单元测试覆盖
+
 ---
 
 ## 七、版本历史
@@ -436,6 +443,7 @@ struct SandboxConfig {
 | v0.3.0 | 2026-03-07 | OpenCode工具集成、NVIDIA Provider支持、配置修复 |
 | v0.4.0 | 2026-03-09 | Agent-Reach核心工具集成(WebReach/VideoReach/GitHubReach/FeedReach) |
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
+| v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
 
 ---
 
@@ -600,11 +608,11 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | config | 7 | - |
 | protocol | 9 | - |
 | skill | 9 | 4 |
-| tool | 23 | - |
+| tool | 28 | - |
 | agent | - | 3 |
 | gateway | - | - |
 | provider | - | - |
-| **总计** | **48** | **7** |
+| **总计** | **53** | **7** |
 
 ---
 
