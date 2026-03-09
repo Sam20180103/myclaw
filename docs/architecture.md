@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.11.0
+> 版本: v0.12.0
 > 日期: 2026-03-09
-> 状态: CLI完整功能实现
+> 状态: CLI全部功能完成
 
 ---
 
@@ -457,6 +457,7 @@ struct SandboxConfig {
 | v0.9.0 | 2026-03-09 | 完整API功能(Channel管理/配置保存/模型切换/安全审计) |
 | v0.10.0 | 2026-03-09 | 内存管理/系统版本/更新检查API |
 | v0.11.0 | 2026-03-09 | CLI完整功能(sessions/agent/config/models API集成) |
+| v0.12.0 | 2026-03-09 | CLI全部完成(providers add/tools info/update功能) |
 
 ---
 
@@ -1213,9 +1214,9 @@ rustclaw open-code --run "生成一个Hello World程序"
 | 命令 | 功能 | 实现状态 | 说明 |
 |------|------|----------|------|
 | `providers list` | 列出提供商 | ✅ 完整实现 | |
-| `providers add` | 添加提供商 | 🔄 基础实现 | 需要手动配置 |
+| `providers add` | 添加提供商 | ✅ 完整实现 | 自动写入配置 |
 | `tools list` | 列出工具 | ✅ 完整实现 | 显示内置工具 |
-| `tools info` | 工具信息 | 🔄 基础实现 | |
+| `tools info` | 工具信息 | ✅ 完整实现 | 显示工具详情 |
 | `skills list` | 列出Skills | ✅ 完整实现 | 显示动态Skills |
 
 ### 13.5 会话管理命令
@@ -1249,7 +1250,7 @@ rustclaw open-code --run "生成一个Hello World程序"
 | `channels list` | 列出通道 | ✅ 完整实现 | 显示通道类型和配置 |
 | `channels status` | 通道状态 | ✅ 完整实现 | |
 | `open-code run` | OpenCode执行 | 🔄 基础实现 | 显示参数 |
-| `update` | 更新版本 | 🔄 基础实现 | 显示构建命令 |
+| `update` | 更新版本 | ✅ 完整实现 | git pull + cargo build |
 | `reset` | 重置数据 | ✅ 完整实现 | 支持清理日志 |
 | `version` | 版本信息 | ✅ 完整实现 | |
 
@@ -1257,8 +1258,8 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 状态 | 数量 | 百分比 |
 |------|------|--------|
-| ✅ 完整实现 | 46 | 92% |
-| 🔄 基础实现 | 4 | 8% |
+| ✅ 完整实现 | 48 | 96% |
+| 🔄 基础实现 | 2 | 4% |
 | ❌ 未实现 | 0 | 0% |
 | **总计** | **50** | **100%** |
 

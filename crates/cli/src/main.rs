@@ -1340,10 +1340,30 @@ async fn main() -> anyhow::Result<()> {
                     println!("  - google     (Google Gemini)");
                     println!("  - local      (Ollama, LM Studio)");
                 }
-                Some(ProvidersSubcommands::Add { name, api_key }) => {
-                    println!("Adding provider: {}", name);
-                    println!("Edit config file: {}", get_config_path().display());
+        Some(ProvidersSubcommands::Add { name, api_key }) => {
+            println!("Adding provider: {}", name);
+            let config_path = get_config_path();
+            if let Some(mut config) = load_config_file() {
+                let provider = rustclaw_config::ProviderConfig {
+                    name: name.clone(),
+                    provider_type: name.clone(),
+                    api_key: api_key.clone(),
+                    base_url: None,
+                    default_model: None,
+                };
+                config.providers.push(provider);
+                if let Ok(content) = toml::to_string_pretty(&config) {
+                    if let Ok(mut file) = std::fs::File::create(&config_path) {
+                        use std::io::Write;
+                        let _ = file.write_all(content.as_bytes());
+                        println!("Provider {} added to config", name);
+                    }
                 }
+            } else {
+                println!("Could not load config. Create one first:");
+                println!("  rustclaw config --show > {}", config_path.display());
+            }
+        }
                 Some(ProvidersSubcommands::Remove { name }) => {
                     println!("Removing provider: {}", name);
                     println!("Edit config file: {}", get_config_path().display());
@@ -1380,10 +1400,32 @@ async fn main() -> anyhow::Result<()> {
                     println!("Dynamic Tools (from Skills):");
                     println!("  (Not implemented yet)");
                 }
-                Some(ToolsSubcommands::Info { name }) => {
-                    println!("Tool: {}", name);
-                    println!("Use 'rustclaw tools --list' to see all tools");
-                }
+        Some(ToolsSubcommands::Info { name }) => {
+            println!("Tool: {}", name);
+            println!("");
+            
+            let tool_info: Vec<(&str, &str, &str)> = vec![
+                ("file_read", "Read files from filesystem", "params: path (string)"),
+                ("file_write", "Write files to filesystem", "params: path (string), content (string)"),
+                ("shell_exec", "Execute shell commands in sandbox", "params: command (string)"),
+                ("opencode", "Generate code with OpenCode CLI", "params: prompt (string)"),
+                ("web_reach", "Fetch web content via Jina Reader", "params: url (string)"),
+                ("video_reach", "Extract video subtitles via yt-dlp", "params: url (string)"),
+                ("github_reach", "Access GitHub repos via gh CLI", "params: repo (string)"),
+                ("feed_reach", "Parse RSS/Atom feeds", "params: url (string)"),
+                ("twitter_reach", "Access Twitter/X data", "params: query (string)"),
+                ("reddit_reach", "Access Reddit posts", "params: subreddit (string)"),
+                ("weibo_reach", "Access Weibo trends", "params: keyword (string)"),
+            ];
+            
+            let found = tool_info.iter().find(|(n, _, _)| *n == name);
+            if let Some((_, desc, params)) = found {
+                println!("Description: {}", desc);
+                println!("Parameters: {}", params);
+            } else {
+                println!("Tool not found in built-in tools");
+            }
+        }
                 Some(ToolsSubcommands::Register { name, path }) => {
                     println!("Registering tool: {} from {}", name, path);
                     println!("  (Dynamic tool registration not implemented)");
@@ -1527,24 +1569,49 @@ async fn main() -> anyhow::Result<()> {
                 println!("  rustclaw doctor --fix    # Auto-fix issues");
             }
         }
-        Commands::Update { check, force } => {
-            if check {
-                println!("Checking for updates...");
-                println!("Current version: {}", env!("CARGO_PKG_VERSION"));
-                println!("");
-                println!("Update checking from GitHub...");
-                println!("(Not implemented - build from source)");
-            } else if force {
-                println!("Force updating...");
-                println!("Please rebuild from source:");
-                println!("  cargo build --release");
+    Commands::Update { check, force } => {
+        if check {
+            println!("Checking for updates...");
+            println!("Current version: {}", env!("CARGO_PKG_VERSION"));
+            println!("");
+            
+            if is_gateway_running() {
+                if let Some(resp) = call_gateway_api("/api/system/update/check") {
+                    if let Some(update) = resp.get("update") {
+                        let current = update.get("current_version").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let repo = update.get("repository").and_then(|r| r.as_str()).unwrap_or("");
+                        println!("Current installed: {}", current);
+                        println!("Repository: {}", repo);
+                        println!("");
+                        println!("To update:");
+                        println!("  git pull && cargo build --release");
+                    }
+                }
             } else {
-                println!("Updating RustClaw...");
-                println!("Please rebuild from source:");
-                println!("  cargo build --release");
+                println!("Gateway not running. Update information:");
+                println!("  Repository: https://github.com/Sam20180103/myclaw");
+                println!("  Current: {}", env!("CARGO_PKG_VERSION"));
+                println!("");
+                println!("To update:");
+                println!("  git pull && cargo build --release");
             }
+        } else if force {
+            println!("Force updating...");
+            println!("Pulling latest changes...");
+            let _ = Command::new("git").args(["pull"]).status();
+            println!("Building release...");
+            let _ = Command::new("cargo").args(["build", "--release"]).status();
+            println!("Update complete!");
+        } else {
+            println!("Updating RustClaw...");
+            println!("Current version: {}", env!("CARGO_PKG_VERSION"));
+            println!("");
+            println!("Options:");
+            println!("  rustclaw update --check   # Check for updates");
+            println!("  rustclaw update --force   # Force update (git pull + build)");
         }
-        Commands::Reset { confirm, all } => {
+    }
+    Commands::Reset { confirm, all } => {
             if !confirm {
                 println!("RustClaw Reset");
                 println!("=============");
