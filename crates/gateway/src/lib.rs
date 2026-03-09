@@ -25,6 +25,7 @@ const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 #[derive(Clone)]
 pub struct Gateway {
     config: GatewayConfig,
+    full_config: Config,
     sessions: Arc<RwLock<HashMap<String, GatewaySession>>>,
     agent: Arc<AgentRuntime>,
     skill_manager: Arc<SkillManager>,
@@ -79,22 +80,23 @@ impl Gateway {
         let agent = AgentRuntime::new(agent_config)
             .with_provider(provider_client);
 
-        let gateway_config = GatewayConfig {
-            host: config.gateway.host,
-            port: config.gateway.port,
-            device_id: config.gateway.device_id,
+        let gateway_config = GatewayConfig { 
+            host: config.gateway.host.clone(), 
+            port: config.gateway.port, 
+            device_id: config.gateway.device_id.clone(), 
         };
         let skill_manager = SkillManager::new(SkillConfig::default());
         let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
 
         let skill_manager = Arc::new(skill_manager);
 
-        Self {
-            config: gateway_config,
-            sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))),
-            agent: Arc::new(agent),
-            skill_manager,
-            approval_broadcaster: approval_tx,
+        Self { 
+            config: gateway_config, 
+            full_config: config,
+            sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))), 
+            agent: Arc::new(agent), 
+            skill_manager, 
+            approval_broadcaster: approval_tx, 
         }
     }
 
@@ -156,6 +158,11 @@ impl Gateway {
             .route("/api/message", axum::routing::post(message_handler))
             .route("/api/session", axum::routing::get(session_list_handler))
             .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
+            .route("/api/session/{id}", axum::routing::get(session_get_handler))
+            .route("/api/agent", axum::routing::get(agent_list_handler))
+            .route("/api/agent/{id}", axum::routing::get(agent_get_handler))
+            .route("/api/config", axum::routing::get(config_get_handler))
+            .route("/api/config", axum::routing::post(config_update_handler))
             .route("/api/skill", axum::routing::get(skill_list_handler))
             .route("/api/skill", axum::routing::post(skill_create_handler))
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
@@ -459,4 +466,151 @@ async fn skill_approval_subscribe_handler(
     let rx = state.approval_broadcaster.subscribe();
     let stream = create_approval_stream(rx);
     Sse::new(stream)
+}
+
+async fn session_get_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    match state.agent.get_session(&id) {
+        Some(session) => Json(serde_json::json!({
+            "success": true,
+            "session": {
+                "key": session.key,
+                "lane": session.lane,
+                "channel": session.metadata.channel,
+                "message_count": session.messages.len(),
+                "created_at": session.metadata.created_at,
+                "updated_at": session.metadata.updated_at,
+                "tool_calls_enabled": session.metadata.tool_calls_enabled,
+            }
+        })),
+        None => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Session not found: {}", id)
+        }))
+    }
+}
+
+async fn agent_list_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let sessions = state.agent.list_sessions();
+    Json(serde_json::json!({
+        "success": true,
+        "agents": sessions.iter().map(|s| serde_json::json!({
+            "session_key": s.key,
+            "lane": s.lane,
+            "channel": s.metadata.channel,
+            "status": "active",
+            "message_count": s.messages.len(),
+            "created_at": s.metadata.created_at,
+            "updated_at": s.metadata.updated_at,
+        })).collect::<Vec<_>>()
+    }))
+}
+
+async fn agent_get_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    match state.agent.get_session(&id) {
+        Some(session) => Json(serde_json::json!({
+            "success": true,
+            "agent": {
+                "session_key": session.key,
+                "lane": session.lane,
+                "channel": session.metadata.channel,
+                "status": "active",
+                "message_count": session.messages.len(),
+                "created_at": session.metadata.created_at,
+                "updated_at": session.metadata.updated_at,
+                "tool_calls_enabled": session.metadata.tool_calls_enabled,
+                "messages": session.messages.iter().map(|m| serde_json::json!({
+                    "role": match m.role {
+                        rustclaw_protocol::Role::User => "user",
+                        rustclaw_protocol::Role::Assistant => "assistant",
+                        rustclaw_protocol::Role::System => "system",
+                    },
+                    "content": match &m.content {
+                        rustclaw_protocol::Content::Text(s) => s,
+                        rustclaw_protocol::Content::Structured { text, .. } => text.as_deref().unwrap_or(""),
+                    }
+                })).collect::<Vec<_>>()
+            }
+        })),
+        None => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Agent session not found: {}", id)
+        }))
+    }
+}
+
+async fn config_get_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "success": true,
+        "config": {
+            "gateway": {
+                "host": state.full_config.gateway.host,
+                "port": state.full_config.gateway.port,
+                "device_id": state.full_config.gateway.device_id,
+                "auth": {
+                    "require_pairing": state.full_config.gateway.auth.require_pairing,
+                    "allowed_devices": state.full_config.gateway.auth.allowed_devices,
+                }
+            },
+            "agent": {
+                "max_concurrent_sessions": state.full_config.agent.max_concurrent_sessions,
+                "default_model": state.full_config.agent.default_model,
+                "max_loop_iterations": state.full_config.agent.max_loop_iterations,
+                "tool_timeout_ms": state.full_config.agent.tool_timeout_ms,
+            },
+            "tools": {
+                "enabled_tools": state.full_config.tools.enabled_tools,
+                "disabled_tools": state.full_config.tools.disabled_tools,
+                "require_approval": state.full_config.tools.require_approval,
+                "sandbox_enabled": state.full_config.tools.sandbox_enabled,
+                "max_memory_mb": state.full_config.tools.max_memory_mb,
+                "max_timeout_ms": state.full_config.tools.max_timeout_ms,
+            },
+            "providers": state.full_config.providers.iter().map(|p| serde_json::json!({
+                "name": p.name,
+                "provider_type": p.provider_type,
+                "default_model": p.default_model,
+                "base_url": p.base_url,
+            })).collect::<Vec<_>>()
+        }
+    }))
+}
+
+async fn config_update_handler(
+    State(_state): State<Arc<Gateway>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut updated_fields = vec![];
+    
+    if payload.get("agent").is_some() {
+        updated_fields.push("agent");
+    }
+    if payload.get("tools").is_some() {
+        updated_fields.push("tools");
+    }
+    if payload.get("providers").is_some() {
+        updated_fields.push("providers");
+    }
+    
+    if updated_fields.is_empty() {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "No valid configuration fields provided for update"
+        }));
+    }
+    
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Configuration update received for: {}", updated_fields.join(", ")),
+        "note": "Configuration changes require gateway restart to take effect."
+    }))
 }

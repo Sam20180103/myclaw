@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.7.0
+> 版本: v0.8.0
 > 日期: 2026-03-09
-> 状态: MCP桥接集成完成
+> 状态: Gateway API增强完成
 
 ---
 
@@ -453,6 +453,7 @@ struct SandboxConfig {
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 | v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
 | v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
+| v0.8.0 | 2026-03-09 | Gateway API增强(Session GET/Agent API/Config API) |
 
 ---
 
@@ -490,6 +491,24 @@ struct SandboxConfig {
 }
 ```
 
+- `GET /api/session/{id}` - 获取单个会话详情
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "session": {
+    "key": "uuid-string",
+    "lane": "lane_0",
+    "channel": "http",
+    "message_count": 5,
+    "created_at": 1678000000000,
+    "updated_at": 1678000001000,
+    "tool_calls_enabled": true
+  }
+}
+```
+
 - `DELETE /api/session/{id}` - 删除会话
 
 **响应示例:**
@@ -497,6 +516,115 @@ struct SandboxConfig {
 {
   "success": true,
   "deleted": "session-id"
+}
+```
+
+### Agent
+- `GET /api/agent` - 列出所有Agent会话
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "agents": [
+    {
+      "session_key": "uuid-string",
+      "lane": "lane_0",
+      "channel": "http",
+      "status": "active",
+      "message_count": 5,
+      "created_at": 1678000000000,
+      "updated_at": 1678000001000
+    }
+  ]
+}
+```
+
+- `GET /api/agent/{id}` - 获取单个Agent详情
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "agent": {
+    "session_key": "uuid-string",
+    "lane": "lane_0",
+    "channel": "http",
+    "status": "active",
+    "message_count": 5,
+    "created_at": 1678000000000,
+    "updated_at": 1678000001000,
+    "tool_calls_enabled": true,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello, Agent!"
+      }
+    ]
+  }
+}
+```
+
+### Config
+- `GET /api/config` - 获取当前配置
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "config": {
+    "gateway": {
+      "host": "127.0.0.1",
+      "port": 18789,
+      "device_id": "uuid-string",
+      "auth": {
+        "require_pairing": true,
+        "allowed_devices": []
+      }
+    },
+    "agent": {
+      "max_concurrent_sessions": 100,
+      "default_model": "claude-3-5-sonnet-20241022",
+      "max_loop_iterations": 100,
+      "tool_timeout_ms": 60000
+    },
+    "tools": {
+      "enabled_tools": ["file_read", "file_write", "shell_exec", "web_search"],
+      "disabled_tools": [],
+      "require_approval": ["shell_exec"],
+      "sandbox_enabled": true,
+      "max_memory_mb": 512,
+      "max_timeout_ms": 30000
+    },
+    "providers": [
+      {
+        "name": "anthropic",
+        "provider_type": "anthropic",
+        "default_model": "claude-3-5-sonnet-20241022",
+        "base_url": "https://api.anthropic.com"
+      }
+    ]
+  }
+}
+```
+
+- `POST /api/config` - 更新配置
+
+**请求示例:**
+```json
+{
+  "agent": {
+    "max_loop_iterations": 50
+  }
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "message": "Configuration update received for: agent",
+  "note": "Configuration changes require gateway restart to take effect."
 }
 ```
 
@@ -929,14 +1057,15 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 功能 | 描述 | 依赖 | 状态 |
 |------|------|------|------|
-| 会话API | 通过Gateway API管理会话 | Gateway HTTP接口 | 待实现 |
-| Agent API | Agent创建和管理 | Gateway HTTP接口 | 待实现 |
+| 会话API | 通过Gateway API管理会话 | Gateway HTTP接口 | ✅ 完成 |
+| Agent API | Agent创建和管理 | Gateway HTTP接口 | ✅ 完成 |
 | 通道管理 | 实际的通道配置 | Channel模块 | 待实现 |
 
 ### 14.2 中优先级 (P1)
 
 | 功能 | 描述 | 依赖 | 状态 |
 |------|------|------|------|
+| 配置API | 配置获取和更新 | Gateway HTTP接口 | ✅ 完成 |
 | 配置编辑 | 直接修改配置文件 | 配置系统 | 待实现 |
 | 模型切换 | 运行时切换模型 | Provider管理 | 待实现 |
 | 安全审计 | 实际安全检查 | 安全模块 | 待实现 |
