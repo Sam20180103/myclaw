@@ -102,31 +102,39 @@ impl RateLimiterManager {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReachConfig {
-    pub web_endpoint: String,
-    pub web_timeout_ms: u64,
-    pub video_timeout_ms: u64,
-    pub github_timeout_ms: u64,
-    pub social_timeout_ms: u64,
-    pub reddit_user_agent: String,
-    pub weibo_api_base: String,
-    pub mcp_endpoint: String,
-    pub exa_api_key: Option<String>,
+pub web_endpoint: String,
+pub web_timeout_ms: u64,
+pub video_timeout_ms: u64,
+pub github_timeout_ms: u64,
+pub social_timeout_ms: u64,
+pub reddit_user_agent: String,
+pub weibo_api_base: String,
+pub mcp_endpoint: String,
+pub linkedin_mcp_endpoint: String,
+pub wechat_mcp_endpoint: String,
+pub boss_mcp_endpoint: String,
+pub podcast_mcp_endpoint: String,
+pub exa_api_key: Option<String>,
 }
 
 impl Default for ReachConfig {
-    fn default() -> Self {
-        Self {
-            web_endpoint: "https://r.jina.ai".to_string(),
-            web_timeout_ms: 30000,
-            video_timeout_ms: 60000,
-            github_timeout_ms: 30000,
-            social_timeout_ms: 30000,
-            reddit_user_agent: "RustClaw/0.4.0".to_string(),
-            weibo_api_base: "https://weibo.com/ajax".to_string(),
-            mcp_endpoint: "http://127.0.0.1:8080".to_string(),
-            exa_api_key: None,
-        }
-    }
+fn default() -> Self {
+Self {
+web_endpoint: "https://r.jina.ai".to_string(),
+web_timeout_ms: 30000,
+video_timeout_ms: 60000,
+github_timeout_ms: 30000,
+social_timeout_ms: 30000,
+reddit_user_agent: "RustClaw/0.4.0".to_string(),
+weibo_api_base: "https://weibo.com/ajax".to_string(),
+mcp_endpoint: "http://127.0.0.1:8080".to_string(),
+linkedin_mcp_endpoint: "http://127.0.0.1:8081".to_string(),
+wechat_mcp_endpoint: "http://127.0.0.1:8082".to_string(),
+boss_mcp_endpoint: "http://127.0.0.1:8083".to_string(),
+podcast_mcp_endpoint: "http://127.0.0.1:8084".to_string(),
+exa_api_key: None,
+}
+}
 }
 
 pub struct McpClient {
@@ -684,17 +692,21 @@ fn base64_decode(input: &str) -> String {
 }
 
 pub fn register_reach_tools(registry: &crate::ToolRegistry, config: Option<ReachConfig>) {
-    let config = config.unwrap_or_default();
-    registry.register(std::sync::Arc::new(WebReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(VideoReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(GitHubReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(FeedReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(TwitterReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(RedditReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(WeiboReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(XhsReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(DouyinReachTool::new(config.clone())));
-    registry.register(std::sync::Arc::new(SearchReachTool::new(config)));
+let config = config.unwrap_or_default();
+registry.register(std::sync::Arc::new(WebReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(VideoReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(GitHubReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(FeedReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(TwitterReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(RedditReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(WeiboReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(XhsReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(DouyinReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(SearchReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(LinkedInReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(WeChatReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(BossZhipinReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(PodcastReachTool::new(config)));
 }
 
 pub struct TwitterReachTool {
@@ -1495,9 +1507,575 @@ impl Tool for DouyinReachTool {
                     "data": result
                 }))
             }
-            _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
-        }
-    }
+_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+}
+}
+}
+
+pub struct LinkedInReachTool {
+mcp_client: McpClient,
+#[allow(dead_code)]
+config: ReachConfig,
+}
+
+impl Default for LinkedInReachTool {
+fn default() -> Self {
+Self::new(ReachConfig::default())
+}
+}
+
+impl LinkedInReachTool {
+pub fn new(config: ReachConfig) -> Self {
+let mcp_client = McpClient::new(config.linkedin_mcp_endpoint.clone(), config.social_timeout_ms);
+Self { mcp_client, config }
+}
+}
+
+#[async_trait]
+impl Tool for LinkedInReachTool {
+fn name(&self) -> &str {
+"linkedin_reach"
+}
+
+fn description(&self) -> &str {
+"Access LinkedIn profiles, company pages, and job listings via MCP bridge."
+}
+
+fn schema(&self) -> ToolSchema {
+ToolSchema {
+name: "linkedin_reach".to_string(),
+description: "Access LinkedIn data via MCP bridge".to_string(),
+parameters: serde_json::json!({
+"type": "object",
+"properties": {
+"action": {
+"type": "string",
+"enum": ["profile", "company", "job", "search"],
+"description": "Action: profile (user profile), company (company page), job (job listing), search (search)"
+},
+"profile_id": {
+"type": "string",
+"description": "LinkedIn profile ID or URL for 'profile' action"
+},
+"company_id": {
+"type": "string",
+"description": "Company ID or name for 'company' action"
+},
+"job_id": {
+"type": "string",
+"description": "Job ID for 'job' action"
+},
+"query": {
+"type": "string",
+"description": "Search query for 'search' action"
+},
+"limit": {
+"type": "integer",
+"description": "Number of results (default: 20)"
+}
+},
+"required": ["action"]
+}),
+}
+}
+
+async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+let action = params
+.get("action")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+let limit = params
+.get("limit")
+.and_then(|v| v.as_u64())
+.unwrap_or(20);
+
+match action {
+"profile" => {
+let profile_id = params
+.get("profile_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'profile_id' for profile action".to_string()))?;
+
+let result = self.mcp_client.call("linkedin.get_profile", serde_json::json!({
+"profile_id": profile_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"company" => {
+let company_id = params
+.get("company_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
+
+let result = self.mcp_client.call("linkedin.get_company", serde_json::json!({
+"company_id": company_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"job" => {
+let job_id = params
+.get("job_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
+
+let result = self.mcp_client.call("linkedin.get_job", serde_json::json!({
+"job_id": job_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"search" => {
+let query = params
+.get("query")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+let result = self.mcp_client.call("linkedin.search", serde_json::json!({
+"query": query,
+"limit": limit
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"query": query,
+"data": result
+}))
+}
+_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+}
+}
+}
+
+pub struct WeChatReachTool {
+mcp_client: McpClient,
+#[allow(dead_code)]
+config: ReachConfig,
+}
+
+impl Default for WeChatReachTool {
+fn default() -> Self {
+Self::new(ReachConfig::default())
+}
+}
+
+impl WeChatReachTool {
+pub fn new(config: ReachConfig) -> Self {
+let mcp_client = McpClient::new(config.wechat_mcp_endpoint.clone(), config.social_timeout_ms);
+Self { mcp_client, config }
+}
+}
+
+#[async_trait]
+impl Tool for WeChatReachTool {
+fn name(&self) -> &str {
+"wechat_reach"
+}
+
+fn description(&self) -> &str {
+"Access WeChat Official Account articles and content via MCP bridge."
+}
+
+fn schema(&self) -> ToolSchema {
+ToolSchema {
+name: "wechat_reach".to_string(),
+description: "Access WeChat Official Account data via MCP bridge".to_string(),
+parameters: serde_json::json!({
+"type": "object",
+"properties": {
+"action": {
+"type": "string",
+"enum": ["article", "search", "account"],
+"description": "Action: article (read article), search (search articles), account (account info)"
+},
+"url": {
+"type": "string",
+"description": "Article URL for 'article' action"
+},
+"query": {
+"type": "string",
+"description": "Search query for 'search' action"
+},
+"account_id": {
+"type": "string",
+"description": "Official Account ID for 'account' action"
+},
+"limit": {
+"type": "integer",
+"description": "Number of results (default: 20)"
+}
+},
+"required": ["action"]
+}),
+}
+}
+
+async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+let action = params
+.get("action")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+let limit = params
+.get("limit")
+.and_then(|v| v.as_u64())
+.unwrap_or(20);
+
+match action {
+"article" => {
+let url = params
+.get("url")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'url' for article action".to_string()))?;
+
+let result = self.mcp_client.call("wechat.get_article", serde_json::json!({
+"url": url
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"search" => {
+let query = params
+.get("query")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+let result = self.mcp_client.call("wechat.search", serde_json::json!({
+"query": query,
+"limit": limit
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"query": query,
+"data": result
+}))
+}
+"account" => {
+let account_id = params
+.get("account_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'account_id' for account action".to_string()))?;
+
+let result = self.mcp_client.call("wechat.get_account", serde_json::json!({
+"account_id": account_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+}
+}
+}
+
+pub struct BossZhipinReachTool {
+mcp_client: McpClient,
+#[allow(dead_code)]
+config: ReachConfig,
+}
+
+impl Default for BossZhipinReachTool {
+fn default() -> Self {
+Self::new(ReachConfig::default())
+}
+}
+
+impl BossZhipinReachTool {
+pub fn new(config: ReachConfig) -> Self {
+let mcp_client = McpClient::new(config.boss_mcp_endpoint.clone(), config.social_timeout_ms);
+Self { mcp_client, config }
+}
+}
+
+#[async_trait]
+impl Tool for BossZhipinReachTool {
+fn name(&self) -> &str {
+"boss_zhipin_reach"
+}
+
+fn description(&self) -> &str {
+"Search and retrieve job listings from Boss Zhipin (BOSS直聘) via MCP bridge."
+}
+
+fn schema(&self) -> ToolSchema {
+ToolSchema {
+name: "boss_zhipin_reach".to_string(),
+description: "Access Boss Zhipin job data via MCP bridge".to_string(),
+parameters: serde_json::json!({
+"type": "object",
+"properties": {
+"action": {
+"type": "string",
+"enum": ["search", "job", "company"],
+"description": "Action: search (search jobs), job (job detail), company (company info)"
+},
+"query": {
+"type": "string",
+"description": "Job search query for 'search' action"
+},
+"job_id": {
+"type": "string",
+"description": "Job ID for 'job' action"
+},
+"company_id": {
+"type": "string",
+"description": "Company ID for 'company' action"
+},
+"city": {
+"type": "string",
+"description": "City filter for search (e.g., '北京', '上海')"
+},
+"limit": {
+"type": "integer",
+"description": "Number of results (default: 20)"
+}
+},
+"required": ["action"]
+}),
+}
+}
+
+async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+let action = params
+.get("action")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+let limit = params
+.get("limit")
+.and_then(|v| v.as_u64())
+.unwrap_or(20);
+
+match action {
+"search" => {
+let query = params
+.get("query")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+let city = params
+.get("city")
+.and_then(|v| v.as_str())
+.unwrap_or("");
+
+let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
+"query": query,
+"city": city,
+"limit": limit
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"query": query,
+"data": result
+}))
+}
+"job" => {
+let job_id = params
+.get("job_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
+
+let result = self.mcp_client.call("boss.get_job", serde_json::json!({
+"job_id": job_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"company" => {
+let company_id = params
+.get("company_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
+
+let result = self.mcp_client.call("boss.get_company", serde_json::json!({
+"company_id": company_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+}
+}
+}
+
+pub struct PodcastReachTool {
+mcp_client: McpClient,
+#[allow(dead_code)]
+config: ReachConfig,
+}
+
+impl Default for PodcastReachTool {
+fn default() -> Self {
+Self::new(ReachConfig::default())
+}
+}
+
+impl PodcastReachTool {
+pub fn new(config: ReachConfig) -> Self {
+let mcp_client = McpClient::new(config.podcast_mcp_endpoint.clone(), config.video_timeout_ms);
+Self { mcp_client, config }
+}
+}
+
+#[async_trait]
+impl Tool for PodcastReachTool {
+fn name(&self) -> &str {
+"podcast_reach"
+}
+
+fn description(&self) -> &str {
+"Access Xiaoyuzhou (小宇宙) podcast content and transcripts via MCP bridge."
+}
+
+fn schema(&self) -> ToolSchema {
+ToolSchema {
+name: "podcast_reach".to_string(),
+description: "Access podcast data via MCP bridge".to_string(),
+parameters: serde_json::json!({
+"type": "object",
+"properties": {
+"action": {
+"type": "string",
+"enum": ["episode", "transcript", "search", "podcast"],
+"description": "Action: episode (get episode), transcript (get transcript), search (search), podcast (podcast info)"
+},
+"episode_id": {
+"type": "string",
+"description": "Episode ID for 'episode' action"
+},
+"podcast_id": {
+"type": "string",
+"description": "Podcast ID for 'podcast' action"
+},
+"query": {
+"type": "string",
+"description": "Search query for 'search' action"
+},
+"limit": {
+"type": "integer",
+"description": "Number of results (default: 20)"
+}
+},
+"required": ["action"]
+}),
+}
+}
+
+async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+let action = params
+.get("action")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+
+let limit = params
+.get("limit")
+.and_then(|v| v.as_u64())
+.unwrap_or(20);
+
+match action {
+"episode" => {
+let episode_id = params
+.get("episode_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'episode_id' for episode action".to_string()))?;
+
+let result = self.mcp_client.call("podcast.get_episode", serde_json::json!({
+"episode_id": episode_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"transcript" => {
+let episode_id = params
+.get("episode_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'episode_id' for transcript action".to_string()))?;
+
+let result = self.mcp_client.call("podcast.get_transcript", serde_json::json!({
+"episode_id": episode_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+"search" => {
+let query = params
+.get("query")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+
+let result = self.mcp_client.call("podcast.search", serde_json::json!({
+"query": query,
+"limit": limit
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"query": query,
+"data": result
+}))
+}
+"podcast" => {
+let podcast_id = params
+.get("podcast_id")
+.and_then(|v| v.as_str())
+.ok_or_else(|| ToolError::InvalidParams("Missing 'podcast_id' for podcast action".to_string()))?;
+
+let result = self.mcp_client.call("podcast.get_podcast", serde_json::json!({
+"podcast_id": podcast_id
+})).await?;
+
+Ok(serde_json::json!({
+"success": true,
+"action": action,
+"data": result
+}))
+}
+_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+}
+}
 }
 
 pub struct SearchReachTool {
@@ -1743,22 +2321,26 @@ mod tests {
         assert_eq!(config.social_timeout_ms, 30000);
     }
 
-    #[test]
-    fn test_register_reach_tools() {
-        let registry = ToolRegistry::new();
-        register_reach_tools(&registry, None);
+#[test]
+fn test_register_reach_tools() {
+let registry = ToolRegistry::new();
+register_reach_tools(&registry, None);
 
-        assert!(registry.get("web_reach").is_some());
-        assert!(registry.get("video_reach").is_some());
-        assert!(registry.get("github_reach").is_some());
-        assert!(registry.get("feed_reach").is_some());
-        assert!(registry.get("twitter_reach").is_some());
-        assert!(registry.get("reddit_reach").is_some());
-        assert!(registry.get("weibo_reach").is_some());
-        assert!(registry.get("xhs_reach").is_some());
-        assert!(registry.get("douyin_reach").is_some());
-        assert!(registry.get("search_reach").is_some());
-    }
+assert!(registry.get("web_reach").is_some());
+assert!(registry.get("video_reach").is_some());
+assert!(registry.get("github_reach").is_some());
+assert!(registry.get("feed_reach").is_some());
+assert!(registry.get("twitter_reach").is_some());
+assert!(registry.get("reddit_reach").is_some());
+assert!(registry.get("weibo_reach").is_some());
+assert!(registry.get("xhs_reach").is_some());
+assert!(registry.get("douyin_reach").is_some());
+assert!(registry.get("search_reach").is_some());
+assert!(registry.get("linkedin_reach").is_some());
+assert!(registry.get("wechat_reach").is_some());
+assert!(registry.get("boss_zhipin_reach").is_some());
+assert!(registry.get("podcast_reach").is_some());
+}
 
     #[test]
     fn test_mcp_client_creation() {
@@ -1782,18 +2364,64 @@ mod tests {
         assert!(schema.parameters.is_object());
     }
 
-    #[test]
-    fn test_search_reach_tool_schema() {
-        let tool = SearchReachTool::default();
-        assert_eq!(tool.name(), "search_reach");
-        let schema = tool.schema();
-        assert!(schema.parameters.is_object());
-    }
+#[test]
+fn test_search_reach_tool_schema() {
+let tool = SearchReachTool::default();
+assert_eq!(tool.name(), "search_reach");
+let schema = tool.schema();
+assert!(schema.parameters.is_object());
+}
 
-    #[test]
-    fn test_reach_config_mcp_fields() {
-        let config = ReachConfig::default();
-        assert_eq!(config.mcp_endpoint, "http://127.0.0.1:8080");
-        assert!(config.exa_api_key.is_none());
-    }
+#[test]
+fn test_linkedin_reach_tool_schema() {
+let tool = LinkedInReachTool::default();
+assert_eq!(tool.name(), "linkedin_reach");
+let schema = tool.schema();
+assert!(schema.parameters.is_object());
+}
+
+#[test]
+fn test_wechat_reach_tool_schema() {
+let tool = WeChatReachTool::default();
+assert_eq!(tool.name(), "wechat_reach");
+let schema = tool.schema();
+assert!(schema.parameters.is_object());
+}
+
+#[test]
+fn test_boss_zhipin_reach_tool_schema() {
+let tool = BossZhipinReachTool::default();
+assert_eq!(tool.name(), "boss_zhipin_reach");
+let schema = tool.schema();
+assert!(schema.parameters.is_object());
+}
+
+#[test]
+fn test_podcast_reach_tool_schema() {
+let tool = PodcastReachTool::default();
+assert_eq!(tool.name(), "podcast_reach");
+let schema = tool.schema();
+assert!(schema.parameters.is_object());
+}
+
+#[test]
+fn test_reach_config_mcp_fields() {
+let config = ReachConfig::default();
+assert_eq!(config.mcp_endpoint, "http://127.0.0.1:8080");
+assert_eq!(config.linkedin_mcp_endpoint, "http://127.0.0.1:8081");
+assert_eq!(config.wechat_mcp_endpoint, "http://127.0.0.1:8082");
+assert_eq!(config.boss_mcp_endpoint, "http://127.0.0.1:8083");
+assert_eq!(config.podcast_mcp_endpoint, "http://127.0.0.1:8084");
+assert!(config.exa_api_key.is_none());
+}
+
+#[test]
+fn test_register_reach_tools_phase14() {
+let registry = ToolRegistry::new();
+register_reach_tools(&registry, None);
+assert!(registry.get("linkedin_reach").is_some());
+assert!(registry.get("wechat_reach").is_some());
+assert!(registry.get("boss_zhipin_reach").is_some());
+assert!(registry.get("podcast_reach").is_some());
+}
 }

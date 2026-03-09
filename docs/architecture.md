@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.13.0
-> 日期: 2026-03-09
-> 状态: 所有CLI命令增强完成
+> 版本: v0.14.0
+> 日期: 2026-03-10
+> 状态: Phase 14 工具集成完成
 
 ---
 
@@ -436,6 +436,14 @@ struct SandboxConfig {
 - [x] SearchReachTool (Exa语义搜索)
 - [x] 单元测试覆盖
 
+### Phase 14: 高级平台工具集成 (1天) ✅ 完成
+
+- [x] LinkedInReachTool (LinkedIn MCP桥接)
+- [x] WeChatReachTool (微信公众号 MCP桥接)
+- [x] BossZhipinReachTool (Boss直聘 MCP桥接)
+- [x] PodcastReachTool (小宇宙播客 MCP桥接)
+- [x] 单元测试覆盖
+
 ---
 
 ## 七、版本历史
@@ -459,6 +467,7 @@ struct SandboxConfig {
 | v0.11.0 | 2026-03-09 | CLI完整功能(sessions/agent/config/models API集成) |
 | v0.12.0 | 2026-03-09 | CLI全部完成(providers add/tools info/update功能) |
 | v0.13.0 | 2026-03-09 | CLI命令增强(models auth/open-code实际执行) |
+| v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
 
 ---
 
@@ -960,11 +969,11 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 | config | 7 | - |
 | protocol | 9 | - |
 | skill | 9 | 4 |
-| tool | 33 | - |
+| tool | 38 | - |
 | agent | - | 3 |
 | gateway | - | - |
 | provider | - | - |
-| **总计** | **58** | **7** |
+| **总计** | **69** | **7** |
 
 ---
 
@@ -1300,10 +1309,10 @@ rustclaw open-code --run "生成一个Hello World程序"
 | Phase 13 | XhsReachTool (小红书) | ✅ 完成 |
 | Phase 13 | DouyinReachTool (抖音) | ✅ 完成 |
 | Phase 13 | SearchReachTool (Exa) | ✅ 完成 |
-| Phase 14 | LinkedInReachTool | ⏳ 需要MCP服务 | 需要linkedin-mcp服务运行 |
-| Phase 14 | WeChatReachTool | ⏳ 需要MCP服务 | 需要微信公众号MCP服务 |
-| Phase 14 | BossZhipinReachTool | ⏳ 需要MCP服务 | 需要mcp-bosszp服务运行 |
-| Phase 14 | PodcastReachTool | ⏳ 需要MCP服务 | 需要小宇宙API或Whisper |
+| Phase 14 | LinkedInReachTool | ✅ 完成 | MCP桥接工具 |
+| Phase 14 | WeChatReachTool | ✅ 完成 | MCP桥接工具 |
+| Phase 14 | BossZhipinReachTool | ✅ 完成 | MCP桥接工具 |
+| Phase 14 | PodcastReachTool | ✅ 完成 | MCP桥接工具 |
 
 ### 14.4 低优先级 (P2)
 
