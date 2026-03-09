@@ -16,3 +16,5 @@ rustclaw-config = { path = "../config" }
 toml = { workspace = true }
 dirs = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.11", features = ["blocking", "json"] }

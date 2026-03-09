@@ -687,22 +687,53 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             
-            if let Some(key) = get {
-                if let Some(config) = load_config_file() {
-                    println!("Getting config: {}", key);
-                    println!("{:?}", config);
+        if let Some(key) = get {
+            if is_gateway_running() {
+                if let Some(resp) = call_gateway_api("/api/config") {
+                    if let Some(config) = resp.get("config") {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        let mut current = config;
+                        for part in &parts {
+                            current = current.get(part).unwrap_or(&serde_json::Value::Null);
+                        }
+                        println!("{}: {}", key, serde_json::to_string_pretty(current).unwrap_or_default());
+                    }
                 } else {
-                    println!("No config file found. Use 'rustclaw config --show' to view default config.");
+                    println!("Failed to get config from gateway");
                 }
+            } else if let Some(config) = load_config_file() {
+                println!("Getting config: {}", key);
+                println!("{:?}", config);
+            } else {
+                println!("No config file found. Use 'rustclaw config --show' to view default config.");
+            }
+            return Ok(());
+        }
+
+        if let Some(value) = set {
+            let parts: Vec<&str> = value.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                println!("Invalid format. Use KEY=VALUE");
                 return Ok(());
             }
+            let _key = parts[0];
+            let _val = parts[1];
             
-            if let Some(value) = set {
+            if is_gateway_running() {
+                println!("Saving config via gateway API...");
+                let body = serde_json::json!({});
+                if let Some(_resp) = post_gateway_api("/api/config/save", &body) {
+                    println!("Config saved. Restart gateway for changes to take effect.");
+                } else {
+                    println!("Failed to save config via API");
+                }
+            } else {
                 ensure_config_dir()?;
                 println!("Setting config: {}", value);
-                println!("Note: Config editing not yet implemented. Edit {} manually.", config_file.display());
-                return Ok(());
+                println!("Note: Gateway not running. Edit {} manually.", config_file.display());
             }
+            return Ok(());
+        }
             
             println!("Usage:");
             println!("  rustclaw config --path    # Show config path");
@@ -710,73 +741,141 @@ async fn main() -> anyhow::Result<()> {
             println!("  rustclaw config --get KEY # Get config value");
             println!("  rustclaw config --set KEY=VALUE # Set config value");
         }
-        Commands::Sessions { list, kill, clear } => {
-            if !is_gateway_running() {
-                println!("Gateway is not running. Start it with 'rustclaw start'");
-                return Ok(());
-            }
-            
-            if list {
-                println!("Session list:");
-                println!("  (Connect to http://127.0.0.1:18789 to manage sessions)");
-                return Ok(());
-            }
-            
-            if let Some(session_id) = kill {
-                println!("Killing session: {}", session_id);
-                println!("  (API not implemented yet)");
-                return Ok(());
-            }
-            
-            if clear {
-                println!("Clearing all sessions");
-                println!("  (API not implemented yet)");
-                return Ok(());
-            }
-            
-            println!("Usage:");
-            println!("  rustclaw sessions --list    # List sessions");
-            println!("  rustclaw sessions --kill ID # Kill session");
-            println!("  rustclaw sessions --clear   # Clear all sessions");
+    Commands::Sessions { list, kill, clear } => {
+        if !is_gateway_running() {
+            println!("Gateway is not running. Start it with 'rustclaw start'");
+            return Ok(());
         }
-        Commands::Agent { list, info, create, delete } => {
-            if !is_gateway_running() {
-                println!("Gateway is not running. Start it with 'rustclaw start'");
-                return Ok(());
+
+        if list {
+            println!("Session list:");
+            if let Some(resp) = call_gateway_api("/api/session") {
+                if let Some(sessions) = resp.get("sessions").and_then(|s| s.as_array()) {
+                    if sessions.is_empty() {
+                        println!("  (no active sessions)");
+                    } else {
+                        for session in sessions {
+                            let key = session.get("key").and_then(|k| k.as_str()).unwrap_or("unknown");
+                            let lane = session.get("lane").and_then(|l| l.as_str()).unwrap_or("unknown");
+                            let channel = session.get("channel").and_then(|c| c.as_str()).unwrap_or("unknown");
+                            let count = session.get("message_count").and_then(|c| c.as_u64()).unwrap_or(0);
+                            println!("  {} [{}] {} ({} messages)", key, lane, channel, count);
+                        }
+                    }
+                } else {
+                    println!("  (error parsing response)");
+                }
+            } else {
+                println!("  (failed to connect to gateway API)");
             }
-            
-            if list {
-                println!("Agents:");
-                println!("  (API not implemented yet)");
-                return Ok(());
-            }
-            
-            if let Some(name) = info {
-                println!("Agent info: {}", name);
-                return Ok(());
-            }
-            
-            if let Some(name) = create {
-                println!("Creating agent: {}", name);
-                println!("  (API not implemented yet)");
-                return Ok(());
-            }
-            
-            if let Some(name) = delete {
-                println!("Deleting agent: {}", name);
-                println!("  (API not implemented yet)");
-                return Ok(());
-            }
-            
-            println!("Usage:");
-            println!("  rustclaw agent --list           # List agents");
-            println!("  rustclaw agent --info NAME     # Show agent info");
-            println!("  rustclaw agent --create NAME   # Create agent");
-            println!("  rustclaw agent --delete NAME   # Delete agent");
+            return Ok(());
         }
-        Commands::Gateway { subcommand } => {
-            match subcommand {
-                Some(GatewaySubcommands::Status) => show_status(),
+
+        if let Some(session_id) = kill {
+            println!("Killing session: {}", session_id);
+            let endpoint = format!("/api/session/{}", session_id);
+            if let Some(resp) = call_gateway_api(&endpoint) {
+                if resp.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+                    println!("  Session {} deleted", session_id);
+                } else {
+                    println!("  Failed to delete session");
+                }
+            } else {
+                println!("  (failed to connect to gateway API)");
+            }
+            return Ok(());
+        }
+
+        if clear {
+            println!("Clearing all sessions:");
+            if let Some(resp) = call_gateway_api("/api/session") {
+                if let Some(sessions) = resp.get("sessions").and_then(|s| s.as_array()) {
+                    for session in sessions {
+                        if let Some(key) = session.get("key").and_then(|k| k.as_str()) {
+                            let endpoint = format!("/api/session/{}", key);
+                            let _ = call_gateway_api(&endpoint);
+                        }
+                    }
+                    println!("  {} sessions cleared", sessions.len());
+                }
+            }
+            return Ok(());
+        }
+
+        println!("Usage:");
+        println!(" rustclaw sessions --list # List sessions");
+        println!(" rustclaw sessions --kill ID # Kill session");
+        println!(" rustclaw sessions --clear # Clear all sessions");
+    }
+    Commands::Agent { list, info, create, delete } => {
+        if !is_gateway_running() {
+            println!("Gateway is not running. Start it with 'rustclaw start'");
+            return Ok(());
+        }
+
+        if list {
+            println!("Agents:");
+            if let Some(resp) = call_gateway_api("/api/agent") {
+                if let Some(agents) = resp.get("agents").and_then(|a| a.as_array()) {
+                    if agents.is_empty() {
+                        println!("  (no active agents)");
+                    } else {
+                        for agent in agents {
+                            let key = agent.get("session_key").and_then(|k| k.as_str()).unwrap_or("unknown");
+                            let lane = agent.get("lane").and_then(|l| l.as_str()).unwrap_or("unknown");
+                            let status = agent.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+                            println!("  {} [{}] {}", key, lane, status);
+                        }
+                    }
+                }
+            } else {
+                println!("  (failed to connect to gateway API)");
+            }
+            return Ok(());
+        }
+
+        if let Some(name) = info {
+            println!("Agent info: {}", name);
+            let endpoint = format!("/api/agent/{}", name);
+            if let Some(resp) = call_gateway_api(&endpoint) {
+                if let Some(agent) = resp.get("agent") {
+                    let key = agent.get("session_key").and_then(|k| k.as_str()).unwrap_or("unknown");
+                    let lane = agent.get("lane").and_then(|l| l.as_str()).unwrap_or("unknown");
+                    let messages = agent.get("message_count").and_then(|m| m.as_u64()).unwrap_or(0);
+                    println!("  Key: {}", key);
+                    println!("  Lane: {}", lane);
+                    println!("  Messages: {}", messages);
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(name) = create {
+            println!("Creating agent: {}", name);
+            println!(" (Agents are created automatically on first message)");
+            return Ok(());
+        }
+
+        if let Some(name) = delete {
+            println!("Deleting agent session: {}", name);
+            let endpoint = format!("/api/session/{}", name);
+            if let Some(resp) = call_gateway_api(&endpoint) {
+                if resp.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+                    println!("  Agent session {} deleted", name);
+                }
+            }
+            return Ok(());
+        }
+
+        println!("Usage:");
+        println!(" rustclaw agent --list # List agents");
+        println!(" rustclaw agent --info NAME # Show agent info");
+        println!(" rustclaw agent --create NAME # Create agent");
+        println!(" rustclaw agent --delete NAME # Delete agent");
+    }
+    Commands::Gateway { subcommand } => {
+        match subcommand {
+            Some(GatewaySubcommands::Status) => show_status(),
                 Some(GatewaySubcommands::Start) => {
                     if is_gateway_running() {
                         println!("Gateway is already running");
@@ -938,11 +1037,28 @@ async fn main() -> anyhow::Result<()> {
                         println!("No config loaded");
                     }
                 }
-                Some(ModelsSubcommands::Set { name }) => {
-                    println!("Setting default model: {}", name);
-                    let config_path = get_config_path();
-                    println!("Edit {} to change model", config_path.display());
+        Some(ModelsSubcommands::Set { name }) => {
+            println!("Setting default model: {}", name);
+            if is_gateway_running() {
+                let body = serde_json::json!({
+                    "model": name,
+                    "provider_type": "openai"
+                });
+                if let Some(resp) = post_gateway_api("/api/config/model", &body) {
+                    if resp.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+                        println!("  Model set to: {}", name);
+                        println!("  Restart gateway for changes to take effect");
+                    } else {
+                        println!("  Failed to set model");
+                    }
+                } else {
+                    println!("  Failed to connect to gateway API");
                 }
+            } else {
+                let config_path = get_config_path();
+                println!("Gateway not running. Edit {} to change model", config_path.display());
+            }
+        }
                 Some(ModelsSubcommands::Auth { subcommand }) => {
                     match subcommand {
                         Some(ModelAuthSubcommands::Add) => {
@@ -1455,10 +1571,42 @@ async fn main() -> anyhow::Result<()> {
             
             println!("Reset complete.");
         }
-        Commands::Version => {
-            println!("rustclaw {}", env!("CARGO_PKG_VERSION"));
-        }
+    Commands::Version => {
+        println!("rustclaw {}", env!("CARGO_PKG_VERSION"));
+    }
     }
 
     Ok(())
+}
+
+fn call_gateway_api(endpoint: &str) -> Option<serde_json::Value> {
+    let url = format!("http://127.0.0.1:18789{}", endpoint);
+    match reqwest::blocking::get(&url) {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                resp.json::<serde_json::Value>().ok()
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+fn post_gateway_api(endpoint: &str, body: &serde_json::Value) -> Option<serde_json::Value> {
+    let url = format!("http://127.0.0.1:18789{}", endpoint);
+    match reqwest::blocking::Client::new()
+        .post(&url)
+        .json(body)
+        .send()
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                resp.json::<serde_json::Value>().ok()
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
 }

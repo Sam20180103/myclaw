@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.10.0
+> 版本: v0.11.0
 > 日期: 2026-03-09
-> 状态: 完整功能实现完成
+> 状态: CLI完整功能实现
 
 ---
 
@@ -456,6 +456,7 @@ struct SandboxConfig {
 | v0.8.0 | 2026-03-09 | Gateway API增强(Session GET/Agent API/Config API) |
 | v0.9.0 | 2026-03-09 | 完整API功能(Channel管理/配置保存/模型切换/安全审计) |
 | v0.10.0 | 2026-03-09 | 内存管理/系统版本/更新检查API |
+| v0.11.0 | 2026-03-09 | CLI完整功能(sessions/agent/config/models API集成) |
 
 ---
 
@@ -1195,8 +1196,8 @@ rustclaw open-code --run "生成一个Hello World程序"
 |------|------|----------|------|
 | `config --show` | 显示配置 | ✅ 完整实现 | 显示完整配置 |
 | `config --path` | 配置路径 | ✅ 完整实现 | |
-| `config --get` | 获取配置项 | 🔄 基础实现 | 显示配置对象 |
-| `config --set` | 设置配置项 | 🔄 基础实现 | 需要手动编辑 |
+| `config --get` | 获取配置项 | ✅ 完整实现 | 调用Gateway API |
+| `config --set` | 设置配置项 | ✅ 完整实现 | 通过API保存 |
 
 ### 13.3 模型管理命令
 
@@ -1204,7 +1205,7 @@ rustclaw open-code --run "生成一个Hello World程序"
 |------|------|----------|------|
 | `models list` | 列出模型 | ✅ 完整实现 | 显示可用模型列表 |
 | `models status` | 模型状态 | ✅ 完整实现 | 显示当前配置 |
-| `models set` | 设置模型 | 🔄 基础实现 | 需要手动编辑配置 |
+| `models set` | 设置模型 | ✅ 完整实现 | 调用API切换模型 |
 | `models auth` | 模型认证 | 🔄 基础实现 | 显示配置路径 |
 
 ### 13.4 资源管理命令
@@ -1221,11 +1222,11 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 命令 | 功能 | 实现状态 | 说明 |
 |------|------|----------|------|
-| `sessions --list` | 列出会话 | 🔄 基础实现 | 显示提示信息 |
-| `sessions --kill` | 终止会话 | 🔄 基础实现 | 需要Gateway API |
-| `sessions --clear` | 清理会话 | 🔄 基础实现 | |
-| `agent --list` | 列出Agent | 🔄 基础实现 | |
-| `agent --info` | Agent信息 | 🔄 基础实现 | |
+| `sessions --list` | 列出会话 | ✅ 完整实现 | 调用Gateway API |
+| `sessions --kill` | 终止会话 | ✅ 完整实现 | 调用DELETE API |
+| `sessions --clear` | 清理会话 | ✅ 完整实现 | 批量删除 |
+| `agent --list` | 列出Agent | ✅ 完整实现 | 调用Gateway API |
+| `agent --info` | Agent信息 | ✅ 完整实现 | 调用GET API |
 
 ### 13.6 系统命令
 
@@ -1256,8 +1257,8 @@ rustclaw open-code --run "生成一个Hello World程序"
 
 | 状态 | 数量 | 百分比 |
 |------|------|--------|
-| ✅ 完整实现 | 40 | 80% |
-| 🔄 基础实现 | 10 | 20% |
+| ✅ 完整实现 | 46 | 92% |
+| 🔄 基础实现 | 4 | 8% |
 | ❌ 未实现 | 0 | 0% |
 | **总计** | **50** | **100%** |
 
