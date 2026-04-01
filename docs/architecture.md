@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.14.1
-> 日期: 2026-03-10
-> 状态: Phase 14 工具集成完成 + CLI编译修复
+> 版本: v0.15.0
+> 日期: 2026-04-01
+> 状态: Phase 15 记忆系统与自我进化 (规划中)
 
 ---
 
@@ -444,6 +444,44 @@ struct SandboxConfig {
 - [x] PodcastReachTool (小宇宙播客 MCP桥接)
 - [x] 单元测试覆盖
 
+### Phase 15: 记忆系统与自我进化 (2周) ⏳ 规划中
+
+**灵感来源**: Nous Research Hermes Agent (20.4k ⭐)
+
+**三层记忆架构**:
+```
+Layer 1: 即时记忆 (Session Messages)     ← 当前已有 (内存HashMap)
+Layer 2: 持久记忆 (MEMORY.md + USER.md)  ← 需要新增
+Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
+```
+
+**Learning Loop 闭环**:
+```
+复杂任务完成 → 自动提取经验 → 创建/更新 Skill → 下次自动使用
+     ↑                                              │
+     └────────── 技能使用中自我改进 ←─────────────────┘
+```
+
+- [ ] SQLite 持久化存储 (WAL模式 + FTS5全文搜索)
+- [ ] 三层记忆架构 (即时/持久/搜索)
+- [ ] MEMORY.md + USER.md 双文件记忆
+  - MEMORY.md: Agent个人笔记 (2200 chars)
+  - USER.md: 用户偏好档案 (1375 chars)
+- [ ] Memory 工具 (add/replace/remove 自主管理)
+- [ ] 会话全文搜索 (FTS5 + 上下文片段 + LLM摘要)
+- [ ] 用户建模 (跨会话偏好学习)
+- [ ] Skill 自我创建 (复杂任务后自动生成, 5+ tool calls)
+- [ ] Skill 自我管理 (patch/edit/create/delete)
+- [ ] 双级上下文压缩
+  - Gateway层: 85%阈值 (安全网, 粗略估计)
+  - Agent层: 50%阈值 (精确token计数, 结构化摘要)
+- [ ] Prompt 缓存策略 (Anthropic cache_control, 75%成本降低)
+- [ ] 回调系统 (tool_progress, step, status, thinking)
+- [ ] 迭代预算 (父子 Agent 共享预算)
+- [ ] 记忆安全扫描 (prompt injection/exfiltration 检测)
+- [ ] 会话谱系 (parent_session_id 链式追踪)
+- [ ] 经验回放 (历史会话压缩摘要)
+
 ---
 
 ## 七、版本历史
@@ -469,6 +507,7 @@ struct SandboxConfig {
 | v0.13.0 | 2026-03-09 | CLI命令增强(models auth/open-code实际执行) |
 | v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
+| v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 
 ---
 
@@ -1538,4 +1577,264 @@ async fn test_web_reach_integration() {
 
 ---
 
-*文档版本: v0.4.0*
+## 十六、Phase 15 详细设计 — 记忆系统与自我进化
+
+### 16.1 设计目标
+
+借鉴 Nous Research Hermes Agent 的架构，为 RustClaw 添加：
+1. **持久化记忆** — 跨会话记住用户偏好、环境信息、经验教训
+2. **自我进化** — Agent 从经验中自动创建和改进 Skill
+3. **上下文管理** — 智能压缩长对话，降低 token 成本
+
+### 16.2 三层记忆架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: 即时记忆 (Session Messages)                    │
+│  - 内存 HashMap (当前已有)                                │
+│  - 会话内消息历史                                         │
+│  - TTL 自动清理                                          │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: 持久记忆 (MEMORY.md + USER.md)                 │
+│  - 文件存储 (~/.rustclaw/memories/)                      │
+│  - MEMORY.md: Agent 笔记 (2200 chars)                    │
+│  - USER.md: 用户偏好 (1375 chars)                        │
+│  - 会话开始时注入 system prompt                          │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: 会话搜索 (SQLite + FTS5)                       │
+│  - SQLite WAL 模式 (~/.rustclaw/state.db)               │
+│  - FTS5 全文搜索                                         │
+│  - 会话谱系 (parent_session_id 链)                       │
+│  - LLM 摘要生成                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 16.3 Memory 工具设计
+
+```rust
+pub struct MemoryTool {
+    memory_path: PathBuf,      // ~/.rustclaw/memories/
+    memory_limit: usize,       // 2200 chars
+    user_limit: usize,         // 1375 chars
+}
+
+impl Tool for MemoryTool {
+    fn name(&self) -> &str { "memory" }
+    
+    async fn execute(&self, params: Value) -> Result<Value, ToolError> {
+        match params["action"].as_str() {
+            Some("add") => self.add_entry(&params),
+            Some("replace") => self.replace_entry(&params),
+            Some("remove") => self.remove_entry(&params),
+            _ => Err(ToolError::InvalidAction),
+        }
+    }
+}
+```
+
+**关键特性**:
+- 子串匹配 (replace/remove 不需要完整文本)
+- 容量管理 (超限时提示合并)
+- 安全扫描 (阻止 prompt injection/exfiltration)
+- 去重检测 (拒绝完全重复的条目)
+
+### 16.4 SQLite 会话存储设计
+
+```sql
+-- 会话元数据表
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,              -- cli, http, websocket
+    model TEXT,
+    parent_session_id TEXT,            -- 压缩后谱系链
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    message_count INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    estimated_cost_usd REAL,
+    title TEXT,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+);
+
+-- 消息历史表
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    tool_calls TEXT,                   -- JSON
+    tool_name TEXT,
+    timestamp REAL NOT NULL,
+    token_count INTEGER,
+    reasoning TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
+-- FTS5 全文搜索
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    content,
+    content=messages,
+    content_rowid=id
+);
+```
+
+**并发处理**:
+- WAL 模式 (并发读 + 单写)
+- 短超时 (1s) + 随机抖动重试
+- 每 50 次写入 PASSIVE checkpoint
+
+### 16.5 双级上下文压缩
+
+```
+                    ┌──────────────────────────┐
+  新消息到达  ────► │  Gateway Session Hygiene │  85% 阈值 (安全网)
+                    │  (粗略估计, 字符级)       │
+                    └─────────────┬────────────┘
+                                  │
+                                  ▼
+                    ┌──────────────────────────┐
+                    │  Agent ContextCompressor │  50% 阈值 (主压缩)
+                    │  (精确 token 计数)        │
+                    └──────────────────────────┘
+```
+
+**压缩算法 (4阶段)**:
+1. **清理旧工具结果** — 替换 >200 chars 的旧输出 (无 LLM 调用)
+2. **确定边界** — 保护头部 (system + 首轮) + 尾部 (token 预算)
+3. **结构化摘要** — 使用辅助模型生成摘要
+   ```
+   ## Goal / ## Constraints / ## Progress
+   ## Key Decisions / ## Relevant Files / ## Next Steps
+   ```
+4. **组装压缩消息** — 头部 + 摘要 + 尾部
+
+**迭代重压缩**: 后续压缩更新而非重写摘要，保留跨压缩信息。
+
+### 16.6 Learning Loop — 自我进化闭环
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Learning Loop                        │
+│                                                      │
+│  1. 复杂任务完成 (5+ tool calls)                     │
+│       │                                              │
+│       ▼                                              │
+│  2. 自动提取经验                                      │
+│       │                                              │
+│       ▼                                              │
+│  3. 创建/更新 Skill (skill_manage tool)              │
+│       │                                              │
+│       ▼                                              │
+│  4. Skill 存入 ~/.rustclaw/skills/                   │
+│       │                                              │
+│       ▼                                              │
+│  5. 下次自动发现并使用                                │
+│       │                                              │
+│       ▼                                              │
+│  6. 使用中自我改进 (patch 动作)                       │
+│       │                                              │
+│       └──────────────────────────────────────────────┘
+```
+
+**Skill 自我管理工具**:
+```rust
+pub struct SkillManageTool {
+    skill_manager: Arc<SkillManager>,
+}
+
+// 支持的动作:
+// - create: 从零创建新 Skill
+// - patch: 针对性修改 (首选, token 高效)
+// - edit: 大规模重写
+// - delete: 删除 Skill
+// - write_file: 添加/更新辅助文件
+// - remove_file: 删除辅助文件
+```
+
+### 16.7 Prompt 缓存策略
+
+借鉴 Anthropic `cache_control` 策略，降低 75% 输入 token 成本:
+
+```
+Breakpoint 1: System prompt              (稳定, 跨所有轮次)
+Breakpoint 2: 倒数第3条非系统消息  ─┐
+Breakpoint 3: 倒数第2条非系统消息   ├─ 滚动窗口
+Breakpoint 4: 最后一条非系统消息   ─┘
+```
+
+### 16.8 回调系统设计
+
+```rust
+pub struct AgentCallbacks {
+    pub tool_progress: Box<dyn Fn(&ToolCall) + Send>,
+    pub step: Box<dyn Fn(&AgentStep) + Send>,
+    pub status: Box<dyn Fn(&AgentStatus) + Send>,
+    pub thinking: Box<dyn Fn(&str) + Send>,
+}
+```
+
+支持 CLI、Gateway、ACP 集成流式进度。
+
+### 16.9 新增 Crate 结构
+
+```
+crates/
+├── memory/           # 新增: 记忆系统
+│   ├── src/
+│   │   ├── lib.rs    # MemoryManager
+│   │   ├── memory_tool.rs    # memory 工具实现
+│   │   ├── user_profile.rs   # 用户偏好管理
+│   │   └── scanner.rs        # 安全扫描器
+│   └── Cargo.toml
+├── session_db/       # 新增: SQLite 会话存储
+│   ├── src/
+│   │   ├── lib.rs    # SessionDB
+│   │   ├── schema.rs # 数据库 schema + 迁移
+│   │   ├── search.rs # FTS5 搜索
+│   │   └── lineage.rs # 会话谱系
+│   └── Cargo.toml
+└── compression/      # 新增: 上下文压缩
+    ├── src/
+    │   ├── lib.rs    # ContextCompressor
+    │   ├── summarizer.rs  # 摘要生成
+    │   └── cache.rs       # Prompt 缓存
+    └── Cargo.toml
+```
+
+### 16.10 配置 Schema
+
+```toml
+[memory]
+enabled = true
+memory_path = "~/.rustclaw/memories/"
+memory_char_limit = 2200
+user_char_limit = 1375
+
+[session_db]
+enabled = true
+db_path = "~/.rustclaw/state.db"
+prune_days = 90
+
+[compression]
+enabled = true
+threshold = 0.50           # 50% of context window
+target_ratio = 0.20        # 保留尾部 20%
+protect_last_n = 20        # 最少保护 20 条消息
+summary_model = null       # 使用辅助模型
+
+[prompt_cache]
+enabled = true
+ttl = "5m"                 # 5 分钟或 1 小时
+```
+
+### 16.11 新增依赖
+
+```toml
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
+```
+
+---
+
+*文档版本: v0.15.0*

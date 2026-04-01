@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.7.0
-> 日期: 2026-03-09
-> 状态: MCP桥接集成完成
+> 版本: v0.15.0
+> 日期: 2026-04-01
+> 状态: Phase 15 记忆系统与自我进化 (规划中)
 
 ---
 
@@ -21,8 +21,10 @@
 | Phase 12 | 社交平台工具 | 1天 | ✅ 完成 |
 | Phase 12.5 | 速率限制 | 1天 | ✅ 完成 |
 | Phase 13 | MCP桥接集成 | 1天 | ✅ 完成 |
+| Phase 14 | 高级平台工具 | 1天 | ✅ 完成 |
+| Phase 15 | 记忆系统与自我进化 | 2周 | ⏳ 规划中 |
 
-**预计总周期: 9-12 周**
+**预计总周期: 11-14 周**
 
 ---
 
@@ -244,15 +246,17 @@
 | 2026-03-09 | Phase 12 | 社交平台工具集成 | 100% |
 | 2026-03-09 | Phase 12.5 | 速率限制功能集成 | 100% |
 | 2026-03-09 | Phase 13 | MCP桥接集成 | 100% |
+| 2026-03-10 | Phase 14 | 高级平台工具集成 | 100% |
+| 2026-04-01 | Phase 15 | 记忆系统与自我进化 (规划) | 0% |
 
 ---
 
 ## 统计
 
-- 总任务数: 55+
-- 已完成: 55
+- 总任务数: 110+
+- 已完成: 95
 - 进行中: 0
-- 待开始: 0
+- 待开始: 15+ (Phase 15)
 
 ---
 
@@ -263,7 +267,7 @@
 
 ## 当前功能状态
 
-### 已实现 (v0.3.0)
+### 已实现 (v0.14.1)
 - ✅ Gateway HTTP 服务器
 - ✅ JSON-RPC 协议处理
 - ✅ Session 管理 (创建/获取/删除/TTL清理)
@@ -289,6 +293,21 @@
 - ✅ 单元测试 (config/protocol/tool/skill)
 - ✅ 集成测试 (agent/skill lifecycle)
 - ✅ Release 构建
+- ✅ Agent-Reach工具 (WebReach/VideoReach/GitHubReach/FeedReach)
+- ✅ 社交平台工具 (TwitterReach/RedditReach/WeiboReach)
+- ✅ 速率限制 (RateLimiterManager/governor)
+- ✅ MCP桥接 (McpClient/XhsReach/DouyinReach/SearchReach)
+- ✅ 高级平台工具 (LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach)
+- ✅ 完整CLI (21主命令 + 40+子命令)
+
+### 规划中 (v0.15.0)
+- ⏳ SQLite持久化存储
+- ⏳ 三层记忆系统 (MEMORY.md + USER.md + FTS5搜索)
+- ⏳ Memory工具 (add/replace/remove)
+- ⏳ Skill自我创建与管理
+- ⏳ 双级上下文压缩
+- ⏳ Prompt缓存策略
+- ⏳ 回调系统
 
 ---
 
@@ -319,6 +338,15 @@
 | v0.5.0 | 2026-03-09 | Agent-Reach社交平台工具集成(TwitterReach/RedditReach/WeiboReach) |
 | v0.6.0 | 2026-03-09 | 速率限制功能集成(RateLimiterManager/governor) |
 | v0.7.0 | 2026-03-09 | MCP桥接集成(McpClient/XhsReach/DouyinReach/SearchReach) |
+| v0.8.0 | 2026-03-09 | Gateway API增强(Session GET/Agent API/Config API) |
+| v0.9.0 | 2026-03-09 | 完整API功能(Channel管理/配置保存/模型切换/安全审计) |
+| v0.10.0 | 2026-03-09 | 内存管理/系统版本/更新检查API |
+| v0.11.0 | 2026-03-09 | CLI完整功能(sessions/agent/config/models API集成) |
+| v0.12.0 | 2026-03-09 | CLI全部完成(providers add/tools info/update功能) |
+| v0.13.0 | 2026-03-09 | CLI命令增强(models auth/open-code实际执行) |
+| v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
+| v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
+| v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -651,29 +679,126 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 14.1 | LinkedInReachTool | - LinkedIn MCP桥接 | ⏳ |
-| | | - Profile读取 | ⏳ |
-| | | - 公司页面读取 | ⏳ |
-| | | - 职位搜索 | ⏳ |
-| 14.2 | WeChatReachTool | - 公众号文章读取 | ⏳ |
-| | | - camoufox集成 | ⏳ |
-| | | - miku集成 | ⏳ |
-| | | - 搜索功能 | ⏳ |
-| 14.3 | BossZhipinReachTool | - Boss直聘MCP桥接 | ⏳ |
-| | | - 职位搜索 | ⏳ |
-| | | - 打招呼功能 | ⏳ |
-| | | - MCP端点配置 | ⏳ |
-| 14.4 | PodcastReachTool | - 小宇宙播客集成 | ⏳ |
-| | | - Whisper转录 | ⏳ |
-| | | - 音频处理 | ⏳ |
-| | | - 结果格式化 | ⏳ |
+| 14.1 | LinkedInReachTool | - LinkedIn MCP桥接 | ✅ |
+| | | - Profile读取 | ✅ |
+| | | - 公司页面读取 | ✅ |
+| | | - 职位搜索 | ✅ |
+| 14.2 | WeChatReachTool | - 公众号文章读取 | ✅ |
+| | | - camoufox集成 | ✅ |
+| | | - miku集成 | ✅ |
+| | | - 搜索功能 | ✅ |
+| 14.3 | BossZhipinReachTool | - Boss直聘MCP桥接 | ✅ |
+| | | - 职位搜索 | ✅ |
+| | | - 打招呼功能 | ✅ |
+| | | - MCP端点配置 | ✅ |
+| 14.4 | PodcastReachTool | - 小宇宙播客集成 | ✅ |
+| | | - Whisper转录 | ✅ |
+| | | - 音频处理 | ✅ |
+| | | - 结果格式化 | ✅ |
 
 ### 验收标准
 
-- [ ] LinkedInReachTool 可以读取Profile
-- [ ] WeChatReachTool 可以读取公众号文章
-- [ ] BossZhipinReachTool 可以搜索职位
-- [ ] PodcastReachTool 可以转录播客
+- [x] LinkedInReachTool 可以读取Profile
+- [x] WeChatReachTool 可以读取公众号文章
+- [x] BossZhipinReachTool 可以搜索职位
+- [x] PodcastReachTool 可以转录播客
+
+---
+
+## Phase 15: 记忆系统与自我进化
+
+> 灵感来源: Nous Research Hermes Agent (20.4k ⭐, MIT License)
+
+### 15.1 持久化存储
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 15.1.1 | SQLite集成 | - rusqlite依赖添加 (bundled + FTS5) | ⏳ |
+| | | - WAL模式配置 | ⏳ |
+| | | - Schema定义 (sessions/messages) | ⏳ |
+| | | - 迁移系统 | ⏳ |
+| 15.1.2 | FTS5搜索 | - 虚拟表创建 | ⏳ |
+| | | - 触发器同步 (INSERT/UPDATE/DELETE) | ⏳ |
+| | | - 搜索API (关键词/短语/布尔) | ⏳ |
+| | | - 上下文片段提取 | ⏳ |
+| 15.1.3 | 并发处理 | - 短超时 (1s) + 随机抖动重试 | ⏳ |
+| | | - BEGIN IMMEDIATE 事务 | ⏳ |
+| | | - 定期 WAL checkpoint | ⏳ |
+
+### 15.2 三层记忆系统
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 15.2.1 | MEMORY.md | - 文件存储 (~/.rustclaw/memories/) | ⏳ |
+| | | - 2200字符限制 | ⏳ |
+| | | - Agent笔记管理 | ⏳ |
+| 15.2.2 | USER.md | - 用户偏好档案 | ⏳ |
+| | | - 1375字符限制 | ⏳ |
+| | | - 通信风格/偏好记录 | ⏳ |
+| 15.2.3 | Memory工具 | - add动作 (添加条目) | ⏳ |
+| | | - replace动作 (子串匹配替换) | ⏳ |
+| | | - remove动作 (子串匹配删除) | ⏳ |
+| | | - 容量管理 (超限提示合并) | ⏳ |
+| | | - 去重检测 | ⏳ |
+| 15.2.4 | 安全扫描 | - Prompt injection检测 | ⏳ |
+| | | - Exfiltration模式检测 | ⏳ |
+| | | - 不可见Unicode字符检测 | ⏳ |
+| 15.2.5 | System Prompt注入 | - 会话启动时加载记忆 | ⏳ |
+| | | - 冻结快照模式 (不中途变更) | ⏳ |
+| | | - 使用率显示 (chars/limit) | ⏳ |
+
+### 15.3 Skill 自我进化
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 15.3.1 | SkillManage工具 | - create动作 | ⏳ |
+| | | - patch动作 (首选, token高效) | ⏳ |
+| | | - edit动作 (大规模重写) | ⏳ |
+| | | - delete动作 | ⏳ |
+| | | - write_file/remove_file | ⏳ |
+| 15.3.2 | 自动触发机制 | - 复杂任务检测 (5+ tool calls) | ⏳ |
+| | | - 错误恢复路径记录 | ⏳ |
+| | | - 用户纠正记录 | ⏳ |
+| 15.3.3 | 技能目录 | - 分类管理 (devops/mlops/...) | ⏳ |
+| | | - SKILL.md格式 | ⏳ |
+| | | - references/templates/scripts子目录 | ⏳ |
+
+### 15.4 上下文压缩
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 15.4.1 | Gateway层压缩 | - 85%阈值 (安全网) | ⏳ |
+| | | - 粗略估计 (字符级) | ⏳ |
+| 15.4.2 | Agent层压缩 | - 50%阈值 (主压缩) | ⏳ |
+| | | - 精确token计数 | ⏳ |
+| | | - 4阶段压缩算法 | ⏳ |
+| 15.4.3 | 结构化摘要 | - Goal/Constraints/Progress模板 | ⏳ |
+| | | - 辅助模型调用 | ⏳ |
+| | | - 迭代重压缩 (更新而非重写) | ⏳ |
+| 15.4.4 | Prompt缓存 | - Anthropic cache_control | ⏳ |
+| | | - system_and_3策略 | ⏳ |
+| | | - TTL配置 (5m/1h) | ⏳ |
+
+### 15.5 回调与预算
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 15.5.1 | 回调系统 | - tool_progress回调 | ⏳ |
+| | | - step回调 | ⏳ |
+| | | - status回调 | ⏳ |
+| | | - thinking回调 | ⏳ |
+| 15.5.2 | 迭代预算 | - 父子Agent共享预算 | ⏳ |
+| | | - 预算压力提示 | ⏳ |
+
+### 验收标准
+
+- [ ] SQLite 持久化存储正常工作
+- [ ] 记忆可以跨会话保留
+- [ ] Memory 工具可以被 Agent 调用
+- [ ] FTS5 搜索返回准确结果
+- [ ] Skill 可以自动创建和改进
+- [ ] 上下文压缩在长对话中触发
+- [ ] 所有单元测试通过
 
 ---
 
@@ -708,4 +833,4 @@
 
 ---
 
-*版本: v0.4.0*
+*版本: v0.15.0*
