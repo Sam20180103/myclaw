@@ -40,8 +40,8 @@ impl Default for AgentConfig {
 pub struct Session {
     pub key: String,
     pub lane: String,
-    pub messages: Vec<Message>,
-    pub metadata: SessionMetadata,
+    pub messages: Arc<Vec<Message>>,
+    pub metadata: Arc<SessionMetadata>,
     pub last_accessed: Instant,
 }
 
@@ -73,13 +73,13 @@ impl SessionManager {
         let session = Session {
             key: Uuid::new_v4().to_string(),
             lane: lane.to_string(),
-            messages: Vec::with_capacity(16),
-            metadata: SessionMetadata {
+            messages: Arc::new(Vec::with_capacity(16)),
+            metadata: Arc::new(SessionMetadata {
                 channel: channel.to_string(),
                 created_at: chrono::Utc::now().timestamp_millis(),
                 updated_at: chrono::Utc::now().timestamp_millis(),
                 tool_calls_enabled: true,
-            },
+            }),
             last_accessed: Instant::now(),
         };
         self.sessions.write().insert(session.key.clone(), session.clone());
@@ -101,13 +101,13 @@ impl SessionManager {
         let session = Session {
             key: key.to_string(),
             lane: lane.to_string(),
-            messages: Vec::with_capacity(16),
-            metadata: SessionMetadata {
+            messages: Arc::new(Vec::with_capacity(16)),
+            metadata: Arc::new(SessionMetadata {
                 channel: channel.to_string(),
                 created_at: chrono::Utc::now().timestamp_millis(),
                 updated_at: chrono::Utc::now().timestamp_millis(),
                 tool_calls_enabled: true,
-            },
+            }),
             last_accessed: Instant::now(),
         };
         sessions.insert(key.to_string(), session.clone());
@@ -115,9 +115,14 @@ impl SessionManager {
     }
 
     pub fn add_message(&self, key: &str, message: Message) {
-        if let Some(session) = self.sessions.write().get_mut(key) {
-            session.messages.push(message);
-            session.metadata.updated_at = chrono::Utc::now().timestamp_millis();
+        let mut sessions = self.sessions.write();
+        if let Some(session) = sessions.get_mut(key) {
+            let mut messages = (*session.messages).clone();
+            messages.push(message);
+            session.messages = Arc::new(messages);
+            let mut metadata = (*session.metadata).clone();
+            metadata.updated_at = chrono::Utc::now().timestamp_millis();
+            session.metadata = Arc::new(metadata);
             session.last_accessed = Instant::now();
         }
     }
@@ -239,7 +244,7 @@ impl AgentRuntime {
         self.session_manager.add_message(session_key, envelope.message);
 
         let messages = self.session_manager.get(session_key)
-            .map(|s| s.messages.clone())
+            .map(|s| (*s.messages).clone())
             .unwrap_or_default();
 
         let response_text = match self.provider_client.complete(messages).await {
@@ -274,7 +279,7 @@ impl AgentRuntime {
             }
 
             let messages = self.session_manager.get(&session_key)
-                .map(|s| s.messages.clone())
+                .map(|s| (*s.messages).clone())
                 .unwrap_or_default();
 
             let response_text = match self.provider_client.complete(messages).await {
@@ -387,7 +392,7 @@ impl AgentRuntime {
         self.session_manager.add_message(&session_key, envelope.message);
 
         let messages = self.session_manager.get(&session_key)
-            .map(|s| s.messages.clone())
+            .map(|s| (*s.messages).clone())
             .unwrap_or_default();
 
         let (tx, rx) = tokio::sync::mpsc::channel(100);

@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.20.0
+> 版本: v0.21.0
 > 日期: 2026-04-01
-> 状态: Phase 15.5 代码质量加固完成 + 115 tests
+> 状态: Session克隆优化(Arc包装) + 115 tests
 
 ---
 
@@ -514,6 +514,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.18.0 | 2026-04-01 | ToolPolicy自动发现 + Gateway测试 + 98 tests |
 | v0.19.0 | 2026-04-01 | Storage/Channel测试补充 + 115 tests |
 | v0.20.0 | 2026-04-01 | Phase 15.5 代码质量加固完成 |
+| v0.21.0 | 2026-04-01 | Session克隆优化(Arc包装) |
 
 ---
 
@@ -1873,7 +1874,7 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 
 | # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
-| 12 | **Session 全量克隆** | `crates/agent/src/lib.rs:89-91` | 高频读取时不必要的堆分配 | ⏳ 待优化 |
+| 12 | **Session 全量克隆** | `crates/agent/src/lib.rs` | 高频读取时不必要的堆分配 | ✅ 已修复 (v0.21.0, Arc包装) |
 | 13 | **Anthropic API version 过时** | `crates/provider/src/lib.rs:453` | `2023-06-01` 已弃用 | ✅ 已修复 (v0.16.0, 更新至 2024-06-01) |
 | 14 | **Gateway 响应 JSON 重复** | `crates/gateway/src/lib.rs` 多处 | 大量重复 `json!({ "success": true, ... })` | ⏳ 待优化 |
 | 15 | **ToolPolicy 硬编码工具列表** | `crates/tool/src/lib.rs:369-387` | 新增工具需手动更新策略 | ✅ 已修复 (v0.18.0, 自动发现模式) |
@@ -1937,4 +1938,4 @@ Phase 15.5: 代码质量加固 (1周)
 
 ---
 
-*文档版本: v0.20.0*
+*文档版本: v0.21.0*
