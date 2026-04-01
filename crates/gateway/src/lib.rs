@@ -971,3 +971,69 @@ async fn system_update_check_handler() -> Json<serde_json::Value> {
         }
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustclaw_protocol::{Message, Role, Content};
+
+    #[test]
+    fn test_gateway_session_structure() {
+        let session = GatewaySession {
+            id: "session-1".to_string(),
+            channel: "http".to_string(),
+            authenticated: true,
+            agent_session_key: Some("agent-key".to_string()),
+        };
+        assert_eq!(session.channel, "http");
+        assert_eq!(session.id, "session-1");
+        assert!(session.authenticated);
+        assert!(session.agent_session_key.is_some());
+    }
+
+    #[test]
+    fn test_gateway_config_from_full_config() {
+        let config = Config::default();
+        assert_eq!(config.gateway.host, "127.0.0.1");
+        assert_eq!(config.gateway.port, 18789);
+    }
+
+    #[test]
+    fn test_health_response_structure() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let response = rt.block_on(health_handler());
+        let body = serde_json::to_string(&response.0).unwrap();
+        assert!(body.contains("ok"));
+        assert!(body.contains("rustclaw-gateway"));
+    }
+
+    #[test]
+    fn test_system_version_response() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let response = rt.block_on(system_version_handler());
+        let body = serde_json::to_string(&response.0).unwrap();
+        assert!(body.contains("version"));
+        assert!(body.contains("rustclaw"));
+    }
+
+    #[test]
+    fn test_system_update_check_response() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let response = rt.block_on(system_update_check_handler());
+        let body = serde_json::to_string(&response.0).unwrap();
+        assert!(body.contains("update"));
+        assert!(body.contains("current_version"));
+    }
+
+    #[test]
+    fn test_envelope_creation() {
+        let message = Message {
+            role: Role::User,
+            content: Content::text("hello"),
+        };
+        let envelope = Envelope::new("http", "session-123", message);
+        assert_eq!(envelope.channel, "http");
+        assert_eq!(envelope.session_key, "session-123");
+        assert!(!envelope.id.is_empty());
+    }
+}

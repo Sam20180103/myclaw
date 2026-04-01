@@ -446,25 +446,7 @@ pub struct ToolPolicy {
 impl Default for ToolPolicy {
     fn default() -> Self {
         Self {
-            allowed_tools: vec![
-                "file_read".to_string(),
-                "file_write".to_string(),
-                "shell_exec".to_string(),
-                "web_reach".to_string(),
-                "video_reach".to_string(),
-                "github_reach".to_string(),
-                "feed_reach".to_string(),
-                "twitter_reach".to_string(),
-                "reddit_reach".to_string(),
-                "weibo_reach".to_string(),
-                "xhs_reach".to_string(),
-                "douyin_reach".to_string(),
-                "search_reach".to_string(),
-                "linkedin_reach".to_string(),
-                "wechat_reach".to_string(),
-                "bosszp_reach".to_string(),
-                "podcast_reach".to_string(),
-            ],
+            allowed_tools: vec![],
             denied_tools: vec![],
             require_approval: vec!["shell_exec".to_string()],
         }
@@ -472,6 +454,21 @@ impl Default for ToolPolicy {
 }
 
 impl ToolPolicy {
+    pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
+        self.allowed_tools = tools;
+        self
+    }
+
+    pub fn with_denied_tools(mut self, tools: Vec<String>) -> Self {
+        self.denied_tools = tools;
+        self
+    }
+
+    pub fn with_require_approval(mut self, tools: Vec<String>) -> Self {
+        self.require_approval = tools;
+        self
+    }
+
     pub fn is_allowed(&self, tool_name: &str) -> bool {
         if self.denied_tools.contains(&tool_name.to_string()) {
             return false;

@@ -115,9 +115,18 @@ mod tests {
     #[test]
     fn test_tool_policy_default() {
         let policy = ToolPolicy::default();
+        assert!(policy.allowed_tools.is_empty());
+        assert!(policy.denied_tools.is_empty());
         assert!(policy.is_allowed("file_read"));
         assert!(policy.is_allowed("shell_exec"));
+        assert!(policy.requires_approval("shell_exec"));
+    }
+
+    #[test]
+    fn test_tool_policy_denied_tools() {
+        let policy = ToolPolicy::default().with_denied_tools(vec!["rm_rf".to_string()]);
         assert!(!policy.is_allowed("rm_rf"));
+        assert!(policy.is_allowed("file_read"));
     }
 
     #[test]

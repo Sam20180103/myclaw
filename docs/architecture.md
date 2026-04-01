@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.17.0
+> 版本: v0.18.0
 > 日期: 2026-04-01
-> 状态: NVIDIA Provider实现 + 警告清理 + 测试补充(91 tests)
+> 状态: ToolPolicy自动发现 + Gateway测试 + 98 tests
 
 ---
 
@@ -511,6 +511,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.15.1 | 2026-04-01 | 代码质量分析(安全/架构/性能/测试全覆盖审查) |
 | v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
 | v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
+| v0.18.0 | 2026-04-01 | ToolPolicy自动发现 + Gateway测试 + 98 tests |
 
 ---
 
@@ -1930,8 +1931,8 @@ Phase 15.5: 代码质量加固 (1周)
 | 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
 | 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
-| 测试覆盖 | pytest 全量 | 91 个 (agent 10 + provider 12 + tool 38 + skill 9 + config 7 + protocol 9 + integration 6) | ✅ 良好 |
+| 测试覆盖 | pytest 全量 | 98 个 (agent 10 + provider 12 + tool 39 + skill 9 + config 7 + protocol 9 + gateway 6 + integration 6) | ✅ 良好 |
 
 ---
 
-*文档版本: v0.17.0*
+*文档版本: v0.18.0*
