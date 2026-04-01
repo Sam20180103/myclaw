@@ -22,6 +22,14 @@ use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmPr
 
 const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
+fn api_success(data: serde_json::Value) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "success": true, "data": data }))
+}
+
+fn api_error(msg: &str) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "success": false, "error": msg }))
+}
+
 #[derive(Clone)]
 pub struct Gateway {
     config: GatewayConfig,
@@ -268,7 +276,7 @@ async fn session_delete_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
     state.agent.delete_session(&id);
-    Json(serde_json::json!({ "success": true, "deleted": id }))
+    api_success(serde_json::json!({ "deleted": id }))
 }
 
 async fn message_handler(
