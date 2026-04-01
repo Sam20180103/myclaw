@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.15.0
+> 版本: v0.16.0
 > 日期: 2026-04-01
-> 状态: Phase 15 记忆系统与自我进化 (规划中)
+> 状态: P0/P1 Bug修复 + Agent/Provider测试补充
 
 ---
 
@@ -347,6 +347,7 @@
 | v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
+| v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -360,9 +361,11 @@
 | config | 7 | ✅ |
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
-| tool | 33 | ✅ |
+| tool | 38 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **64** | ✅ |
+| **agent** | **10** | ✅ (v0.16.0 新增) |
+| **provider** | **8** | ✅ (v0.16.0 新增) |
+| **总计** | **87** | ✅ |
 
 ---
 
@@ -810,33 +813,33 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 15.5.1.1 | FileReadTool 路径限制 | - allowed_dirs 白名单 | ⏳ |
-| | | - 路径穿越检测 (`../`) | ⏳ |
-| | | - 文件类型检查 (拒绝设备/管道) | ⏳ |
-| 15.5.1.2 | FileWriteTool 路径限制 | - allowed_dirs 白名单 | ⏳ |
-| | | - 路径穿越检测 | ⏳ |
-| | | - 写入前目录存在性检查 | ⏳ |
-| 15.5.1.3 | OpenCodeTool 超时保护 | - tokio::time::timeout 包装 | ⏳ |
-| | | - timeout_seconds 字段生效 | ⏳ |
-| 15.5.1.4 | Gateway unwrap() 修复 | - host.parse() 替换为 ? | ⏳ |
-| | | - 启动错误信息完善 | ⏳ |
+| 15.5.1.1 | FileReadTool 路径限制 | - allowed_dirs 白名单 | ✅ |
+| | | - 路径穿越检测 (`../`) | ✅ |
+| | | - 文件类型检查 (拒绝设备/管道) | ✅ |
+| 15.5.1.2 | FileWriteTool 路径限制 | - allowed_dirs 白名单 | ✅ |
+| | | - 路径穿越检测 | ✅ |
+| | | - 写入前目录存在性检查 | ✅ |
+| 15.5.1.3 | OpenCodeTool 超时保护 | - tokio::time::timeout 包装 | ✅ |
+| | | - timeout_seconds 字段生效 | ✅ |
+| 15.5.1.4 | Gateway unwrap() 修复 | - host.parse() 替换为 ? | ✅ |
+| | | - 启动错误信息完善 | ✅ |
 
 ### 15.5.2 P1 架构修复
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 15.5.2.1 | SessionManager 竞态修复 | - get_or_create 原子化 | ⏳ |
-| | | - 单次 write lock 检查+创建 | ⏳ |
-| 15.5.2.2 | Agent 单元测试 | - SessionManager TTL 测试 | ⏳ |
-| | | - get_or_create 并发测试 | ⏳ |
-| | | - process vs process_with_loop 测试 | ⏳ |
-| | | - Tool 执行路径测试 | ⏳ |
-| 15.5.2.3 | Provider 单元测试 | - OpenAI SSE 解析测试 | ⏳ |
-| | | - Anthropic SSE 解析测试 | ⏳ |
-| | | - list_models 正确性测试 | ⏳ |
+| 15.5.2.1 | SessionManager 竞态修复 | - get_or_create 原子化 | ✅ |
+| | | - 单次 write lock 检查+创建 | ✅ |
+| 15.5.2.2 | Agent 单元测试 | - SessionManager TTL 测试 | ✅ |
+| | | - get_or_create 并发测试 | ✅ |
+| | | - process vs process_with_loop 测试 | ✅ |
+| | | - Tool 执行路径测试 | ✅ |
+| 15.5.2.3 | Provider 单元测试 | - OpenAI SSE 解析测试 | ✅ |
+| | | - Anthropic SSE 解析测试 | ✅ |
+| | | - list_models 正确性测试 | ✅ |
 | 15.5.2.4 | NVIDIA Provider | - 实现 NvProvider (OpenAI兼容) | ⏳ |
 | | | - 或更新文档移除声明 | ⏳ |
-| 15.5.2.5 | Anthropic API version | - 更新至 2024-06-01 | ⏳ |
+| 15.5.2.5 | Anthropic API version | - 更新至 2024-06-01 | ✅ |
 
 ### 15.5.3 P2 性能优化
 
@@ -893,4 +896,4 @@
 
 ---
 
-*版本: v0.15.1*
+*版本: v0.16.0*

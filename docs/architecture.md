@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.15.1
+> 版本: v0.16.0
 > 日期: 2026-04-01
-> 状态: Phase 15 规划 + 代码质量分析完成
+> 状态: P0/P1 Bug修复 + Agent/Provider测试补充
 
 ---
 
@@ -509,6 +509,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 | v0.15.1 | 2026-04-01 | 代码质量分析(安全/架构/性能/测试全覆盖审查) |
+| v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
 
 ---
 
@@ -1845,31 +1846,31 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 
 ### 17.1 关键安全问题 (P0 — 必须修复)
 
-| # | 问题 | 位置 | 风险 | 建议 |
+| # | 问题 | 位置 | 风险 | 状态 |
 |---|------|------|------|------|
-| 1 | **FileReadTool/FileWriteTool 无路径限制** | `crates/tool/src/lib.rs:128-191` | 可读取/写入任意系统文件 (`/etc/passwd`, `.env`) | 添加 `allowed_dirs` 白名单, 拒绝路径穿越 (`../`) |
-| 2 | **沙箱覆盖不一致** | `crates/tool/src/lib.rs:471-561` | 仅 `shell_exec` 有沙箱, 其他工具无隔离 | 对网络工具和文件工具添加策略层保护 |
-| 3 | **OpenCodeTool 无超时保护** | `crates/tool/src/lib.rs:243-330` | `timeout_seconds` 字段存在但未使用, 外部进程可无限运行 | 添加 `tokio::time::timeout` 包装 |
-| 4 | **Gateway 启动时 unwrap() panic** | `crates/gateway/src/lib.rs:183` | 无效 host 配置直接 panic | 替换为 `?` 错误传播 |
+| 1 | **FileReadTool/FileWriteTool 无路径限制** | `crates/tool/src/lib.rs:99-264` | 可读取/写入任意系统文件 | ✅ 已修复 (v0.16.0) |
+| 2 | **沙箱覆盖不一致** | `crates/tool/src/lib.rs` | 仅 `shell_exec` 有沙箱 | ⏳ 待 Phase 15.5 |
+| 3 | **OpenCodeTool 无超时保护** | `crates/tool/src/lib.rs:307-399` | `timeout_seconds` 字段未使用 | ✅ 已修复 (v0.16.0) |
+| 4 | **Gateway 启动时 unwrap() panic** | `crates/gateway/src/lib.rs:180-186` | 无效 host 配置直接 panic | ✅ 已修复 (v0.16.0) |
 
 ### 17.2 架构完整性问题 (P1 — 重要)
 
-| # | 问题 | 位置 | 影响 | 建议 |
+| # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
-| 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-105` | 并发请求可能创建重复 session | 使用单次 write lock 原子检查+创建 |
-| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | 实现真实网络连接或标记为占位 |
-| 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | 添加 SQLite 或文件持久化 |
-| 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | 实现 NvProvider 或更新文档 |
-| 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:579-588` | 模型列表语义错误 | 改为调用 `/v1/models` API 或返回 OpenAI 模型 |
-| 10 | **Agent 无单元测试** | `crates/agent/src/` | 核心循环逻辑无测试覆盖 | 添加 session 生命周期、loop、tool 执行测试 |
-| 11 | **Provider 无单元测试** | `crates/provider/src/` | 流式解析逻辑无测试 | 添加 mock SSE 解析测试 |
+| 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-116` | 并发请求可能创建重复 session | ✅ 已修复 (v0.16.0) |
+| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | ⏳ 待 Phase 15.5 |
+| 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ⏳ 待 Phase 15 |
+| 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ⏳ 待 Phase 15.5 |
+| 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:327-353` | 模型列表语义错误 | ✅ 已修复 (v0.16.0, 实际代码已调用 API) |
+| 10 | **Agent 无单元测试** | `crates/agent/src/` | 核心循环逻辑无测试覆盖 | ✅ 已修复 (v0.16.0, +10 tests) |
+| 11 | **Provider 无单元测试** | `crates/provider/src/` | 流式解析逻辑无测试 | ✅ 已修复 (v0.16.0, +8 tests) |
 
 ### 17.3 性能优化点 (P2 — 建议)
 
-| # | 问题 | 位置 | 影响 | 建议 |
+| # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
-| 12 | **Session 全量克隆** | `crates/agent/src/lib.rs:89-91` | 高频读取时不必要的堆分配 | 考虑 Arc 包装或引用返回 |
-| 13 | **Anthropic API version 过时** | `crates/provider/src/lib.rs:453` | `2023-06-01` 已弃用 | 更新至 `2024-06-01` 或更新 |
+| 12 | **Session 全量克隆** | `crates/agent/src/lib.rs:89-91` | 高频读取时不必要的堆分配 | ⏳ 待 Phase 15.5 |
+| 13 | **Anthropic API version 过时** | `crates/provider/src/lib.rs:453` | `2023-06-01` 已弃用 | ✅ 已修复 (v0.16.0, 更新至 2024-06-01) |
 | 14 | **Gateway 响应 JSON 重复** | `crates/gateway/src/lib.rs` 多处 | 大量重复 `json!({ "success": true, ... })` | 抽取 `api_response()` 辅助函数 |
 | 15 | **ToolPolicy 硬编码工具列表** | `crates/tool/src/lib.rs:369-387` | 新增工具需手动更新策略 | 改为自动发现 + 显式 deny list |
 
@@ -1891,11 +1892,11 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | protocol | `tests.rs` | 9 | ✅ 良好 |
 | skill | `tests.rs` | 9 | ✅ 良好 |
 | tool | `tests.rs` | 38 | ✅ 良好 |
-| **agent** | **无** | **0** | 🔴 严重缺失 |
-| **gateway** | **无** | **0** | 🔴 严重缺失 |
-| **provider** | **无** | **0** | 🔴 严重缺失 |
-| **channel** | **无** | **0** | 🔴 严重缺失 |
-| **storage** | **无** | **0** | 🔴 严重缺失 |
+| **agent** | **lib.rs (内联)** | **10** | ✅ 已补充 (v0.16.0) |
+| **provider** | **lib.rs (内联)** | **8** | ✅ 已补充 (v0.16.0) |
+| **gateway** | **无** | **0** | 🔴 待补充 |
+| **channel** | **无** | **0** | 🔴 待补充 |
+| **storage** | **无** | **0** | 🔴 待补充 |
 
 ### 17.6 推荐优化路线图
 
@@ -1928,8 +1929,8 @@ Phase 15.5: 代码质量加固 (1周)
 | 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
 | 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
-| 测试覆盖 | pytest 全量 | 69 个 (缺 agent/gateway/provider) | 🟡 需补充 |
+| 测试覆盖 | pytest 全量 | 87 个 (agent 10 + provider 8 + tool 38 + skill 9 + config 7 + protocol 9 + integration 6) | ✅ 良好 |
 
 ---
 
-*文档版本: v0.15.1*
+*文档版本: v0.16.0*

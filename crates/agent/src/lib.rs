@@ -91,16 +91,26 @@ impl SessionManager {
     }
 
     pub fn get_or_create(&self, key: &str, channel: &str, lane: &str) -> Session {
-        if let Some(session) = self.sessions.read().get(key) {
+        let mut sessions = self.sessions.write();
+        if let Some(session) = sessions.get(key) {
             let mut session = session.clone();
             session.last_accessed = Instant::now();
-            session.key = key.to_string();
-            self.sessions.write().insert(key.to_string(), session.clone());
+            sessions.insert(key.to_string(), session.clone());
             return session;
         }
-        let mut session = self.create(channel, lane);
-        session.key = key.to_string();
-        self.sessions.write().insert(key.to_string(), session.clone());
+        let session = Session {
+            key: key.to_string(),
+            lane: lane.to_string(),
+            messages: Vec::with_capacity(16),
+            metadata: SessionMetadata {
+                channel: channel.to_string(),
+                created_at: chrono::Utc::now().timestamp_millis(),
+                updated_at: chrono::Utc::now().timestamp_millis(),
+                tool_calls_enabled: true,
+            },
+            last_accessed: Instant::now(),
+        };
+        sessions.insert(key.to_string(), session.clone());
         session
     }
 
@@ -427,4 +437,107 @@ pub enum AgentError {
     LaneFull(String),
     #[error("Timeout")]
     Timeout,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_manager_create_and_get() {
+        let manager = SessionManager::new(100, 3600);
+        let session = manager.create("http", "lane_0");
+        assert_eq!(session.lane, "lane_0");
+        assert_eq!(session.metadata.channel, "http");
+        assert!(manager.get(&session.key).is_some());
+    }
+
+    #[test]
+    fn test_session_manager_get_or_create_returns_existing() {
+        let manager = SessionManager::new(100, 3600);
+        let s1 = manager.get_or_create("test-key", "http", "lane_1");
+        let s2 = manager.get_or_create("test-key", "http", "lane_1");
+        assert_eq!(s1.key, s2.key);
+    }
+
+    #[test]
+    fn test_session_manager_get_or_create_creates_new() {
+        let manager = SessionManager::new(100, 3600);
+        let session = manager.get_or_create("new-key", "ws", "lane_2");
+        assert_eq!(session.key, "new-key");
+        assert_eq!(session.metadata.channel, "ws");
+        assert_eq!(session.lane, "lane_2");
+    }
+
+    #[test]
+    fn test_session_manager_add_message() {
+        let manager = SessionManager::new(100, 3600);
+        let session = manager.create("http", "lane_0");
+        let key = session.key.clone();
+        manager.add_message(&key, Message {
+            role: Role::User,
+            content: Content::text("hello"),
+        });
+        let updated = manager.get(&key).unwrap();
+        assert_eq!(updated.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_session_manager_delete() {
+        let manager = SessionManager::new(100, 3600);
+        let session = manager.create("http", "lane_0");
+        let key = session.key.clone();
+        assert!(manager.get(&key).is_some());
+        manager.delete(&key);
+        assert!(manager.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_manager_cleanup_expired() {
+        let manager = SessionManager::new(100, 1);
+        let session = manager.create("http", "lane_0");
+        let key = session.key.clone();
+        assert!(manager.get(&key).is_some());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let removed = manager.cleanup_expired();
+        assert_eq!(removed, 1);
+        assert!(manager.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_manager_count() {
+        let manager = SessionManager::new(100, 3600);
+        assert_eq!(manager.count(), 0);
+        manager.create("http", "lane_0");
+        manager.create("http", "lane_1");
+        assert_eq!(manager.count(), 2);
+    }
+
+    #[test]
+    fn test_session_manager_list() {
+        let manager = SessionManager::new(100, 3600);
+        manager.create("http", "lane_0");
+        manager.create("http", "lane_1");
+        let sessions = manager.list();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_lane_router_route() {
+        let router = LaneRouter::new(10);
+        let lane1 = router.route("session_abc");
+        let lane2 = router.route("session_abc");
+        assert_eq!(lane1, lane2);
+        assert!(lane1.starts_with("lane_"));
+    }
+
+    #[test]
+    fn test_lane_router_register_and_get() {
+        let router = LaneRouter::new(10);
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        router.register_lane("test_lane".to_string(), tx);
+        let lane = router.get_lane("test_lane");
+        assert!(lane.is_some());
+        assert_eq!(lane.unwrap().name, "test_lane");
+    }
 }

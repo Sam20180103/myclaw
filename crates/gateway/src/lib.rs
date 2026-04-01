@@ -180,7 +180,9 @@ impl Gateway {
     pub async fn start(&self) -> anyhow::Result<()> {
         self.skill_manager.init().await?;
         
-        let addr = SocketAddr::new(self.config.host.parse().unwrap(), self.config.port);
+        let host = self.config.host.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid host '{}': {}", self.config.host, e))?;
+        let addr = SocketAddr::new(host, self.config.port);
 
         let cors = CorsLayer::new()
             .allow_origin(Any)

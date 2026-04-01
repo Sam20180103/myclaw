@@ -12,14 +12,14 @@ mod tests {
     #[test]
     fn test_tool_registry_register() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(FileReadTool));
+        registry.register(Arc::new(FileReadTool::new(vec![])));
         assert_eq!(registry.len(), 1);
     }
 
     #[test]
     fn test_tool_registry_get() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(FileReadTool));
+        registry.register(Arc::new(FileReadTool::new(vec![])));
 
         let tool = registry.get("file_read");
         assert!(tool.is_some());
@@ -31,8 +31,8 @@ mod tests {
     #[test]
     fn test_tool_registry_list() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(FileReadTool));
-        registry.register(Arc::new(FileWriteTool));
+        registry.register(Arc::new(FileReadTool::new(vec![])));
+        registry.register(Arc::new(FileWriteTool::new(vec![])));
 
         let schemas = registry.list();
         assert_eq!(schemas.len(), 2);
@@ -41,7 +41,7 @@ mod tests {
     #[test]
     fn test_tool_registry_unregister() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(FileReadTool));
+        registry.register(Arc::new(FileReadTool::new(vec![])));
         assert_eq!(registry.len(), 1);
 
         registry.unregister("file_read");
@@ -50,9 +50,9 @@ mod tests {
 
     #[test]
     fn test_file_read_tool_schema() {
-        let tool = FileReadTool;
+        let tool = FileReadTool::new(vec![]);
         assert_eq!(tool.name(), "file_read");
-        assert_eq!(tool.description(), "Read content from a file");
+        assert!(tool.description().contains("Read content"));
 
         let schema = tool.schema();
         assert_eq!(schema.name, "file_read");
@@ -61,9 +61,9 @@ mod tests {
 
     #[test]
     fn test_file_write_tool_schema() {
-        let tool = FileWriteTool;
+        let tool = FileWriteTool::new(vec![]);
         assert_eq!(tool.name(), "file_write");
-        assert_eq!(tool.description(), "Write content to a file");
+        assert!(tool.description().contains("Write content"));
     }
 
     #[test]

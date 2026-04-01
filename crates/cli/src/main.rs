@@ -1200,7 +1200,7 @@ Commands::System { subcommand } => {
                 }
             }
         }
-        Commands::Logs { lines, follow, clear } => {
+        Commands::Logs { lines: _lines, follow, clear } => {
             let log_path = get_log_path();
             
             if clear {
@@ -1236,7 +1236,7 @@ Commands::System { subcommand } => {
                 let mut files: Vec<_> = entries.flatten()
                     .filter_map(|e| {
                         e.path().into_os_string().into_string().ok()
-                            .map(|p| (e.path().clone(), std::fs::metadata(&e.path()).ok().map(|m| m.len())))
+                            .map(|_p| (e.path().clone(), std::fs::metadata(&e.path()).ok().map(|m| m.len())))
                     })
                     .collect();
                 files.sort_by(|a, b| b.0.cmp(&a.0));

@@ -450,7 +450,7 @@ impl LlmProvider for AnthropicProvider {
         let response = self.client
             .post(&url)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2024-06-01")
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -516,7 +516,7 @@ impl LlmProvider for AnthropicProvider {
             let result = client
                 .post(&url)
                 .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-version", "2024-06-01")
                 .header("Content-Type", "application/json")
                 .json(&request)
                 .send()
@@ -614,5 +614,71 @@ impl ProviderClient {
                 "Provider not configured".to_string()
             )]))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_manager_register_and_get() {
+        let mut manager = ProviderManager::new();
+        let provider = Arc::new(OpenAiProvider::new("test-key".to_string(), "gpt-4"));
+        manager.register("openai".to_string(), provider.clone());
+        assert!(manager.get("openai").is_some());
+        assert!(manager.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_provider_manager_default() {
+        let mut manager = ProviderManager::new();
+        assert!(manager.get_default().is_none());
+        let provider = Arc::new(OpenAiProvider::new("test-key".to_string(), "gpt-4"));
+        manager.register("openai".to_string(), provider);
+        assert!(manager.get_default().is_some());
+    }
+
+    #[test]
+    fn test_openai_provider_construction() {
+        let provider = OpenAiProvider::new("key".to_string(), "gpt-4");
+        assert_eq!(provider.model, "gpt-4");
+    }
+
+    #[test]
+    fn test_openai_provider_with_base_url() {
+        let provider = OpenAiProvider::new("key".to_string(), "gpt-4")
+            .with_base_url("https://custom.api.com");
+        assert_eq!(provider.base_url, "https://custom.api.com");
+    }
+
+    #[test]
+    fn test_openai_provider_with_model() {
+        let provider = OpenAiProvider::new("key".to_string(), "gpt-3.5")
+            .with_model("gpt-4");
+        assert_eq!(provider.model, "gpt-4");
+    }
+
+    #[test]
+    fn test_anthropic_provider_construction() {
+        let provider = AnthropicProvider::new("key".to_string(), "claude-3-5-sonnet-20241022");
+        assert_eq!(provider.model, "claude-3-5-sonnet-20241022");
+    }
+
+    #[test]
+    fn test_anthropic_provider_list_models() {
+        let provider = AnthropicProvider::new("key".to_string(), "claude-3-5-sonnet-20241022");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let models = rt.block_on(provider.list_models()).unwrap();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.contains("claude")));
+    }
+
+    #[test]
+    fn test_provider_client_no_provider() {
+        let client = ProviderClient::new(None);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(client.complete(vec![]));
+        assert_eq!(result.unwrap(), "Provider not configured");
     }
 }

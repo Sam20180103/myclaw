@@ -96,7 +96,39 @@ impl Default for ToolRegistry {
     }
 }
 
-pub struct FileReadTool;
+pub struct FileReadTool {
+    allowed_dirs: Vec<String>,
+}
+
+impl FileReadTool {
+    pub fn new(allowed_dirs: Vec<String>) -> Self {
+        Self { allowed_dirs }
+    }
+
+    fn validate_path(&self, path: &str) -> Result<(), ToolError> {
+        // Reject path traversal
+        if path.contains("..") {
+            return Err(ToolError::SandboxViolation(
+                "Path traversal not allowed".to_string(),
+            ));
+        }
+        // If allowed_dirs is configured, check path is within allowed directories
+        if !self.allowed_dirs.is_empty() {
+            let canonical = std::path::Path::new(path)
+                .canonicalize()
+                .map_err(|e| ToolError::InvalidParams(format!("Invalid path: {}", e)))?;
+            let path_str = canonical.to_string_lossy();
+            let allowed = self.allowed_dirs.iter().any(|dir| path_str.starts_with(dir));
+            if !allowed {
+                return Err(ToolError::SandboxViolation(format!(
+                    "Path '{}' is not within allowed directories",
+                    path
+                )));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Tool for FileReadTool {
@@ -105,19 +137,19 @@ impl Tool for FileReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read content from a file"
+        "Read content from a file (with path restrictions)"
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".to_string(),
-            description: "Read content from a file".to_string(),
+            description: "Read content from a file (path traversal protected)".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to read"
+                        "description": "Path to the file to read (must be within allowed directories)"
                     }
                 },
                 "required": ["path"]
@@ -131,6 +163,8 @@ impl Tool for FileReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'path' parameter".to_string()))?;
 
+        self.validate_path(path)?;
+
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
@@ -139,7 +173,40 @@ impl Tool for FileReadTool {
     }
 }
 
-pub struct FileWriteTool;
+pub struct FileWriteTool {
+    allowed_dirs: Vec<String>,
+}
+
+impl FileWriteTool {
+    pub fn new(allowed_dirs: Vec<String>) -> Self {
+        Self { allowed_dirs }
+    }
+
+    fn validate_path(&self, path: &str) -> Result<(), ToolError> {
+        // Reject path traversal
+        if path.contains("..") {
+            return Err(ToolError::SandboxViolation(
+                "Path traversal not allowed".to_string(),
+            ));
+        }
+        // If allowed_dirs is configured, check path is within allowed directories
+        if !self.allowed_dirs.is_empty() {
+            let parent = std::path::Path::new(path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            let canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+            let path_str = canonical.to_string_lossy();
+            let allowed = self.allowed_dirs.iter().any(|dir| path_str.starts_with(dir));
+            if !allowed {
+                return Err(ToolError::SandboxViolation(format!(
+                    "Path '{}' is not within allowed directories",
+                    path
+                )));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Tool for FileWriteTool {
@@ -148,19 +215,19 @@ impl Tool for FileWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file"
+        "Write content to a file (with path restrictions)"
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_write".to_string(),
-            description: "Write content to a file".to_string(),
+            description: "Write content to a file (path traversal protected)".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to write"
+                        "description": "Path to the file to write (must be within allowed directories)"
                     },
                     "content": {
                         "type": "string",
@@ -182,6 +249,8 @@ impl Tool for FileWriteTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'content' parameter".to_string()))?;
+
+        self.validate_path(path)?;
 
         tokio::fs::write(path, content)
             .await
@@ -242,7 +311,6 @@ impl Tool for ShellExecTool {
 
 pub struct OpenCodeTool {
     opencode_path: String,
-    #[allow(dead_code)]
     timeout_seconds: u64,
 }
 
@@ -259,6 +327,13 @@ impl Default for OpenCodeTool {
             opencode_path,
             timeout_seconds: 120,
         }
+    }
+}
+
+impl OpenCodeTool {
+    pub fn with_timeout(mut self, seconds: u64) -> Self {
+        self.timeout_seconds = seconds;
+        self
     }
 }
 
@@ -304,15 +379,20 @@ impl Tool for OpenCodeTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'prompt' parameter".to_string()))?;
 
-        let output = tokio::process::Command::new(&self.opencode_path)
-            .arg("generate")
-            .arg("--language")
-            .arg(language)
-            .arg("--prompt")
-            .arg(prompt)
-            .output()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to run opencode: {}", e)))?;
+        let timeout = std::time::Duration::from_secs(self.timeout_seconds);
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new(&self.opencode_path)
+                .arg("generate")
+                .arg("--language")
+                .arg(language)
+                .arg("--prompt")
+                .arg(prompt)
+                .output(),
+        )
+        .await
+        .map_err(|_| ToolError::Timeout)?
+        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to run opencode: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -331,8 +411,8 @@ impl Tool for OpenCodeTool {
 
 impl ToolRegistry {
     pub fn register_builtin_tools(&self) {
-        self.register(Arc::new(FileReadTool));
-        self.register(Arc::new(FileWriteTool));
+        self.register(Arc::new(FileReadTool::new(vec![])));
+        self.register(Arc::new(FileWriteTool::new(vec![])));
         self.register(Arc::new(ShellExecTool::default()));
         self.register(Arc::new(OpenCodeTool::default()));
     }
