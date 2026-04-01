@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.15.0
+> 版本: v0.15.1
 > 日期: 2026-04-01
-> 状态: Phase 15 记忆系统与自我进化 (规划中)
+> 状态: Phase 15 规划 + 代码质量分析完成
 
 ---
 
@@ -508,6 +508,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.14.0 | 2026-03-10 | Phase 14工具集成(LinkedInReach/WeChatReach/BossZhipinReach/PodcastReach) |
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
+| v0.15.1 | 2026-04-01 | 代码质量分析(安全/架构/性能/测试全覆盖审查) |
 
 ---
 
@@ -1837,4 +1838,98 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 
 ---
 
-*文档版本: v0.15.0*
+## 十七、代码质量分析与优化建议
+
+> 基于对全部 10 个 crate 的深度代码审查
+> 分析日期: 2026-04-01
+
+### 17.1 关键安全问题 (P0 — 必须修复)
+
+| # | 问题 | 位置 | 风险 | 建议 |
+|---|------|------|------|------|
+| 1 | **FileReadTool/FileWriteTool 无路径限制** | `crates/tool/src/lib.rs:128-191` | 可读取/写入任意系统文件 (`/etc/passwd`, `.env`) | 添加 `allowed_dirs` 白名单, 拒绝路径穿越 (`../`) |
+| 2 | **沙箱覆盖不一致** | `crates/tool/src/lib.rs:471-561` | 仅 `shell_exec` 有沙箱, 其他工具无隔离 | 对网络工具和文件工具添加策略层保护 |
+| 3 | **OpenCodeTool 无超时保护** | `crates/tool/src/lib.rs:243-330` | `timeout_seconds` 字段存在但未使用, 外部进程可无限运行 | 添加 `tokio::time::timeout` 包装 |
+| 4 | **Gateway 启动时 unwrap() panic** | `crates/gateway/src/lib.rs:183` | 无效 host 配置直接 panic | 替换为 `?` 错误传播 |
+
+### 17.2 架构完整性问题 (P1 — 重要)
+
+| # | 问题 | 位置 | 影响 | 建议 |
+|---|------|------|------|------|
+| 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-105` | 并发请求可能创建重复 session | 使用单次 write lock 原子检查+创建 |
+| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | 实现真实网络连接或标记为占位 |
+| 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | 添加 SQLite 或文件持久化 |
+| 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | 实现 NvProvider 或更新文档 |
+| 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:579-588` | 模型列表语义错误 | 改为调用 `/v1/models` API 或返回 OpenAI 模型 |
+| 10 | **Agent 无单元测试** | `crates/agent/src/` | 核心循环逻辑无测试覆盖 | 添加 session 生命周期、loop、tool 执行测试 |
+| 11 | **Provider 无单元测试** | `crates/provider/src/` | 流式解析逻辑无测试 | 添加 mock SSE 解析测试 |
+
+### 17.3 性能优化点 (P2 — 建议)
+
+| # | 问题 | 位置 | 影响 | 建议 |
+|---|------|------|------|------|
+| 12 | **Session 全量克隆** | `crates/agent/src/lib.rs:89-91` | 高频读取时不必要的堆分配 | 考虑 Arc 包装或引用返回 |
+| 13 | **Anthropic API version 过时** | `crates/provider/src/lib.rs:453` | `2023-06-01` 已弃用 | 更新至 `2024-06-01` 或更新 |
+| 14 | **Gateway 响应 JSON 重复** | `crates/gateway/src/lib.rs` 多处 | 大量重复 `json!({ "success": true, ... })` | 抽取 `api_response()` 辅助函数 |
+| 15 | **ToolPolicy 硬编码工具列表** | `crates/tool/src/lib.rs:369-387` | 新增工具需手动更新策略 | 改为自动发现 + 显式 deny list |
+
+### 17.4 文档 vs 实现差距
+
+| 文档声称 | 实际状态 | 差距 |
+|----------|----------|------|
+| "WebSocket Channel" | Stub (无实际实现) | 🔴 严重 |
+| "NVIDIA NIM Provider 支持" | 无实现 | 🔴 严重 |
+| "Webhook Channel" | Stub (无实际实现) | 🟡 中等 |
+| "Provider 抽象: 支持多种 LLM" | 仅 OpenAI + Anthropic | 🟡 中等 |
+| "安全沙箱: 进程隔离" | 仅 shell_exec 有沙箱 | 🟡 中等 |
+
+### 17.5 测试覆盖现状
+
+| Crate | 测试文件 | 测试数 | 覆盖率评估 |
+|-------|----------|--------|-----------|
+| config | `tests.rs` | 7 | ✅ 良好 |
+| protocol | `tests.rs` | 9 | ✅ 良好 |
+| skill | `tests.rs` | 9 | ✅ 良好 |
+| tool | `tests.rs` | 38 | ✅ 良好 |
+| **agent** | **无** | **0** | 🔴 严重缺失 |
+| **gateway** | **无** | **0** | 🔴 严重缺失 |
+| **provider** | **无** | **0** | 🔴 严重缺失 |
+| **channel** | **无** | **0** | 🔴 严重缺失 |
+| **storage** | **无** | **0** | 🔴 严重缺失 |
+
+### 17.6 推荐优化路线图
+
+```
+Phase 15.5: 代码质量加固 (1周)
+├── P0: 安全修复
+│   ├── FileReadTool/WriteTool 路径白名单
+│   ├── OpenCodeTool 超时保护
+│   └── Gateway unwrap() 修复
+├── P1: 架构修复
+│   ├── SessionManager 竞态修复
+│   ├── Agent 单元测试 (至少 10 个)
+│   ├── Provider 单元测试 (至少 5 个)
+│   └── NVIDIA Provider 实现或文档更新
+└── P2: 性能优化
+    ├── Session 克隆优化
+    ├── Gateway 响应辅助函数
+    └── Anthropic API version 更新
+```
+
+### 17.7 与 Hermes Agent 架构对比
+
+| 能力 | Hermes Agent | RustClaw 当前 | 差距评估 |
+|------|-------------|---------------|----------|
+| 持久化存储 | SQLite WAL + FTS5 | 内存 HashMap | 🔴 需 Phase 15 |
+| 跨会话记忆 | MEMORY.md + USER.md | 无 | 🔴 需 Phase 15 |
+| 上下文压缩 | 双级 (85% + 50%) | 无 | 🔴 需 Phase 15 |
+| Prompt 缓存 | Anthropic cache_control | 无 | 🟡 Phase 15 可选 |
+| Skill 自创 | 5+ tool calls 自动触发 | 需外部 CLI | 🟡 Phase 15 可选 |
+| 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
+| 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
+| 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
+| 测试覆盖 | pytest 全量 | 69 个 (缺 agent/gateway/provider) | 🟡 需补充 |
+
+---
+
+*文档版本: v0.15.1*
