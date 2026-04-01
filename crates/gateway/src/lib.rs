@@ -26,6 +26,7 @@ fn api_success(data: serde_json::Value) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "success": true, "data": data }))
 }
 
+#[allow(dead_code)]
 fn api_error(msg: &str) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "success": false, "error": msg }))
 }
