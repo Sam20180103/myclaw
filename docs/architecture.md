@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.18.0
+> 版本: v0.19.0
 > 日期: 2026-04-01
-> 状态: ToolPolicy自动发现 + Gateway测试 + 98 tests
+> 状态: Storage/Channel测试 + 115 tests
 
 ---
 
@@ -512,6 +512,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
 | v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
 | v0.18.0 | 2026-04-01 | ToolPolicy自动发现 + Gateway测试 + 98 tests |
+| v0.19.0 | 2026-04-01 | Storage/Channel测试补充 + 115 tests |
 
 ---
 
@@ -1893,12 +1894,12 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | config | `tests.rs` | 7 | ✅ 良好 |
 | protocol | `tests.rs` | 9 | ✅ 良好 |
 | skill | `tests.rs` | 9 | ✅ 良好 |
-| tool | `tests.rs` | 38 | ✅ 良好 |
+| tool | `tests.rs` | 39 | ✅ 良好 |
 | **agent** | **lib.rs (内联)** | **10** | ✅ 已补充 (v0.16.0) |
-| **provider** | **lib.rs (内联)** | **8** | ✅ 已补充 (v0.16.0) |
-| **gateway** | **无** | **0** | 🔴 待补充 |
-| **channel** | **无** | **0** | 🔴 待补充 |
-| **storage** | **无** | **0** | 🔴 待补充 |
+| **provider** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.16.0) |
+| **gateway** | **lib.rs (内联)** | **6** | ✅ 已补充 (v0.18.0) |
+| **channel** | **lib.rs (内联)** | **11** | ✅ 已补充 (v0.19.0) |
+| **storage** | **lib.rs (内联)** | **6** | ✅ 已补充 (v0.19.0) |
 
 ### 17.6 推荐优化路线图
 
@@ -1931,8 +1932,8 @@ Phase 15.5: 代码质量加固 (1周)
 | 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
 | 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
-| 测试覆盖 | pytest 全量 | 98 个 (agent 10 + provider 12 + tool 39 + skill 9 + config 7 + protocol 9 + gateway 6 + integration 6) | ✅ 良好 |
+| 测试覆盖 | pytest 全量 | 115 个 (agent 10 + provider 12 + tool 39 + skill 9 + config 7 + protocol 9 + gateway 6 + storage 6 + channel 11 + integration 6) | ✅ 良好 |
 
 ---
 
-*文档版本: v0.18.0*
+*文档版本: v0.19.0*

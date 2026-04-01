@@ -10,3 +10,4 @@ futures-util = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 rustclaw-protocol = { path = "../protocol" }
+tokio = { version = "1", features = ["rt", "macros"] }
