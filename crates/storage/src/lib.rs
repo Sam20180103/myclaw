@@ -1,6 +1,8 @@
 use parking_lot::RwLock;
+use rusqlite::{Connection, OptionalExtension};
 use rustclaw_protocol::Message;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct SessionStore {
@@ -51,6 +53,146 @@ impl SessionStore {
 impl Default for SessionStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct SQLiteSessionStore {
+    conn: Arc<RwLock<Connection>>,
+}
+
+impl SQLiteSessionStore {
+    pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, rusqlite::Error> {
+        if let Some(parent) = db_path.as_ref().parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS sessions (
+                 key TEXT PRIMARY KEY,
+                 channel TEXT NOT NULL,
+                 messages TEXT NOT NULL DEFAULT '[]',
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )?;
+        Ok(Self {
+            conn: Arc::new(RwLock::new(conn)),
+        })
+    }
+
+    pub fn get(&self, key: &str) -> Option<Session> {
+        let conn = self.conn.read();
+        conn.query_row(
+            "SELECT key, channel, messages, created_at, updated_at FROM sessions WHERE key = ?",
+            [key],
+            |row| {
+                let messages_str: String = row.get(2)?;
+                let messages: Vec<Message> =
+                    serde_json::from_str(&messages_str).unwrap_or_default();
+                Ok(Session {
+                    key: row.get(0)?,
+                    channel: row.get(1)?,
+                    messages,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn insert(&self, session: &Session) -> Result<(), rusqlite::Error> {
+        let messages_json = serde_json::to_string(&session.messages).unwrap_or_default();
+        let conn = self.conn.write();
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (key, channel, messages, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            [
+                &session.key,
+                &session.channel,
+                &messages_json,
+                &session.created_at.to_string(),
+                &session.updated_at.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_message(&self, key: &str, message: &Message) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.write();
+        let messages_str: Option<String> = conn
+            .query_row(
+                "SELECT messages FROM sessions WHERE key = ?",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let mut messages: Vec<Message> = messages_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        messages.push(message.clone());
+        let messages_json = serde_json::to_string(&messages).unwrap_or_default();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE sessions SET messages = ?, updated_at = ? WHERE key = ?",
+            [&messages_json, &now.to_string(), key],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove(&self, key: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.write();
+        conn.execute("DELETE FROM sessions WHERE key = ?", [key])?;
+        Ok(())
+    }
+
+    pub fn list(&self) -> Vec<Session> {
+        let conn = self.conn.read();
+        let mut stmt = match conn
+            .prepare("SELECT key, channel, messages, created_at, updated_at FROM sessions")
+        {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let sessions = match stmt.query_map([], |row| {
+            let messages_str: String = row.get(2)?;
+            let messages: Vec<Message> = serde_json::from_str(&messages_str).unwrap_or_default();
+            Ok(Session {
+                key: row.get(0)?,
+                channel: row.get(1)?,
+                messages,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        sessions.filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn count(&self) -> usize {
+        let conn = self.conn.read();
+        conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
+    pub fn cleanup_expired(&self, ttl_seconds: i64) -> Result<usize, rusqlite::Error> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let cutoff = now - (ttl_seconds * 1000);
+        let conn = self.conn.write();
+        let deleted = conn.execute(
+            "DELETE FROM sessions WHERE updated_at < ?",
+            [cutoff.to_string()],
+        )?;
+        Ok(deleted)
     }
 }
 
@@ -143,5 +285,99 @@ mod tests {
         });
         let session = store.get("msg-session").unwrap();
         assert_eq!(session.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_sqlite_session_store_create() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        assert_eq!(store.count(), 0);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_insert_and_get() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        let session = Session {
+            key: "sqlite-1".to_string(),
+            channel: "http".to_string(),
+            messages: vec![],
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        store.insert(&session).unwrap();
+        let retrieved = store.get("sqlite-1");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().channel, "http");
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_add_message() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        let session = Session {
+            key: "sqlite-msg".to_string(),
+            channel: "ws".to_string(),
+            messages: vec![],
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        store.insert(&session).unwrap();
+        store
+            .add_message(
+                "sqlite-msg",
+                &Message {
+                    role: Role::User,
+                    content: Content::text("hello sqlite"),
+                },
+            )
+            .unwrap();
+        let retrieved = store.get("sqlite-msg").unwrap();
+        assert_eq!(retrieved.messages.len(), 1);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_remove() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        let session = Session {
+            key: "sqlite-del".to_string(),
+            channel: "http".to_string(),
+            messages: vec![],
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        store.insert(&session).unwrap();
+        assert_eq!(store.count(), 1);
+        store.remove("sqlite-del").unwrap();
+        assert_eq!(store.count(), 0);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_list() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        for i in 0..3 {
+            store
+                .insert(&Session {
+                    key: format!("list-{}", i),
+                    channel: "http".to_string(),
+                    messages: vec![],
+                    created_at: 1000,
+                    updated_at: 1000,
+                })
+                .unwrap();
+        }
+        assert_eq!(store.list().len(), 3);
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }
