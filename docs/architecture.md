@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.16.0
+> 版本: v0.17.0
 > 日期: 2026-04-01
-> 状态: P0/P1 Bug修复 + Agent/Provider测试补充
+> 状态: NVIDIA Provider实现 + 警告清理 + 测试补充(91 tests)
 
 ---
 
@@ -510,6 +510,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 | v0.15.1 | 2026-04-01 | 代码质量分析(安全/架构/性能/测试全覆盖审查) |
 | v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
+| v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
 
 ---
 
@@ -1860,7 +1861,7 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-116` | 并发请求可能创建重复 session | ✅ 已修复 (v0.16.0) |
 | 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | ⏳ 待 Phase 15.5 |
 | 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ⏳ 待 Phase 15 |
-| 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ⏳ 待 Phase 15.5 |
+| 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ✅ 已修复 (v0.17.0, NvProvider实现) |
 | 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:327-353` | 模型列表语义错误 | ✅ 已修复 (v0.16.0, 实际代码已调用 API) |
 | 10 | **Agent 无单元测试** | `crates/agent/src/` | 核心循环逻辑无测试覆盖 | ✅ 已修复 (v0.16.0, +10 tests) |
 | 11 | **Provider 无单元测试** | `crates/provider/src/` | 流式解析逻辑无测试 | ✅ 已修复 (v0.16.0, +8 tests) |
@@ -1929,8 +1930,8 @@ Phase 15.5: 代码质量加固 (1周)
 | 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
 | 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
-| 测试覆盖 | pytest 全量 | 87 个 (agent 10 + provider 8 + tool 38 + skill 9 + config 7 + protocol 9 + integration 6) | ✅ 良好 |
+| 测试覆盖 | pytest 全量 | 91 个 (agent 10 + provider 12 + tool 38 + skill 9 + config 7 + protocol 9 + integration 6) | ✅ 良好 |
 
 ---
 
-*文档版本: v0.16.0*
+*文档版本: v0.17.0*

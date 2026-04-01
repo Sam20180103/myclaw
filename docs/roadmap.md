@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.16.0
+> 版本: v0.17.0
 > 日期: 2026-04-01
-> 状态: P0/P1 Bug修复 + Agent/Provider测试补充
+> 状态: NVIDIA Provider实现 + 警告清理 + 测试补充(91 tests)
 
 ---
 
@@ -348,6 +348,7 @@
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 | v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
+| v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
 
 ### 待完善
 - 无 (核心功能已完成)
@@ -364,8 +365,8 @@
 | tool | 38 | ✅ |
 | integration | 6 | ✅ |
 | **agent** | **10** | ✅ (v0.16.0 新增) |
-| **provider** | **8** | ✅ (v0.16.0 新增) |
-| **总计** | **87** | ✅ |
+| **provider** | **12** | ✅ (v0.16.0 新增, v0.17.0 +4 NvProvider) |
+| **总计** | **91** | ✅ |
 
 ---
 
@@ -837,7 +838,7 @@
 | 15.5.2.3 | Provider 单元测试 | - OpenAI SSE 解析测试 | ✅ |
 | | | - Anthropic SSE 解析测试 | ✅ |
 | | | - list_models 正确性测试 | ✅ |
-| 15.5.2.4 | NVIDIA Provider | - 实现 NvProvider (OpenAI兼容) | ⏳ |
+| 15.5.2.4 | NVIDIA Provider | - 实现 NvProvider (OpenAI兼容) | ✅ |
 | | | - 或更新文档移除声明 | ⏳ |
 | 15.5.2.5 | Anthropic API version | - 更新至 2024-06-01 | ✅ |
 
@@ -896,4 +897,4 @@
 
 ---
 
-*版本: v0.16.0*
+*版本: v0.17.0*

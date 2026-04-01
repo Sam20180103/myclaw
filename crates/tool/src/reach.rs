@@ -140,6 +140,7 @@ exa_api_key: None,
 pub struct McpClient {
     client: reqwest::Client,
     endpoint: String,
+    #[allow(dead_code)]
     timeout_ms: u64,
 }
 

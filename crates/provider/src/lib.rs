@@ -588,6 +588,228 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+pub struct NvProvider {
+    api_key: String,
+    base_url: String,
+    model: String,
+    client: reqwest::Client,
+}
+
+impl NvProvider {
+    pub fn new(api_key: String, model: &str) -> Self {
+        Self {
+            api_key,
+            base_url: "https://integrate.api.nvidia.com".to_string(),
+            model: model.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.to_string();
+        self
+    }
+
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.model = model.to_string();
+        self
+    }
+}
+
+#[async_trait]
+impl LlmProvider for NvProvider {
+    async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
+        let openai_messages: Vec<OpenAiMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                OpenAiMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = OpenAiRequest {
+            model: self.model.clone(),
+            messages: openai_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: false,
+        };
+
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/v1/chat/completions", base);
+        
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError(format!("Status {}: {}", status, body)));
+        }
+
+        #[derive(Deserialize)]
+        struct NvResponse {
+            choices: Vec<NvChoice>,
+        }
+        
+        #[derive(Deserialize)]
+        struct NvChoice {
+            message: OpenAiMessageResponse,
+        }
+
+        let response: NvResponse = response
+            .json()
+            .await
+            .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or_else(|| ProviderError::ParseError("No choices in response".to_string()))
+    }
+
+    async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
+        use async_stream::stream;
+        use futures_util::stream::StreamExt;
+        
+        let openai_messages: Vec<OpenAiMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                OpenAiMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = OpenAiRequest {
+            model: self.model.clone(),
+            messages: openai_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: true,
+        };
+
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/v1/chat/completions", base);
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+        
+        Box::pin(stream! {
+            let result = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        yield Err(ProviderError::ApiError(format!(
+                            "Status {}",
+                            response.status()
+                        )));
+                        return;
+                    }
+
+                    let mut stream = response.bytes_stream();
+                    let mut buffer = String::new();
+                    
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(bytes) => {
+                                if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                                    buffer.push_str(&text);
+                                    
+                                    let lines: Vec<&str> = buffer.split('\n').collect();
+                                    for line in lines.iter().take(lines.len() - 1) {
+                                        let line = line.trim();
+                                        if let Some(data) = line.strip_prefix("data: ") {
+                                            if data == "[DONE]" {
+                                                return;
+                                            }
+
+                                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                                if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                                                    if let Some(choice) = choices.first() {
+                                                        if let Some(delta) = choice.get("delta") {
+                                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                                yield Ok(content.to_string());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if let Some(last) = lines.last() {
+                                        buffer = last.to_string();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(ProviderError::ApiError(e.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Err(ProviderError::ApiError(e.to_string()));
+                }
+            }
+        })
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        Ok(vec![
+            "meta/llama-3.1-405b-instruct".to_string(),
+            "meta/llama-3.1-70b-instruct".to_string(),
+            "meta/llama-3.1-8b-instruct".to_string(),
+            "mistralai/mixtral-8x22b-instruct-v0.1".to_string(),
+            "mistralai/mistral-large".to_string(),
+            "google/gemma-2b".to_string(),
+            "google/gemma-7b".to_string(),
+            "microsoft/phi-3-mini-128k-instruct".to_string(),
+            "nvidia/nemotron-4-340b-instruct".to_string(),
+        ])
+    }
+}
+
 #[derive(Clone)]
 pub struct ProviderClient {
     provider: Option<Arc<dyn LlmProvider>>,
@@ -680,5 +902,35 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(client.complete(vec![]));
         assert_eq!(result.unwrap(), "Provider not configured");
+    }
+
+    #[test]
+    fn test_nv_provider_construction() {
+        let provider = NvProvider::new("key".to_string(), "meta/llama-3.1-70b-instruct");
+        assert_eq!(provider.model, "meta/llama-3.1-70b-instruct");
+        assert_eq!(provider.base_url, "https://integrate.api.nvidia.com");
+    }
+
+    #[test]
+    fn test_nv_provider_with_base_url() {
+        let provider = NvProvider::new("key".to_string(), "meta/llama-3.1-70b-instruct")
+            .with_base_url("https://custom.nvidia.com");
+        assert_eq!(provider.base_url, "https://custom.nvidia.com");
+    }
+
+    #[test]
+    fn test_nv_provider_with_model() {
+        let provider = NvProvider::new("key".to_string(), "meta/llama-3.1-8b-instruct")
+            .with_model("meta/llama-3.1-405b-instruct");
+        assert_eq!(provider.model, "meta/llama-3.1-405b-instruct");
+    }
+
+    #[test]
+    fn test_nv_provider_list_models() {
+        let provider = NvProvider::new("key".to_string(), "meta/llama-3.1-70b-instruct");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let models = rt.block_on(provider.list_models()).unwrap();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.contains("llama")));
     }
 }

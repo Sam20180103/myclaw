@@ -617,6 +617,7 @@ fn get_log_path() -> PathBuf {
         .join("logs")
 }
 
+#[allow(dead_code)]
 fn list_config_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     
