@@ -488,14 +488,10 @@ async fn skill_approve_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
     match state.skill_manager.approve_skill(&id, "admin").await {
-        Ok(()) => Json(serde_json::json!({ 
-            "success": true, 
+        Ok(()) => api_success(serde_json::json!({ 
             "message": format!("Skill {} approved", id) 
         })),
-        Err(e) => Json(serde_json::json!({ 
-            "success": false, 
-            "error": e.to_string() 
-        })),
+        Err(e) => api_error(&e.to_string()),
     }
 }
 
@@ -504,14 +500,10 @@ async fn skill_reject_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
     match state.skill_manager.reject_skill(&id, "admin", Some("Rejected by admin")).await {
-        Ok(()) => Json(serde_json::json!({
-            "success": true,
+        Ok(()) => api_success(serde_json::json!({
             "message": format!("Skill {} rejected", id)
         })),
-        Err(e) => Json(serde_json::json!({
-            "success": false,
-            "error": e.to_string()
-        })),
+        Err(e) => api_error(&e.to_string()),
     }
 }
 
@@ -657,14 +649,10 @@ async fn config_update_handler(
     }
     
     if updated_fields.is_empty() {
-        return Json(serde_json::json!({
-            "success": false,
-            "error": "No valid configuration fields provided for update"
-        }));
+        return api_error("No valid configuration fields provided for update");
     }
     
-    Json(serde_json::json!({
-        "success": true,
+    api_success(serde_json::json!({
         "message": format!("Configuration update received for: {}", updated_fields.join(", ")),
         "note": "Configuration changes require gateway restart to take effect."
     }))
@@ -736,15 +724,11 @@ async fn config_model_handler(
     }
     
     match config.save(Some(state.config_path.clone())) {
-        Ok(()) => Json(serde_json::json!({
-            "success": true,
+        Ok(()) => api_success(serde_json::json!({
             "message": format!("Model switched to {} for {}", model, provider_type),
             "note": "Gateway restart required for changes to take effect"
         })),
-        Err(e) => Json(serde_json::json!({
-            "success": false,
-            "error": format!("Failed to save config: {}", e)
-        }))
+        Err(e) => api_error(&format!("Failed to save config: {}", e))
     }
 }
 
@@ -752,8 +736,7 @@ async fn channel_list_handler(
     State(state): State<Arc<Gateway>>,
 ) -> Json<serde_json::Value> {
     let channels: Vec<_> = state.channels.read().values().cloned().collect();
-    Json(serde_json::json!({
-        "success": true,
+    api_success(serde_json::json!({
         "channels": channels.iter().map(|c| serde_json::json!({
             "name": c.name,
             "type": c.channel_type,
