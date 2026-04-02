@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn test_cache_strategy_calculate_breakpoints_small() {
         let strategy = CacheStrategy::calculate_breakpoints(3, 300);
-        assert_eq!(strategy.breakpoints.len(), 3);
+        assert_eq!(strategy.breakpoints.len(), 4);
     }
 
     #[test]

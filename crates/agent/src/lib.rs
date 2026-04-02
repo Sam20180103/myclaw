@@ -17,6 +17,7 @@ pub enum AgentEvent {
     Step { iteration: u32, message_count: usize },
     Status { status: String },
     Thinking { content: String },
+    SkillSuggestion { task_summary: String, tool_call_count: u32 },
 }
 
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
@@ -30,6 +31,7 @@ pub struct AgentRuntime {
     memory_manager: Option<Arc<MemoryManager>>,
     context_compressor: Option<Arc<ContextCompressor>>,
     event_callback: Option<Arc<EventCallback>>,
+    iteration_budget: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -236,6 +238,7 @@ impl AgentRuntime {
             memory_manager: None,
             context_compressor: None,
             event_callback: None,
+            iteration_budget: None,
         }
     }
 
@@ -262,6 +265,11 @@ impl AgentRuntime {
 
     pub fn with_event_callback(mut self, callback: EventCallback) -> Self {
         self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
+    pub fn with_iteration_budget(mut self, budget: u32) -> Self {
+        self.iteration_budget = Some(budget);
         self
     }
 
@@ -333,10 +341,18 @@ impl AgentRuntime {
         self.session_manager.add_message(&session_key, envelope.message);
         self.emit_event(AgentEvent::Status { status: "started".to_string() });
 
+        let max_iterations = self.iteration_budget.unwrap_or(self.config.max_loop_iterations);
         let mut iterations = 0;
+        let mut total_tool_calls: u32 = 0;
 
         loop {
-            if iterations >= self.config.max_loop_iterations {
+            if iterations >= max_iterations {
+                if total_tool_calls >= 5 {
+                    self.emit_event(AgentEvent::SkillSuggestion {
+                        task_summary: "Complex task completed".to_string(),
+                        tool_call_count: total_tool_calls,
+                    });
+                }
                 self.emit_event(AgentEvent::Status { status: "max_iterations".to_string() });
                 return Err(AgentError::MaxIterationsExceeded);
             }
@@ -363,6 +379,12 @@ impl AgentRuntime {
             let tool_calls = self.parse_tool_calls(&response_text);
 
             if tool_calls.is_empty() {
+                if total_tool_calls >= 5 {
+                    self.emit_event(AgentEvent::SkillSuggestion {
+                        task_summary: "Complex task completed".to_string(),
+                        tool_call_count: total_tool_calls,
+                    });
+                }
                 self.emit_event(AgentEvent::Status { status: "completed".to_string() });
                 return Ok(AgentResponse {
                     session_key,
@@ -375,6 +397,7 @@ impl AgentRuntime {
             }
 
             for tool_call in &tool_calls {
+                total_tool_calls += 1;
                 self.emit_event(AgentEvent::ToolStart {
                     tool_name: tool_call.name.clone(),
                     args: tool_call.arguments.to_string(),
