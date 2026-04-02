@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.32.0
+> 版本: v0.33.0
 > 日期: 2026-04-01
-> 状态: SkillManageTool实现 + 145 tests
+> 状态: 会话谱系 + SkillManage patch + 146 tests
 
 ---
 
