@@ -12,6 +12,7 @@ members = [
 "crates/cli",
 "crates/skill",
 "crates/memory",
+"crates/compression",
 ]
 
 [workspace.package]

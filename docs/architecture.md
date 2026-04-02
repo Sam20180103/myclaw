@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.25.0
+> 版本: v0.26.0
 > 日期: 2026-04-01
-> 状态: Memory记忆系统 + 安全扫描器 + 131 tests
+> 状态: 上下文压缩系统 + 138 tests
 
 ---
 
@@ -520,6 +520,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.23.0 | 2026-04-01 | Gateway响应辅助函数扩展(5个handlers) |
 | v0.24.0 | 2026-04-01 | SQLite持久化存储(SQLiteSessionStore) + 120 tests |
 | v0.25.0 | 2026-04-01 | Memory记忆系统 + 安全扫描器 + 131 tests |
+| v0.26.0 | 2026-04-01 | 上下文压缩系统(SessionHygiene+ContextCompressor) + 138 tests |
 
 ---
 
