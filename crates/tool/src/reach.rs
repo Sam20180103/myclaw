@@ -2279,8 +2279,8 @@ mod tests {
     fn test_rate_limiter_manager_get_or_create() {
         let manager = RateLimiterManager::default();
         
-        let limiter1 = manager.get_or_create("reddit");
-        let limiter2 = manager.get_or_create("reddit");
+        let _limiter1 = manager.get_or_create("reddit");
+        let _limiter2 = manager.get_or_create("reddit");
         
         assert_eq!(manager.limiters.read().len(), 1);
     }

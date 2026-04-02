@@ -280,7 +280,6 @@ impl SkillManageTool {
 mod tests {
     use super::*;
     use crate::{SkillConfig, SkillManager};
-    use std::path::PathBuf;
 
     #[test]
     fn test_skill_manage_tool_schema() {
