@@ -465,6 +465,61 @@ fn validate_language_syntax(&self, language: &SkillLanguage, source_code: &str) 
         Err(SkillError::NotFound(id.to_string()))
     }
 
+    pub async fn patch_skill(&self, id: &str, patch: &serde_json::Value) -> Result<(), SkillError> {
+        let mut active = self.active_skills.write();
+        if let Some(record) = active.get_mut(id) {
+            let mut def = record.definition.clone();
+            if let Some(name) = patch.get("name").and_then(|v| v.as_str()) {
+                def.name = name.to_string();
+            }
+            if let Some(desc) = patch.get("description").and_then(|v| v.as_str()) {
+                def.description = desc.to_string();
+            }
+            if let Some(code) = patch.get("source_code").and_then(|v| v.as_str()) {
+                def.source_code = code.to_string();
+            }
+            if let Some(params) = patch.get("parameters") {
+                def.parameters = params.clone();
+            }
+            self.validate_skill(&def)?;
+            let content = serde_json::to_string_pretty(&def)
+                .map_err(|e| SkillError::SerializationError(e.to_string()))?;
+            tokio::fs::write(&record.path, &content)
+                .await
+                .map_err(|e| SkillError::IoError(e.to_string()))?;
+            record.definition = def;
+            return Ok(());
+        }
+        drop(active);
+
+        let mut pending = self.pending_skills.write();
+        if let Some(record) = pending.get_mut(id) {
+            let mut def = record.definition.clone();
+            if let Some(name) = patch.get("name").and_then(|v| v.as_str()) {
+                def.name = name.to_string();
+            }
+            if let Some(desc) = patch.get("description").and_then(|v| v.as_str()) {
+                def.description = desc.to_string();
+            }
+            if let Some(code) = patch.get("source_code").and_then(|v| v.as_str()) {
+                def.source_code = code.to_string();
+            }
+            if let Some(params) = patch.get("parameters") {
+                def.parameters = params.clone();
+            }
+            self.validate_skill(&def)?;
+            let content = serde_json::to_string_pretty(&def)
+                .map_err(|e| SkillError::SerializationError(e.to_string()))?;
+            tokio::fs::write(&record.path, &content)
+                .await
+                .map_err(|e| SkillError::IoError(e.to_string()))?;
+            record.definition = def;
+            return Ok(());
+        }
+
+        Err(SkillError::NotFound(id.to_string()))
+    }
+
     pub async fn hot_reload(&self) -> Result<HotReloadResult, SkillError> {
         let before_count = self.active_skills.read().len();
         

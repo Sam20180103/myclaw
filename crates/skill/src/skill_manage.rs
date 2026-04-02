@@ -26,7 +26,7 @@ impl SkillManageTool {
     }
 
     pub fn description() -> &'static str {
-        "Manage skills: create, delete, list. Use this to create new skills from complex tasks."
+        "Manage skills: create, patch, delete, list. Use this to create new skills from complex tasks or modify existing ones."
     }
 
     pub fn schema() -> Value {
@@ -35,7 +35,7 @@ impl SkillManageTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "delete", "list"],
+                    "enum": ["create", "patch", "delete", "list"],
                     "description": "Action to perform"
                 },
                 "name": { "type": "string", "description": "Skill name" },
@@ -47,7 +47,8 @@ impl SkillManageTool {
                 },
                 "source_code": { "type": "string", "description": "Skill source code" },
                 "parameters": { "type": "object", "description": "Skill parameters" },
-                "skill_id": { "type": "string", "description": "Skill ID" }
+                "skill_id": { "type": "string", "description": "Skill ID" },
+                "patch": { "type": "object", "description": "Fields to patch" }
             },
             "required": ["action"]
         })
@@ -61,6 +62,7 @@ impl SkillManageTool {
 
         match action {
             "create" => self.create_skill(&params).await,
+            "patch" => self.patch_skill(&params).await,
             "list" => self.list_skills(),
             "delete" => self.delete_skill(&params).await,
             _ => Err(format!("Unknown action: {}", action)),
@@ -148,6 +150,27 @@ impl SkillManageTool {
         Ok(serde_json::json!({
             "success": true,
             "message": format!("Skill {} deleted", skill_id)
+        }))
+    }
+
+    async fn patch_skill(&self, params: &Value) -> Result<Value, String> {
+        let skill_id = params
+            .get("skill_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'skill_id' parameter".to_string())?;
+
+        let patch = params
+            .get("patch")
+            .ok_or_else(|| "Missing 'patch' parameter".to_string())?;
+
+        self.skill_manager
+            .patch_skill(skill_id, patch)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("Skill {} patched", skill_id)
         }))
     }
 }
