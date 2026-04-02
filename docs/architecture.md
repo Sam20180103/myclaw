@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.24.0
+> 版本: v0.25.0
 > 日期: 2026-04-01
-> 状态: SQLite持久化存储 + 120 tests
+> 状态: Memory记忆系统 + 安全扫描器 + 131 tests
 
 ---
 
@@ -519,6 +519,7 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.22.1 | 2026-04-01 | 消除api_error未使用警告 |
 | v0.23.0 | 2026-04-01 | Gateway响应辅助函数扩展(5个handlers) |
 | v0.24.0 | 2026-04-01 | SQLite持久化存储(SQLiteSessionStore) + 120 tests |
+| v0.25.0 | 2026-04-01 | Memory记忆系统 + 安全扫描器 + 131 tests |
 
 ---
 
