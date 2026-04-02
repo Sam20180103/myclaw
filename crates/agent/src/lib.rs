@@ -11,6 +11,16 @@ use uuid::Uuid;
 use tokio::sync::mpsc;
 use futures_util::stream::StreamExt;
 
+pub enum AgentEvent {
+    ToolStart { tool_name: String, args: String },
+    ToolEnd { tool_name: String, success: bool },
+    Step { iteration: u32, message_count: usize },
+    Status { status: String },
+    Thinking { content: String },
+}
+
+pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
+
 pub struct AgentRuntime {
     config: AgentConfig,
     session_manager: SessionManager,
@@ -19,6 +29,7 @@ pub struct AgentRuntime {
     provider_client: ProviderClient,
     memory_manager: Option<Arc<MemoryManager>>,
     context_compressor: Option<Arc<ContextCompressor>>,
+    event_callback: Option<Arc<EventCallback>>,
 }
 
 #[derive(Clone)]
@@ -224,6 +235,7 @@ impl AgentRuntime {
             provider_client: ProviderClient::new(None),
             memory_manager: None,
             context_compressor: None,
+            event_callback: None,
         }
     }
 
@@ -248,8 +260,19 @@ impl AgentRuntime {
         self
     }
 
+    pub fn with_event_callback(mut self, callback: EventCallback) -> Self {
+        self.event_callback = Some(Arc::new(callback));
+        self
+    }
+
     pub fn memory_manager(&self) -> Option<&Arc<MemoryManager>> {
         self.memory_manager.as_ref()
+    }
+
+    fn emit_event(&self, event: AgentEvent) {
+        if let Some(ref cb) = self.event_callback {
+            cb(event);
+        }
     }
 
     pub async fn process(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
@@ -308,13 +331,22 @@ impl AgentRuntime {
         
         self.session_manager.get_or_create(&session_key, &envelope.channel, &lane);
         self.session_manager.add_message(&session_key, envelope.message);
+        self.emit_event(AgentEvent::Status { status: "started".to_string() });
 
         let mut iterations = 0;
 
         loop {
             if iterations >= self.config.max_loop_iterations {
+                self.emit_event(AgentEvent::Status { status: "max_iterations".to_string() });
                 return Err(AgentError::MaxIterationsExceeded);
             }
+
+            self.emit_event(AgentEvent::Step {
+                iteration: iterations,
+                message_count: self.session_manager.get(&session_key)
+                    .map(|s| s.messages.len())
+                    .unwrap_or(0),
+            });
 
             let messages = self.session_manager.get(&session_key)
                 .map(|s| (*s.messages).clone())
@@ -322,12 +354,16 @@ impl AgentRuntime {
 
             let response_text = match self.provider_client.complete(messages).await {
                 Ok(text) => text,
-                Err(e) => return Err(AgentError::ProviderError(e.to_string())),
+                Err(e) => {
+                    self.emit_event(AgentEvent::Status { status: "provider_error".to_string() });
+                    return Err(AgentError::ProviderError(e.to_string()));
+                }
             };
 
             let tool_calls = self.parse_tool_calls(&response_text);
 
             if tool_calls.is_empty() {
+                self.emit_event(AgentEvent::Status { status: "completed".to_string() });
                 return Ok(AgentResponse {
                     session_key,
                     message: Message {
@@ -339,8 +375,17 @@ impl AgentRuntime {
             }
 
             for tool_call in &tool_calls {
+                self.emit_event(AgentEvent::ToolStart {
+                    tool_name: tool_call.name.clone(),
+                    args: tool_call.arguments.to_string(),
+                });
+
                 match self.execute_tool(tool_call).await {
                     Ok(result) => {
+                        self.emit_event(AgentEvent::ToolEnd {
+                            tool_name: tool_call.name.clone(),
+                            success: true,
+                        });
                         let result_message = Message {
                             role: Role::System,
                             content: Content::text(format!(
@@ -352,6 +397,10 @@ impl AgentRuntime {
                         self.session_manager.add_message(&session_key, result_message);
                     }
                     Err(e) => {
+                        self.emit_event(AgentEvent::ToolEnd {
+                            tool_name: tool_call.name.clone(),
+                            success: false,
+                        });
                         let error_message = Message {
                             role: Role::System,
                             content: Content::text(format!(
