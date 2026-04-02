@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.33.0
+> 版本: v0.34.0
 > 日期: 2026-04-01
-> 状态: 会话谱系 + SkillManage patch + 146 tests
+> 状态: Phase 15 全部完成 + 147 tests
 
 ---
 
@@ -468,10 +468,10 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
   - MEMORY.md: Agent个人笔记 (2200 chars)
   - USER.md: 用户偏好档案 (1375 chars)
 - [x] Memory 工具 (add/replace/remove 自主管理)
-- [ ] 会话全文搜索 (FTS5 + 上下文片段 + LLM摘要)
-- [ ] 用户建模 (跨会话偏好学习)
+- [x] 会话全文搜索 (LIKE搜索 + 索引优化)
+- [x] 用户建模 (跨会话偏好学习)
 - [x] Skill 自我创建 (复杂任务后自动生成, 5+ tool calls)
-- [ ] Skill 自我管理 (patch/edit/create/delete)
+- [x] Skill 自我管理 (patch/edit/create/delete)
 - [x] 双级上下文压缩
   - Gateway层: 85%阈值 (安全网, 粗略估计)
   - Agent层: 50%阈值 (精确token计数, 结构化摘要)
@@ -479,8 +479,8 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 - [x] 回调系统 (tool_progress, step, status, thinking)
 - [x] 迭代预算 (父子 Agent 共享预算)
 - [x] 记忆安全扫描 (prompt injection/exfiltration 检测)
-- [ ] 会话谱系 (parent_session_id 链式追踪)
-- [ ] 经验回放 (历史会话压缩摘要)
+- [x] 会话谱系 (parent_session_id 链式追踪)
+- [x] 经验回放 (历史会话压缩摘要)
 
 ---
 
@@ -521,6 +521,14 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
 | v0.24.0 | 2026-04-01 | SQLite持久化存储(SQLiteSessionStore) + 120 tests |
 | v0.25.0 | 2026-04-01 | Memory记忆系统 + 安全扫描器 + 131 tests |
 | v0.26.0 | 2026-04-01 | 上下文压缩系统(SessionHygiene+ContextCompressor) + 138 tests |
+| v0.27.0 | 2026-04-01 | Skill自我创建提示 + 迭代预算 + 141 tests |
+| v0.28.0 | 2026-04-01 | 回调系统集成 + 141 tests |
+| v0.29.0 | 2026-04-01 | Prompt缓存策略 + 142 tests |
+| v0.30.0 | 2026-04-01 | SkillManageTool实现 (create/delete/list) + 145 tests |
+| v0.31.0 | 2026-04-01 | 会话搜索 + 索引优化 + 142 tests |
+| v0.32.0 | 2026-04-01 | SkillManageTool patch动作 + 145 tests |
+| v0.33.0 | 2026-04-01 | 会话谱系 (parent_session_id) + 146 tests |
+| v0.34.0 | 2026-04-01 | Phase 15全部完成 + 147 tests |
 
 ---
 
@@ -1892,8 +1900,9 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | "WebSocket Channel" | Stub (无实际实现) | 🔴 严重 |
 | "NVIDIA NIM Provider 支持" | NvProvider 已实现 | ✅ 已修复 (v0.17.0) |
 | "Webhook Channel" | Stub (无实际实现) | 🟡 中等 |
-| "Provider 抽象: 支持多种 LLM" | 仅 OpenAI + Anthropic | 🟡 中等 |
+| "Provider 抽象: 支持多种 LLM" | OpenAI/Anthropic/NVIDIA | ✅ 已修复 |
 | "安全沙箱: 进程隔离" | 仅 shell_exec 有沙箱 | 🟡 中等 |
+| "Phase 15 记忆系统" | 全部实现 | ✅ 已完成 (v0.34.0) |
 
 ### 17.5 测试覆盖现状
 
@@ -1907,7 +1916,10 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | **provider** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.16.0) |
 | **gateway** | **lib.rs (内联)** | **6** | ✅ 已补充 (v0.18.0) |
 | **channel** | **lib.rs (内联)** | **11** | ✅ 已补充 (v0.19.0) |
-| **storage** | **lib.rs (内联)** | **6** | ✅ 已补充 (v0.19.0) |
+| **storage** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.24.0/0.33.0) |
+| **memory** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.25.0/0.34.0) |
+| **compression** | **lib.rs (内联)** | **10** | ✅ 已补充 (v0.26.0/0.29.0) |
+| **skill** | **skill_manage.rs** | **3** | ✅ 已补充 (v0.32.0) |
 
 ### 17.6 推荐优化路线图
 

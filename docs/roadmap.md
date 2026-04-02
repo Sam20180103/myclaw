@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.33.0
+> 版本: v0.34.0
 > 日期: 2026-04-01
-> 状态: 会话谱系 + SkillManage patch + 146 tests
+> 状态: Phase 15 全部完成 + 147 tests
 
 ---
 
@@ -348,6 +348,24 @@
 | v0.14.1 | 2026-03-10 | CLI编译修复(OpenCode Run命令借用检查错误修复) |
 | v0.15.0 | 2026-04-01 | Phase 15规划(记忆系统+自我进化,参考Hermes Agent架构) |
 | v0.16.0 | 2026-04-01 | P0/P1 Bug修复 + Agent/Provider测试(87 tests) |
+| v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
+| v0.18.0 | 2026-04-01 | Gateway响应辅助函数 + 98 tests |
+| v0.19.0 | 2026-04-01 | Storage/Channel测试补充 + 115 tests |
+| v0.20.0 | 2026-04-01 | Phase 15.5 代码质量加固完成 |
+| v0.21.0 | 2026-04-01 | Session克隆优化(Arc包装) |
+| v0.22.0 | 2026-04-01 | Gateway响应辅助函数扩展 |
+| v0.23.0 | 2026-04-01 | 上下文压缩系统 + 138 tests |
+| v0.24.0 | 2026-04-01 | SQLite持久化存储 + 142 tests |
+| v0.25.0 | 2026-04-01 | Memory记忆系统 + 安全扫描器 + 131 tests |
+| v0.26.0 | 2026-04-01 | 上下文压缩系统 + 138 tests |
+| v0.27.0 | 2026-04-01 | Skill自我创建提示 + 迭代预算 + 141 tests |
+| v0.28.0 | 2026-04-01 | 回调系统集成 + 141 tests |
+| v0.29.0 | 2026-04-01 | Prompt缓存策略 + 142 tests |
+| v0.30.0 | 2026-04-01 | SkillManageTool实现 (create/delete/list) + 145 tests |
+| v0.31.0 | 2026-04-01 | 会话搜索 + 索引优化 + 142 tests |
+| v0.32.0 | 2026-04-01 | SkillManageTool patch动作 + 145 tests |
+| v0.33.0 | 2026-04-01 | 会话谱系 (parent_session_id) + 146 tests |
+| v0.34.0 | 2026-04-01 | Phase 15全部完成 + 147 tests |
 | v0.17.0 | 2026-04-01 | NVIDIA Provider实现 + 警告清理 + 测试(91 tests) |
 
 ### 待完善
