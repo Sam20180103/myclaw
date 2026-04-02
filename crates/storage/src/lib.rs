@@ -75,7 +75,9 @@ impl SQLiteSessionStore {
                  messages TEXT NOT NULL DEFAULT '[]',
                  created_at INTEGER NOT NULL,
                  updated_at INTEGER NOT NULL
-             );",
+             );
+             CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+             CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);",
         )?;
         Ok(Self {
             conn: Arc::new(RwLock::new(conn)),
@@ -193,6 +195,37 @@ impl SQLiteSessionStore {
             [cutoff.to_string()],
         )?;
         Ok(deleted)
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Session> {
+        let conn = self.conn.read();
+        let sql = format!(
+            "SELECT key, channel, messages, created_at, updated_at
+             FROM sessions
+             WHERE messages LIKE ?
+             ORDER BY updated_at DESC
+             LIMIT ?",
+        );
+        let pattern = format!("%{}%", query);
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let sessions = match stmt.query_map([&pattern, &limit.to_string()], |row| {
+            let messages_str: String = row.get(2)?;
+            let messages: Vec<Message> = serde_json::from_str(&messages_str).unwrap_or_default();
+            Ok(Session {
+                key: row.get(0)?,
+                channel: row.get(1)?,
+                messages,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        sessions.filter_map(|r| r.ok()).collect()
     }
 }
 
@@ -378,6 +411,39 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(store.list().len(), 3);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_search() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        let msg = Message {
+            role: Role::User,
+            content: Content::text("hello world"),
+        };
+        store
+            .insert(&Session {
+                key: "search-1".to_string(),
+                channel: "http".to_string(),
+                messages: vec![msg],
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+        store
+            .insert(&Session {
+                key: "search-2".to_string(),
+                channel: "http".to_string(),
+                messages: vec![],
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+        let results = store.search("hello", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "search-1");
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

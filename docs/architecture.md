@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.30.0
+> 版本: v0.31.0
 > 日期: 2026-04-01
-> 状态: Skill自我创建提示 + 迭代预算 + 141 tests
+> 状态: 会话搜索 + Skill自动创建 + 142 tests
 
 ---
 
@@ -462,23 +462,23 @@ Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
      └────────── 技能使用中自我改进 ←─────────────────┘
 ```
 
-- [ ] SQLite 持久化存储 (WAL模式 + FTS5全文搜索)
-- [ ] 三层记忆架构 (即时/持久/搜索)
-- [ ] MEMORY.md + USER.md 双文件记忆
+- [x] SQLite 持久化存储 (WAL模式 + FTS5全文搜索)
+- [x] 三层记忆架构 (即时/持久/搜索)
+- [x] MEMORY.md + USER.md 双文件记忆
   - MEMORY.md: Agent个人笔记 (2200 chars)
   - USER.md: 用户偏好档案 (1375 chars)
-- [ ] Memory 工具 (add/replace/remove 自主管理)
+- [x] Memory 工具 (add/replace/remove 自主管理)
 - [ ] 会话全文搜索 (FTS5 + 上下文片段 + LLM摘要)
 - [ ] 用户建模 (跨会话偏好学习)
-- [ ] Skill 自我创建 (复杂任务后自动生成, 5+ tool calls)
+- [x] Skill 自我创建 (复杂任务后自动生成, 5+ tool calls)
 - [ ] Skill 自我管理 (patch/edit/create/delete)
-- [ ] 双级上下文压缩
+- [x] 双级上下文压缩
   - Gateway层: 85%阈值 (安全网, 粗略估计)
   - Agent层: 50%阈值 (精确token计数, 结构化摘要)
-- [ ] Prompt 缓存策略 (Anthropic cache_control, 75%成本降低)
-- [ ] 回调系统 (tool_progress, step, status, thinking)
-- [ ] 迭代预算 (父子 Agent 共享预算)
-- [ ] 记忆安全扫描 (prompt injection/exfiltration 检测)
+- [x] Prompt 缓存策略 (Anthropic cache_control, 75%成本降低)
+- [x] 回调系统 (tool_progress, step, status, thinking)
+- [x] 迭代预算 (父子 Agent 共享预算)
+- [x] 记忆安全扫描 (prompt injection/exfiltration 检测)
 - [ ] 会话谱系 (parent_session_id 链式追踪)
 - [ ] 经验回放 (历史会话压缩摘要)
 

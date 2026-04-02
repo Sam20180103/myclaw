@@ -71,7 +71,7 @@ base64 = "0.21"
 governor = "0.6"
 
 # SQLite storage
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "fts5"] }
 
 [package]
 name = "rustclaw"
