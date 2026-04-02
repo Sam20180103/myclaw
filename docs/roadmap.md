@@ -757,7 +757,7 @@
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
 | 15.3.1 | SkillManage工具 | - create动作 | ✅ |
-| | | - patch动作 (首选, token高效) | ⏳ |
+| | | - patch动作 (首选, token高效) | ✅ |
 | | | - edit动作 (大规模重写) | ⏳ |
 | | | - delete动作 | ✅ |
 | | | - write_file/remove_file | ⏳ |
