@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.31.0
+> 版本: v0.32.0
 > 日期: 2026-04-01
-> 状态: 会话搜索 + Skill自动创建 + 142 tests
+> 状态: SkillManageTool实现 + 145 tests
 
 ---
 

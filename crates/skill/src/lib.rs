@@ -603,5 +603,8 @@ pub struct SkillGenerateResponse {
     pub error: Option<String>,
 }
 
+pub mod skill_manage;
+pub use skill_manage::*;
+
 #[cfg(test)]
 mod tests;

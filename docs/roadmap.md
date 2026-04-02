@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.31.0
+> 版本: v0.32.0
 > 日期: 2026-04-01
-> 状态: 会话搜索 + Skill自动创建 + 142 tests
+> 状态: SkillManageTool实现 + 145 tests
 
 ---
 
@@ -756,11 +756,12 @@
 
 | # | 任务 | 子任务 | 状态 |
 |---|------|--------|------|
-| 15.3.1 | SkillManage工具 | - create动作 | ⏳ |
+| 15.3.1 | SkillManage工具 | - create动作 | ✅ |
 | | | - patch动作 (首选, token高效) | ⏳ |
 | | | - edit动作 (大规模重写) | ⏳ |
-| | | - delete动作 | ⏳ |
+| | | - delete动作 | ✅ |
 | | | - write_file/remove_file | ⏳ |
+| | | - list动作 | ✅ |
 | 15.3.2 | 自动触发机制 | - 复杂任务检测 (5+ tool calls) | ✅ |
 | | | - SkillSuggestion事件 | ✅ |
 | | | - 用户纠正记录 | ⏳ |
