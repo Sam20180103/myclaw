@@ -764,7 +764,7 @@
 | | | - list动作 | ✅ |
 | 15.3.2 | 自动触发机制 | - 复杂任务检测 (5+ tool calls) | ✅ |
 | | | - SkillSuggestion事件 | ✅ |
-| | | - 用户纠正记录 | ⏳ |
+| | | - 用户纠正记录 | ✅ |
 | 15.3.3 | 技能目录 | - 分类管理 (devops/mlops/...) | ⏳ |
 | | | - SKILL.md格式 | ⏳ |
 | | | - references/templates/scripts子目录 | ⏳ |

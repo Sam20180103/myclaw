@@ -18,6 +18,7 @@ pub enum AgentEvent {
     Status { status: String },
     Thinking { content: String },
     SkillSuggestion { task_summary: String, tool_call_count: u32 },
+    UserCorrection { original: String, corrected: String },
 }
 
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;

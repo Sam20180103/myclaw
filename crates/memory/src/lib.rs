@@ -30,6 +30,15 @@ pub struct UserProfile {
     pub preferences: Vec<MemoryEntry>,
     pub communication_style: Vec<MemoryEntry>,
     pub environment: Vec<MemoryEntry>,
+    pub corrections: Vec<CorrectionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectionEntry {
+    pub original: String,
+    pub corrected: String,
+    pub context: String,
+    pub created_at: i64,
 }
 
 impl Default for UserProfile {
@@ -38,6 +47,7 @@ impl Default for UserProfile {
             preferences: Vec::new(),
             communication_style: Vec::new(),
             environment: Vec::new(),
+            corrections: Vec::new(),
         }
     }
 }
@@ -167,6 +177,20 @@ impl MemoryManager {
         let mut mem = self.memory_entries.write();
         *mem = VecDeque::from(entries);
         Ok(())
+    }
+
+    pub fn record_correction(&self, original: &str, corrected: &str, context: &str) {
+        let entry = CorrectionEntry {
+            original: original.to_string(),
+            corrected: corrected.to_string(),
+            context: context.to_string(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        self.user_profile.write().corrections.push(entry);
+    }
+
+    pub fn get_corrections(&self) -> Vec<CorrectionEntry> {
+        self.user_profile.read().corrections.clone()
     }
 
     pub fn clear(&self) -> Result<(), MemoryError> {
@@ -339,6 +363,19 @@ mod tests {
         manager.add_entry("Entry 2").unwrap();
         manager.clear().unwrap();
         assert_eq!(manager.get_entries().len(), 0);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_memory_manager_record_correction() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_mem_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("memory.json");
+        let manager = MemoryManager::new(&db_path, 2200, 1375);
+        manager.record_correction("teh", "the", "typo fix");
+        let corrections = manager.get_corrections();
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].original, "teh");
+        assert_eq!(corrections[0].corrected, "the");
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 
