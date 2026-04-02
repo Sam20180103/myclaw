@@ -26,14 +26,6 @@ pub struct MemoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserProfile {
-    pub preferences: Vec<MemoryEntry>,
-    pub communication_style: Vec<MemoryEntry>,
-    pub environment: Vec<MemoryEntry>,
-    pub corrections: Vec<CorrectionEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectionEntry {
     pub original: String,
     pub corrected: String,
@@ -41,15 +33,12 @@ pub struct CorrectionEntry {
     pub created_at: i64,
 }
 
-impl Default for UserProfile {
-    fn default() -> Self {
-        Self {
-            preferences: Vec::new(),
-            communication_style: Vec::new(),
-            environment: Vec::new(),
-            corrections: Vec::new(),
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserProfile {
+    pub preferences: Vec<MemoryEntry>,
+    pub communication_style: Vec<MemoryEntry>,
+    pub environment: Vec<MemoryEntry>,
+    pub corrections: Vec<CorrectionEntry>,
 }
 
 pub struct MemoryManager {

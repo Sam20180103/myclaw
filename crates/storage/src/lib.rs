@@ -58,6 +58,7 @@ impl Default for SessionStore {
 }
 
 pub struct SQLiteSessionStore {
+    #[allow(clippy::arc_with_non_send_sync)]
     conn: Arc<RwLock<Connection>>,
 }
 
@@ -118,13 +119,13 @@ impl SQLiteSessionStore {
         conn.execute(
             "INSERT OR REPLACE INTO sessions (key, channel, parent_session_id, messages, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            [
-                &session.key,
-                &session.channel,
-                &session.parent_session_id.clone().unwrap_or_default(),
-                &messages_json,
-                &session.created_at.to_string(),
-                &session.updated_at.to_string(),
+            rusqlite::params![
+                session.key,
+                session.channel,
+                session.parent_session_id.clone().unwrap_or_default(),
+                messages_json,
+                session.created_at,
+                session.updated_at,
             ],
         )?;
         Ok(())
@@ -150,7 +151,7 @@ impl SQLiteSessionStore {
         let now = chrono::Utc::now().timestamp_millis();
         conn.execute(
             "UPDATE sessions SET messages = ?, updated_at = ? WHERE key = ?",
-            [&messages_json, &now.to_string(), key],
+            rusqlite::params![messages_json, now, key],
         )?;
         Ok(())
     }
@@ -207,13 +208,11 @@ impl SQLiteSessionStore {
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Session> {
         let conn = self.conn.read();
-        let sql = format!(
-            "SELECT key, channel, parent_session_id, messages, created_at, updated_at
+        let sql = "SELECT key, channel, parent_session_id, messages, created_at, updated_at
              FROM sessions
              WHERE messages LIKE ?
              ORDER BY updated_at DESC
-             LIMIT ?",
-        );
+             LIMIT ?";
         let pattern = format!("%{}%", query);
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
@@ -240,15 +239,11 @@ impl SQLiteSessionStore {
 
     pub fn get_lineage(&self, session_key: &str) -> Vec<Session> {
         let mut lineage = Vec::new();
-        let mut current_key = session_key.to_string();
-        loop {
-            if let Some(session) = self.get(&current_key) {
+        let mut current_key = Some(session_key.to_string());
+        while let Some(key) = current_key {
+            if let Some(session) = self.get(&key) {
                 lineage.push(session.clone());
-                if let Some(parent) = &session.parent_session_id {
-                    current_key = parent.clone();
-                } else {
-                    break;
-                }
+                current_key = session.parent_session_id.clone();
             } else {
                 break;
             }
