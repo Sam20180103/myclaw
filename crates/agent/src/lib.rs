@@ -57,6 +57,7 @@ impl Default for AgentConfig {
 pub struct Session {
     pub key: String,
     pub lane: String,
+    pub parent_session_id: Option<String>,
     pub messages: Arc<Vec<Message>>,
     pub metadata: Arc<SessionMetadata>,
     pub last_accessed: Instant,
@@ -90,6 +91,7 @@ impl SessionManager {
         let session = Session {
             key: Uuid::new_v4().to_string(),
             lane: lane.to_string(),
+            parent_session_id: None,
             messages: Arc::new(Vec::with_capacity(16)),
             metadata: Arc::new(SessionMetadata {
                 channel: channel.to_string(),
@@ -118,6 +120,7 @@ impl SessionManager {
         let session = Session {
             key: key.to_string(),
             lane: lane.to_string(),
+            parent_session_id: None,
             messages: Arc::new(Vec::with_capacity(16)),
             metadata: Arc::new(SessionMetadata {
                 channel: channel.to_string(),

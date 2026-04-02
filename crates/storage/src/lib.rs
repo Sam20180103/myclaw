@@ -13,6 +13,7 @@ pub struct SessionStore {
 pub struct Session {
     pub key: String,
     pub channel: String,
+    pub parent_session_id: Option<String>,
     pub messages: Vec<Message>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -72,12 +73,14 @@ impl SQLiteSessionStore {
              CREATE TABLE IF NOT EXISTS sessions (
                  key TEXT PRIMARY KEY,
                  channel TEXT NOT NULL,
+                 parent_session_id TEXT,
                  messages TEXT NOT NULL DEFAULT '[]',
                  created_at INTEGER NOT NULL,
                  updated_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
-             CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);",
+             CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);
+             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);",
         )?;
         Ok(Self {
             conn: Arc::new(RwLock::new(conn)),
@@ -87,18 +90,20 @@ impl SQLiteSessionStore {
     pub fn get(&self, key: &str) -> Option<Session> {
         let conn = self.conn.read();
         conn.query_row(
-            "SELECT key, channel, messages, created_at, updated_at FROM sessions WHERE key = ?",
+            "SELECT key, channel, parent_session_id, messages, created_at, updated_at FROM sessions WHERE key = ?",
             [key],
             |row| {
-                let messages_str: String = row.get(2)?;
+                let messages_str: String = row.get(3)?;
+                let parent_id: Option<String> = row.get(2).ok();
                 let messages: Vec<Message> =
                     serde_json::from_str(&messages_str).unwrap_or_default();
                 Ok(Session {
                     key: row.get(0)?,
                     channel: row.get(1)?,
+                    parent_session_id: parent_id,
                     messages,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         )
@@ -111,11 +116,12 @@ impl SQLiteSessionStore {
         let messages_json = serde_json::to_string(&session.messages).unwrap_or_default();
         let conn = self.conn.write();
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (key, channel, messages, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO sessions (key, channel, parent_session_id, messages, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             [
                 &session.key,
                 &session.channel,
+                &session.parent_session_id.clone().unwrap_or_default(),
                 &messages_json,
                 &session.created_at.to_string(),
                 &session.updated_at.to_string(),
@@ -158,20 +164,22 @@ impl SQLiteSessionStore {
     pub fn list(&self) -> Vec<Session> {
         let conn = self.conn.read();
         let mut stmt = match conn
-            .prepare("SELECT key, channel, messages, created_at, updated_at FROM sessions")
+            .prepare("SELECT key, channel, parent_session_id, messages, created_at, updated_at FROM sessions")
         {
             Ok(s) => s,
             Err(_) => return vec![],
         };
         let sessions = match stmt.query_map([], |row| {
-            let messages_str: String = row.get(2)?;
+            let messages_str: String = row.get(3)?;
+            let parent_id: Option<String> = row.get(2).ok();
             let messages: Vec<Message> = serde_json::from_str(&messages_str).unwrap_or_default();
             Ok(Session {
                 key: row.get(0)?,
                 channel: row.get(1)?,
+                parent_session_id: parent_id,
                 messages,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         }) {
             Ok(s) => s,
@@ -200,7 +208,7 @@ impl SQLiteSessionStore {
     pub fn search(&self, query: &str, limit: usize) -> Vec<Session> {
         let conn = self.conn.read();
         let sql = format!(
-            "SELECT key, channel, messages, created_at, updated_at
+            "SELECT key, channel, parent_session_id, messages, created_at, updated_at
              FROM sessions
              WHERE messages LIKE ?
              ORDER BY updated_at DESC
@@ -212,20 +220,40 @@ impl SQLiteSessionStore {
             Err(_) => return vec![],
         };
         let sessions = match stmt.query_map([&pattern, &limit.to_string()], |row| {
-            let messages_str: String = row.get(2)?;
+            let messages_str: String = row.get(3)?;
+            let parent_id: Option<String> = row.get(2).ok();
             let messages: Vec<Message> = serde_json::from_str(&messages_str).unwrap_or_default();
             Ok(Session {
                 key: row.get(0)?,
                 channel: row.get(1)?,
+                parent_session_id: parent_id,
                 messages,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         }) {
             Ok(s) => s,
             Err(_) => return vec![],
         };
         sessions.filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn get_lineage(&self, session_key: &str) -> Vec<Session> {
+        let mut lineage = Vec::new();
+        let mut current_key = session_key.to_string();
+        loop {
+            if let Some(session) = self.get(&current_key) {
+                lineage.push(session.clone());
+                if let Some(parent) = &session.parent_session_id {
+                    current_key = parent.clone();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        lineage
     }
 }
 
@@ -246,6 +274,7 @@ mod tests {
         let session = Session {
             key: "test-1".to_string(),
             channel: "http".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -262,6 +291,7 @@ mod tests {
         let session = Session {
             key: "test-2".to_string(),
             channel: "ws".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -279,6 +309,7 @@ mod tests {
             store.insert(Session {
                 key: format!("session-{}", i),
                 channel: "http".to_string(),
+                parent_session_id: None,
                 messages: vec![],
                 created_at: 1000,
                 updated_at: 1000,
@@ -295,6 +326,7 @@ mod tests {
         store.insert(Session {
             key: "s1".to_string(),
             channel: "http".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -312,6 +344,7 @@ mod tests {
         store.insert(Session {
             key: "msg-session".to_string(),
             channel: "http".to_string(),
+            parent_session_id: None,
             messages: vec![msg],
             created_at: 1000,
             updated_at: 1000,
@@ -337,6 +370,7 @@ mod tests {
         let session = Session {
             key: "sqlite-1".to_string(),
             channel: "http".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -356,6 +390,7 @@ mod tests {
         let session = Session {
             key: "sqlite-msg".to_string(),
             channel: "ws".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -383,6 +418,7 @@ mod tests {
         let session = Session {
             key: "sqlite-del".to_string(),
             channel: "http".to_string(),
+            parent_session_id: None,
             messages: vec![],
             created_at: 1000,
             updated_at: 1000,
@@ -404,6 +440,7 @@ mod tests {
                 .insert(&Session {
                     key: format!("list-{}", i),
                     channel: "http".to_string(),
+                    parent_session_id: None,
                     messages: vec![],
                     created_at: 1000,
                     updated_at: 1000,
@@ -427,6 +464,7 @@ mod tests {
             .insert(&Session {
                 key: "search-1".to_string(),
                 channel: "http".to_string(),
+                parent_session_id: None,
                 messages: vec![msg],
                 created_at: 1000,
                 updated_at: 1000,
@@ -436,6 +474,7 @@ mod tests {
             .insert(&Session {
                 key: "search-2".to_string(),
                 channel: "http".to_string(),
+                parent_session_id: None,
                 messages: vec![],
                 created_at: 1000,
                 updated_at: 1000,
@@ -444,6 +483,39 @@ mod tests {
         let results = store.search("hello", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key, "search-1");
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_sqlite_session_store_lineage() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_test_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let store = SQLiteSessionStore::new(&db_path).unwrap();
+        let parent_id = "parent-session".to_string();
+        store
+            .insert(&Session {
+                key: parent_id.clone(),
+                channel: "http".to_string(),
+                parent_session_id: None,
+                messages: vec![],
+                created_at: 1000,
+                updated_at: 1000,
+            })
+            .unwrap();
+        store
+            .insert(&Session {
+                key: "child-session".to_string(),
+                channel: "http".to_string(),
+                parent_session_id: Some(parent_id.clone()),
+                messages: vec![],
+                created_at: 2000,
+                updated_at: 2000,
+            })
+            .unwrap();
+        let lineage = store.get_lineage("child-session");
+        assert_eq!(lineage.len(), 2);
+        assert_eq!(lineage[0].key, "child-session");
+        assert_eq!(lineage[1].key, "parent-session");
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 }
