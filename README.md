@@ -1,37 +1,66 @@
 # RustClaw
 
-[![Version](https://img.shields.io/badge/version-v0.3.0-blue.svg)](https://github.com/your-repo/rustclaw)
+[![Version](https://img.shields.io/badge/version-v0.35.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+[![Tests](https://img.shields.io/badge/tests-147%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
+[![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参考 OpenClaw，但使用 Rust 实现以获得更高的性能和安全性。
+RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参考 OpenClaw 和 Nous Research Hermes Agent，使用 Rust 实现以获得更高的性能和安全性。
 
 ## 核心特性
 
+### 基础架构
 - **多通道接入**: 支持 WebSocket、HTTP、Webhook 等消息入口
 - **智能体运行时**: 多会话并发、Agent 循环、流式响应
-- **工具系统**: 原生 Rust 工具注册
+- **工具系统**: 38+ 原生 Rust 工具，含路径安全防护
 - **动态 Skill**: Agent 可以自己编写并注册新 Skill
 - **审批流程**: 用户审批后 Skill 才可使用
-- **Provider 抽象**: 支持多种 LLM 提供商
-- **安全沙箱**: 进程隔离、权限控制、工具策略
-- **Agent-Reach 集成** (规划中): 多平台互联网访问能力
-  - Web 网页读取 (Jina Reader)
-  - YouTube/Bilibili 视频字幕提取 (yt-dlp)
-  - Twitter/Reddit/微博 社交平台读取
-  - GitHub 仓库访问 (gh CLI)
-  - RSS 订阅阅读
-  - 小红书/抖音 MCP 桥接
-  - 语义搜索 (Exa)
+- **Provider 抽象**: 支持 OpenAI、Anthropic、NVIDIA NIM 等多种 LLM
+
+### 记忆系统 (Phase 15)
+- **三层记忆架构**: 即时记忆 + 持久记忆 + 会话搜索
+- **MEMORY.md / USER.md**: Agent 笔记 + 用户偏好档案 (2200/1375 chars)
+- **Memory 工具**: Agent 自主管理记忆 (add/replace/remove)
+- **安全扫描**: Prompt 注入检测、数据泄露防护、不可见字符检测
+- **SQLite 持久化**: WAL 模式，支持会话搜索和谱系追踪
+
+### 自我进化 (Learning Loop)
+- **Skill 自动创建**: 复杂任务 (5+ tool calls) 后自动建议创建 Skill
+- **SkillManage 工具**: create/patch/edit/delete/write_file/remove_file 全操作
+- **用户纠正记录**: 记录用户纠正行为，持续改进
+- **迭代预算**: 父子 Agent 共享预算，防止资源耗尽
+
+### 上下文管理
+- **双级压缩**: Gateway 层 85% 安全网 + Agent 层 50% 精确压缩
+- **Prompt 缓存**: Anthropic cache_control 策略，降低 75% 输入成本
+- **回调系统**: tool_progress/step/status/thinking/SkillSuggestion 全事件回调
+
+### Agent-Reach 工具集成
+- **Web/视频**: WebReach (Jina Reader), VideoReach (yt-dlp)
+- **开发平台**: GitHubReach (gh CLI), SearchReach (Exa 语义搜索)
+- **社交/资讯**: TwitterReach, RedditReach, WeiboReach, FeedReach (RSS)
+- **中文平台**: XhsReach (小红书), DouyinReach (抖音)
+- **高级平台**: LinkedInReach, WeChatReach (公众号), BossZhipinReach (Boss直聘), PodcastReach (小宇宙)
 
 ## 系统架构
 
 RustClaw 采用分层架构设计：
 
-1. **Ingress (入口层)**: WebSocket、HTTP、Telegram、Webhook 等通道
-2. **Gateway (控制平面)**: 连接管理、会话路由、认证授权、事件广播
-3. **Execution Plane (执行层)**: Agent Runtime、Tool Executor、Dynamic Skill System
-4. **Capability Layer (能力层)**: Tool Registry、Provider Manager
-5. **Data Layer**: Sessions、Config、Media、Logs
+```
+┌─────────────────────────────────────────────────────────┐
+│  Ingress (入口层): WebSocket, HTTP, Webhook             │
+├─────────────────────────────────────────────────────────┤
+│  Gateway (控制平面): 连接管理, 会话路由, 认证授权        │
+├─────────────────────────────────────────────────────────┤
+│  Execution Plane: Agent Runtime, Tool Executor, Skill   │
+├─────────────────────────────────────────────────────────┤
+│  Capability Layer: Tool Registry (38+), Provider Mgr    │
+├─────────────────────────────────────────────────────────┤
+│  Memory Layer: MEMORY.md, USER.md, SQLite Session Store │
+├─────────────────────────────────────────────────────────┤
+│  Data Layer: Sessions, Config, Media, Logs              │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## 技术栈
 
@@ -41,6 +70,8 @@ RustClaw 采用分层架构设计：
 - **配置格式**: TOML
 - **日志系统**: tracing
 - **序列化**: serde_json
+- **数据库**: rusqlite (SQLite WAL + 全文搜索)
+- **错误处理**: thiserror + anyhow
 
 ## 安装
 
@@ -52,8 +83,8 @@ RustClaw 采用分层架构设计：
 ### 构建
 
 ```bash
-git clone https://github.com/your-repo/rustclaw.git
-cd rustclaw
+git clone https://github.com/Sam20180103/myclaw.git
+cd myclaw
 cargo build --release
 ```
 
@@ -165,28 +196,48 @@ rustclaw open-code sessions list
 | `system` | 系统信息 |
 | `logs` | 日志管理 |
 | `security` | 安全审计 |
-| `tools` | 工具管理 |
 | `memory` | 内存管理 |
 | `open-code` | OpenCode集成 |
 | `doctor` | 诊断修复 |
 | `update` | 更新版本 |
 | `reset` | 重置数据 |
 
-更多信息请查看 [CLI 命令参考](docs/architecture.md)。
+更多信息请查看 [架构文档](docs/architecture.md)。
 
 ## 开发路线图
 
-- **Phase 1**: 核心框架 (项目初始化、配置系统、Gateway WebSocket 服务器) ✅
-- **Phase 2**: Agent 运行时 (Session 管理、Agent 循环逻辑) ✅
-- **Phase 3**: 工具系统 (Tool trait、注册表、沙箱执行器) ✅
-- **Phase 4**: 动态 Skill (Skill 生成、验证、审批流程) ✅
+- **Phase 1**: 核心框架 ✅
+- **Phase 2**: Agent 运行时 ✅
+- **Phase 3**: 工具系统 ✅
+- **Phase 4**: 动态 Skill ✅
 - **Phase 5**: 测试与优化 ✅
 - **Phase 6**: OpenCode工具集成 ✅
 - **Phase 7-10**: CLI完善 ✅
-- **Phase 11**: Agent-Reach 核心工具集成 (规划中)
-- **Phase 12**: 社交平台工具集成 (规划中)
-- **Phase 13**: MCP 桥接集成 (规划中)
-- **Phase 14**: 高级平台工具集成 (规划中)
+- **Phase 11**: Agent-Reach 核心工具集成 ✅
+- **Phase 12**: 社交平台工具集成 ✅
+- **Phase 12.5**: 速率限制 ✅
+- **Phase 13**: MCP 桥接集成 ✅
+- **Phase 14**: 高级平台工具集成 ✅
+- **Phase 15**: 记忆系统与自我进化 ✅
+- **Phase 15.5**: 代码质量加固 ✅
+
+## 测试统计
+
+| 模块 | 测试数 | 状态 |
+|------|--------|------|
+| config | 7 | ✅ |
+| protocol | 9 | ✅ |
+| skill | 9 | ✅ |
+| tool | 39 | ✅ |
+| agent | 10 | ✅ |
+| provider | 12 | ✅ |
+| gateway | 6 | ✅ |
+| channel | 11 | ✅ |
+| storage | 12 | ✅ |
+| memory | 12 | ✅ |
+| compression | 10 | ✅ |
+| integration | 6 | ✅ |
+| **总计** | **147** | **✅** |
 
 ## 安全设计
 
@@ -195,6 +246,31 @@ rustclaw open-code sessions list
 - 工具策略 (白名单/黑名单)
 - 沙箱隔离执行
 - 资源限制 (超时、内存)
+- 文件工具路径穿越防护
+- 记忆安全扫描 (Prompt 注入/数据泄露检测)
+
+## 项目结构
+
+```
+myclaw/
+├── crates/
+│   ├── gateway/        # HTTP/WS服务器 + API
+│   ├── agent/          # Agent运行时 (Session/Lane/Queue)
+│   ├── tool/           # 工具系统 (Registry/Sandbox/Policy/Reach)
+│   ├── skill/          # 动态Skill系统 + SkillManage
+│   ├── provider/       # LLM提供商 (OpenAI/Anthropic/NVIDIA)
+│   ├── protocol/       # JSON-RPC协议
+│   ├── config/         # 配置管理
+│   ├── channel/        # 通道抽象
+│   ├── storage/        # SQLite数据存储
+│   ├── memory/         # 记忆系统 (MEMORY.md/USER.md/安全扫描)
+│   ├── compression/    # 上下文压缩 (SessionHygiene/ContextCompressor)
+│   └── cli/            # CLI工具
+├── docs/
+│   ├── architecture.md # 技术架构文档
+│   └── roadmap.md      # 开发任务进度
+└── Cargo.toml          # workspace root
+```
 
 ## 贡献
 
@@ -206,5 +282,5 @@ rustclaw open-code sessions list
 
 ## 联系
 
-- 项目主页: [https://github.com/your-repo/rustclaw](https://github.com/your-repo/rustclaw)
-- 问题反馈: [Issues](https://github.com/your-repo/rustclaw/issues)
+- 项目主页: [https://github.com/Sam20180103/myclaw](https://github.com/Sam20180103/myclaw)
+- 问题反馈: [Issues](https://github.com/Sam20180103/myclaw/issues)
