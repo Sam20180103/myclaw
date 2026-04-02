@@ -20,6 +20,8 @@ pub struct SkillDefinition {
     pub created_at: i64,
     pub author: Option<String>,
     pub test_cases: Vec<SkillTestCase>,
+    pub category: Option<String>,
+    pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,11 +253,95 @@ async fn load_skills_from_dir(
             created_at: chrono::Utc::now().timestamp_millis(),
             author: None,
             test_cases: vec![],
+            category: None,
+            references: vec![],
         };
 
         self.validate_skill(&definition)?;
         
         Ok(definition)
+    }
+
+    pub fn create_skill_with_category(
+        &self,
+        name: &str,
+        description: &str,
+        language: SkillLanguage,
+        source_code: &str,
+        parameters: serde_json::Value,
+        category: &str,
+        references: Vec<String>,
+    ) -> Result<SkillDefinition, SkillError> {
+        if !self.config.allowed_languages.contains(&language) {
+            return Err(SkillError::LanguageNotAllowed(language.to_string()));
+        }
+
+        let definition = SkillDefinition {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            version: "1.0.0".to_string(),
+            language,
+            source_code: source_code.to_string(),
+            parameters,
+            created_at: chrono::Utc::now().timestamp_millis(),
+            author: None,
+            test_cases: vec![],
+            category: Some(category.to_string()),
+            references,
+        };
+
+        self.validate_skill(&definition)?;
+        
+        Ok(definition)
+    }
+
+    pub async fn create_skill_directory(&self, definition: &SkillDefinition) -> Result<PathBuf, SkillError> {
+        let category = definition.category.as_deref().unwrap_or("general");
+        let skill_dir = self.config.active_dir.join(category).join(&definition.name);
+        
+        tokio::fs::create_dir_all(&skill_dir)
+            .await
+            .map_err(|e| SkillError::IoError(e.to_string()))?;
+        
+        tokio::fs::create_dir_all(skill_dir.join("references"))
+            .await
+            .map_err(|e| SkillError::IoError(e.to_string()))?;
+        
+        tokio::fs::create_dir_all(skill_dir.join("templates"))
+            .await
+            .map_err(|e| SkillError::IoError(e.to_string()))?;
+        
+        tokio::fs::create_dir_all(skill_dir.join("scripts"))
+            .await
+            .map_err(|e| SkillError::IoError(e.to_string()))?;
+
+        let skill_md = format!(
+            "# {}\n\n{}\n\n- **Version**: {}\n- **Language**: {}\n- **Category**: {}\n- **Author**: {}\n\n## Usage\n\n{}\n\n## References\n\n{}\n",
+            definition.name,
+            definition.description,
+            definition.version,
+            definition.language,
+            definition.category.as_deref().unwrap_or("general"),
+            definition.author.as_deref().unwrap_or("unknown"),
+            definition.source_code,
+            definition.references.iter().map(|r| format!("- {}", r)).collect::<Vec<_>>().join("\n"),
+        );
+
+        tokio::fs::write(skill_dir.join("SKILL.md"), skill_md)
+            .await
+            .map_err(|e| SkillError::IoError(e.to_string()))?;
+
+        Ok(skill_dir)
+    }
+
+    pub fn get_skills_by_category(&self) -> HashMap<String, Vec<SkillRecord>> {
+        let mut categories: HashMap<String, Vec<SkillRecord>> = HashMap::new();
+        for record in self.active_skills.read().values() {
+            let category = record.definition.category.clone().unwrap_or_else(|| "general".to_string());
+            categories.entry(category).or_default().push(record.clone());
+        }
+        categories
     }
 
     pub async fn submit_skill(&self, definition: SkillDefinition) -> Result<String, SkillError> {
@@ -636,6 +722,8 @@ impl OpenCodeGenerator {
             created_at: chrono::Utc::now().timestamp_millis(),
             author: Some("opencode".to_string()),
             test_cases: vec![],
+            category: None,
+            references: vec![],
         })
     }
 
