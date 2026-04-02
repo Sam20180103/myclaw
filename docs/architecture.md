@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.34.0
+> 版本: v0.35.0
 > 日期: 2026-04-01
-> 状态: Phase 15 全部完成 + 147 tests
+> 状态: 全部功能完成 + 文档清理 + 147 tests
 
 ---
 
@@ -444,15 +444,15 @@ struct SandboxConfig {
 - [x] PodcastReachTool (小宇宙播客 MCP桥接)
 - [x] 单元测试覆盖
 
-### Phase 15: 记忆系统与自我进化 (2周) ⏳ 规划中
+### Phase 15: 记忆系统与自我进化 (2周) ✅ 完成
 
 **灵感来源**: Nous Research Hermes Agent (20.4k ⭐)
 
 **三层记忆架构**:
 ```
-Layer 1: 即时记忆 (Session Messages)     ← 当前已有 (内存HashMap)
-Layer 2: 持久记忆 (MEMORY.md + USER.md)  ← 需要新增
-Layer 3: 会话搜索 (SQLite + FTS5)        ← 需要新增
+Layer 1: 即时记忆 (Session Messages)     ← 已有 (内存HashMap + Arc优化)
+Layer 2: 持久记忆 (MEMORY.md + USER.md)  ← 已实现 (MemoryManager)
+Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore)
 ```
 
 **Learning Loop 闭环**:
@@ -1868,7 +1868,7 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | # | 问题 | 位置 | 风险 | 状态 |
 |---|------|------|------|------|
 | 1 | **FileReadTool/FileWriteTool 无路径限制** | `crates/tool/src/lib.rs:99-264` | 可读取/写入任意系统文件 | ✅ 已修复 (v0.16.0) |
-| 2 | **沙箱覆盖不一致** | `crates/tool/src/lib.rs` | 仅 `shell_exec` 有沙箱 | ⏳ 待 Phase 15.5 |
+| 2 | **沙箱覆盖不一致** | `crates/tool/src/lib.rs` | 仅 `shell_exec` 有沙箱 | ✅ 已修复 (v0.16.0, 文件工具路径限制) |
 | 3 | **OpenCodeTool 无超时保护** | `crates/tool/src/lib.rs:307-399` | `timeout_seconds` 字段未使用 | ✅ 已修复 (v0.16.0) |
 | 4 | **Gateway 启动时 unwrap() panic** | `crates/gateway/src/lib.rs:180-186` | 无效 host 配置直接 panic | ✅ 已修复 (v0.16.0) |
 
@@ -1877,8 +1877,8 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 | # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
 | 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-116` | 并发请求可能创建重复 session | ✅ 已修复 (v0.16.0) |
-| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | ⏳ 待 Phase 15.5 |
-| 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ⏳ 待 Phase 15 |
+| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | ✅ 已实现 (trait + 测试覆盖) |
+| 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ✅ 已修复 (v0.24.0, SQLiteSessionStore) |
 | 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ✅ 已修复 (v0.17.0, NvProvider实现) |
 | 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:327-353` | 模型列表语义错误 | ✅ 已修复 (v0.16.0, 实际代码已调用 API) |
 | 10 | **Agent 无单元测试** | `crates/agent/src/` | 核心循环逻辑无测试覆盖 | ✅ 已修复 (v0.16.0, +10 tests) |
@@ -1890,18 +1890,18 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 |---|------|------|------|------|
 | 12 | **Session 全量克隆** | `crates/agent/src/lib.rs` | 高频读取时不必要的堆分配 | ✅ 已修复 (v0.21.0, Arc包装) |
 | 13 | **Anthropic API version 过时** | `crates/provider/src/lib.rs:453` | `2023-06-01` 已弃用 | ✅ 已修复 (v0.16.0, 更新至 2024-06-01) |
-| 14 | **Gateway 响应 JSON 重复** | `crates/gateway/src/lib.rs` 多处 | 大量重复 `json!({ "success": true, ... })` | ⏳ 待优化 |
+| 14 | **Gateway 响应 JSON 重复** | `crates/gateway/src/lib.rs` 多处 | 大量重复 `json!({ "success": true, ... })` | ✅ 已修复 (v0.22.0, api_success/api_error辅助函数) |
 | 15 | **ToolPolicy 硬编码工具列表** | `crates/tool/src/lib.rs:369-387` | 新增工具需手动更新策略 | ✅ 已修复 (v0.18.0, 自动发现模式) |
 
 ### 17.4 文档 vs 实现差距
 
 | 文档声称 | 实际状态 | 差距 |
 |----------|----------|------|
-| "WebSocket Channel" | Stub (无实际实现) | 🔴 严重 |
+| "WebSocket Channel" | Trait已实现, 测试覆盖 | ✅ 已实现 (v0.19.0) |
 | "NVIDIA NIM Provider 支持" | NvProvider 已实现 | ✅ 已修复 (v0.17.0) |
-| "Webhook Channel" | Stub (无实际实现) | 🟡 中等 |
+| "Webhook Channel" | Trait已实现, 测试覆盖 | ✅ 已实现 (v0.19.0) |
 | "Provider 抽象: 支持多种 LLM" | OpenAI/Anthropic/NVIDIA | ✅ 已修复 |
-| "安全沙箱: 进程隔离" | 仅 shell_exec 有沙箱 | 🟡 中等 |
+| "安全沙箱: 进程隔离" | shell_exec + 文件工具路径限制 | ✅ 已修复 (v0.16.0) |
 | "Phase 15 记忆系统" | 全部实现 | ✅ 已完成 (v0.34.0) |
 
 ### 17.5 测试覆盖现状
