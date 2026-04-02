@@ -93,6 +93,8 @@ mod tests {
             created_at: 0,
             author: None,
             test_cases: vec![],
+            category: None,
+            references: vec![],
         };
         
         let json = serde_json::to_string(&skill).unwrap();
