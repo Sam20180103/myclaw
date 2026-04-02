@@ -26,7 +26,7 @@ impl SkillManageTool {
     }
 
     pub fn description() -> &'static str {
-        "Manage skills: create, patch, delete, list. Use this to create new skills from complex tasks or modify existing ones."
+        "Manage skills: create, patch, edit, delete, list, write_file, remove_file. Use this to create new skills from complex tasks or modify existing ones."
     }
 
     pub fn schema() -> Value {
@@ -35,7 +35,7 @@ impl SkillManageTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "patch", "delete", "list"],
+                    "enum": ["create", "patch", "edit", "delete", "list", "write_file", "remove_file"],
                     "description": "Action to perform"
                 },
                 "name": { "type": "string", "description": "Skill name" },
@@ -48,7 +48,9 @@ impl SkillManageTool {
                 "source_code": { "type": "string", "description": "Skill source code" },
                 "parameters": { "type": "object", "description": "Skill parameters" },
                 "skill_id": { "type": "string", "description": "Skill ID" },
-                "patch": { "type": "object", "description": "Fields to patch" }
+                "patch": { "type": "object", "description": "Fields to patch" },
+                "file_name": { "type": "string", "description": "File name for write_file/remove_file" },
+                "file_content": { "type": "string", "description": "File content for write_file" }
             },
             "required": ["action"]
         })
@@ -63,8 +65,11 @@ impl SkillManageTool {
         match action {
             "create" => self.create_skill(&params).await,
             "patch" => self.patch_skill(&params).await,
+            "edit" => self.edit_skill(&params).await,
             "list" => self.list_skills(),
             "delete" => self.delete_skill(&params).await,
+            "write_file" => self.write_file(&params).await,
+            "remove_file" => self.remove_file(&params).await,
             _ => Err(format!("Unknown action: {}", action)),
         }
     }
@@ -171,6 +176,102 @@ impl SkillManageTool {
         Ok(serde_json::json!({
             "success": true,
             "message": format!("Skill {} patched", skill_id)
+        }))
+    }
+
+    async fn edit_skill(&self, params: &Value) -> Result<Value, String> {
+        let skill_id = params
+            .get("skill_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'skill_id' parameter".to_string())?;
+
+        let source_code = params
+            .get("source_code")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'source_code' parameter".to_string())?;
+
+        let mut patch = serde_json::json!({});
+        if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+            patch["name"] = Value::String(name.to_string());
+        }
+        if let Some(desc) = params.get("description").and_then(|v| v.as_str()) {
+            patch["description"] = Value::String(desc.to_string());
+        }
+        patch["source_code"] = Value::String(source_code.to_string());
+        if let Some(p) = params.get("parameters") {
+            patch["parameters"] = p.clone();
+        }
+
+        self.skill_manager
+            .patch_skill(skill_id, &patch)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("Skill {} edited", skill_id)
+        }))
+    }
+
+    async fn write_file(&self, params: &Value) -> Result<Value, String> {
+        let skill_id = params
+            .get("skill_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'skill_id' parameter".to_string())?;
+
+        let file_name = params
+            .get("file_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'file_name' parameter".to_string())?;
+
+        let file_content = params
+            .get("file_content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'file_content' parameter".to_string())?;
+
+        let skill = self.skill_manager.get_skill(skill_id)
+            .ok_or_else(|| format!("Skill {} not found", skill_id))?;
+
+        let skill_dir = skill.path.parent()
+            .ok_or_else(|| "Skill has no parent directory".to_string())?;
+
+        let file_path = skill_dir.join(file_name);
+        tokio::fs::write(&file_path, file_content)
+            .await
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("File {} written to skill {}", file_name, skill_id),
+            "file_path": file_path.to_string_lossy().to_string()
+        }))
+    }
+
+    async fn remove_file(&self, params: &Value) -> Result<Value, String> {
+        let skill_id = params
+            .get("skill_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'skill_id' parameter".to_string())?;
+
+        let file_name = params
+            .get("file_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'file_name' parameter".to_string())?;
+
+        let skill = self.skill_manager.get_skill(skill_id)
+            .ok_or_else(|| format!("Skill {} not found", skill_id))?;
+
+        let skill_dir = skill.path.parent()
+            .ok_or_else(|| "Skill has no parent directory".to_string())?;
+
+        let file_path = skill_dir.join(file_name);
+        tokio::fs::remove_file(&file_path)
+            .await
+            .map_err(|e| format!("Failed to remove file: {}", e))?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("File {} removed from skill {}", file_name, skill_id)
         }))
     }
 }
