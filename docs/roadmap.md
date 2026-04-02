@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.26.0
+> 版本: v0.27.0
 > 日期: 2026-04-01
-> 状态: 上下文压缩系统 + 138 tests
+> 状态: Memory/Compression集成到Agent + 138 tests
 
 ---
 

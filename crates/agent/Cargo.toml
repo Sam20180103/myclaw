@@ -18,3 +18,5 @@ futures-util = { workspace = true }
 rustclaw-protocol = { path = "../protocol" }
 rustclaw-provider = { path = "../provider" }
 rustclaw-tool = { path = "../tool" }
+rustclaw-memory = { path = "../memory" }
+rustclaw-compression = { path = "../compression" }

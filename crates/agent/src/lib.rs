@@ -1,6 +1,8 @@
 use rustclaw_protocol::{Message, Envelope, Role, Content};
 use rustclaw_tool::{ToolRegistry, ToolCall};
 use rustclaw_provider::ProviderClient;
+use rustclaw_memory::MemoryManager;
+use rustclaw_compression::ContextCompressor;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +17,8 @@ pub struct AgentRuntime {
     lane_router: LaneRouter,
     tool_registry: Arc<ToolRegistry>,
     provider_client: ProviderClient,
+    memory_manager: Option<Arc<MemoryManager>>,
+    context_compressor: Option<Arc<ContextCompressor>>,
 }
 
 #[derive(Clone)]
@@ -218,6 +222,8 @@ impl AgentRuntime {
             lane_router: LaneRouter::new(config.max_concurrent_per_lane),
             tool_registry: registry,
             provider_client: ProviderClient::new(None),
+            memory_manager: None,
+            context_compressor: None,
         }
     }
 
@@ -229,6 +235,21 @@ impl AgentRuntime {
     pub fn with_tools(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = registry;
         self
+    }
+
+    pub fn with_memory(mut self, memory: Arc<MemoryManager>) -> Self {
+        memory.load_memory().ok();
+        self.memory_manager = Some(memory);
+        self
+    }
+
+    pub fn with_compressor(mut self, compressor: Arc<ContextCompressor>) -> Self {
+        self.context_compressor = Some(compressor);
+        self
+    }
+
+    pub fn memory_manager(&self) -> Option<&Arc<MemoryManager>> {
+        self.memory_manager.as_ref()
     }
 
     pub async fn process(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
@@ -243,9 +264,26 @@ impl AgentRuntime {
 
         self.session_manager.add_message(session_key, envelope.message);
 
-        let messages = self.session_manager.get(session_key)
+        let mut messages = self.session_manager.get(session_key)
             .map(|s| (*s.messages).clone())
             .unwrap_or_default();
+
+        if let Some(ref memory) = self.memory_manager {
+            let memory_text = memory.get_memory_text();
+            if !memory_text.is_empty() {
+                messages.insert(0, Message {
+                    role: Role::System,
+                    content: Content::text(format!("Memory:\n{}", memory_text)),
+                });
+            }
+        }
+
+        if let Some(ref compressor) = self.context_compressor {
+            let result = compressor.compress(&messages, 100000);
+            if result.compressed {
+                messages = result.messages;
+            }
+        }
 
         let response_text = match self.provider_client.complete(messages).await {
             Ok(text) => text,
