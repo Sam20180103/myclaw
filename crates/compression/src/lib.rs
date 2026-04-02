@@ -99,6 +99,71 @@ pub struct CompressedSummary {
     pub next_steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheBreakpoint {
+    pub message_index: usize,
+    pub cache_type: CacheType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CacheType {
+    SystemPrompt,
+    Rolling,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStrategy {
+    pub breakpoints: Vec<CacheBreakpoint>,
+    pub ttl_seconds: u64,
+}
+
+impl CacheStrategy {
+    pub fn system_and_3(ttl_seconds: u64) -> Self {
+        Self {
+            breakpoints: vec![
+                CacheBreakpoint {
+                    message_index: 0,
+                    cache_type: CacheType::SystemPrompt,
+                },
+                CacheBreakpoint {
+                    message_index: 1,
+                    cache_type: CacheType::Rolling,
+                },
+                CacheBreakpoint {
+                    message_index: 2,
+                    cache_type: CacheType::Rolling,
+                },
+                CacheBreakpoint {
+                    message_index: 3,
+                    cache_type: CacheType::Rolling,
+                },
+            ],
+            ttl_seconds,
+        }
+    }
+
+    pub fn calculate_breakpoints(message_count: usize, ttl_seconds: u64) -> Self {
+        if message_count <= 4 {
+            return Self::system_and_3(ttl_seconds);
+        }
+        let mut breakpoints = vec![CacheBreakpoint {
+            message_index: 0,
+            cache_type: CacheType::SystemPrompt,
+        }];
+        let last_three_start = message_count.saturating_sub(3);
+        for i in last_three_start..message_count {
+            breakpoints.push(CacheBreakpoint {
+                message_index: i,
+                cache_type: CacheType::Rolling,
+            });
+        }
+        Self {
+            breakpoints,
+            ttl_seconds,
+        }
+    }
+}
+
 pub struct ContextCompressor {
     threshold: f64,
     #[allow(dead_code)]
@@ -281,5 +346,28 @@ mod tests {
         let summary = ContextCompressor::generate_summary_template();
         assert!(summary.goal.is_empty());
         assert!(summary.key_decisions.is_empty());
+    }
+
+    #[test]
+    fn test_cache_strategy_system_and_3() {
+        let strategy = CacheStrategy::system_and_3(300);
+        assert_eq!(strategy.breakpoints.len(), 4);
+        assert_eq!(strategy.ttl_seconds, 300);
+    }
+
+    #[test]
+    fn test_cache_strategy_calculate_breakpoints_small() {
+        let strategy = CacheStrategy::calculate_breakpoints(3, 300);
+        assert_eq!(strategy.breakpoints.len(), 3);
+    }
+
+    #[test]
+    fn test_cache_strategy_calculate_breakpoints_large() {
+        let strategy = CacheStrategy::calculate_breakpoints(10, 600);
+        assert_eq!(strategy.breakpoints.len(), 4);
+        assert_eq!(strategy.breakpoints[0].message_index, 0);
+        assert_eq!(strategy.breakpoints[1].message_index, 7);
+        assert_eq!(strategy.breakpoints[2].message_index, 8);
+        assert_eq!(strategy.breakpoints[3].message_index, 9);
     }
 }

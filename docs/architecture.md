@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.27.0
+> 版本: v0.29.0
 > 日期: 2026-04-01
-> 状态: Memory/Compression集成到Agent + 138 tests
+> 状态: Prompt缓存策略 + 142 tests
 
 ---
 
