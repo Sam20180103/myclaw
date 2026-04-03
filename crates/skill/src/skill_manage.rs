@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::{SkillManager, SkillLanguage};
 
+/// Skill 管理工具接口
 #[async_trait]
 pub trait SkillManageToolTrait: Send + Sync {
     fn name(&self) -> &str;
@@ -12,11 +13,14 @@ pub trait SkillManageToolTrait: Send + Sync {
     async fn execute(&self, params: Value) -> Result<Value, String>;
 }
 
+/// Skill 管理工具 — Agent 自主管理 Skill 的入口
+/// 支持 7 种操作: create/patch/edit/delete/list/write_file/remove_file
 pub struct SkillManageTool {
     skill_manager: Arc<SkillManager>,
 }
 
 impl SkillManageTool {
+    /// 创建 Skill 管理工具
     pub fn new(skill_manager: Arc<SkillManager>) -> Self {
         Self { skill_manager }
     }
@@ -29,6 +33,7 @@ impl SkillManageTool {
         "Manage skills: create, patch, edit, delete, list, write_file, remove_file. Use this to create new skills from complex tasks or modify existing ones."
     }
 
+    /// 工具参数 Schema — 定义 7 种操作的参数
     pub fn schema() -> Value {
         serde_json::json!({
             "type": "object",
@@ -56,6 +61,7 @@ impl SkillManageTool {
         })
     }
 
+    /// 执行操作 — 路由到具体的处理方法
     pub async fn execute(&self, params: Value) -> Result<Value, String> {
         let action = params
             .get("action")
@@ -74,6 +80,7 @@ impl SkillManageTool {
         }
     }
 
+    /// create — 创建新 Skill 并提交 (自动审批或直接激活)
     async fn create_skill(&self, params: &Value) -> Result<Value, String> {
         let name = params
             .get("name")
