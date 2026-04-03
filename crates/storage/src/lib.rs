@@ -5,18 +5,20 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// 内存会话存储 — 基于 HashMap 的临时会话存储 (重启丢失)
 pub struct SessionStore {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
 }
 
+/// 会话数据结构 — 用于内存和 SQLite 存储
 #[derive(Clone)]
 pub struct Session {
-    pub key: String,
-    pub channel: String,
-    pub parent_session_id: Option<String>,
-    pub messages: Vec<Message>,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub key: String,                       // 会话唯一标识
+    pub channel: String,                   // 通道类型
+    pub parent_session_id: Option<String>, // 父会话ID (谱系追踪)
+    pub messages: Vec<Message>,            // 消息历史
+    pub created_at: i64,                   // 创建时间戳 (毫秒)
+    pub updated_at: i64,                   // 更新时间戳 (毫秒)
 }
 
 impl SessionStore {
@@ -57,17 +59,22 @@ impl Default for SessionStore {
     }
 }
 
+/// SQLite 会话存储 — 持久化会话到 SQLite 数据库
+/// 使用 WAL 模式实现并发安全, 支持会话搜索和谱系追踪
 pub struct SQLiteSessionStore {
     #[allow(clippy::arc_with_non_send_sync)]
     conn: Arc<RwLock<Connection>>,
 }
 
 impl SQLiteSessionStore {
+    /// 创建新的 SQLite 会话存储
+    /// 自动创建父目录, 初始化 WAL 模式和数据库表
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, rusqlite::Error> {
         if let Some(parent) = db_path.as_ref().parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(db_path)?;
+        // 初始化数据库: WAL模式 + 正常同步 + 创建表和索引
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
@@ -88,6 +95,7 @@ impl SQLiteSessionStore {
         })
     }
 
+    /// 获取会话 — 从 SQLite 查询并反序列化消息
     pub fn get(&self, key: &str) -> Option<Session> {
         let conn = self.conn.read();
         conn.query_row(

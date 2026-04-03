@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// 记忆系统错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error("Memory entry not found")]
@@ -18,6 +19,7 @@ pub enum MemoryError {
     InvalidEntry(String),
 }
 
+/// 记忆条目 — 单条记忆内容
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub content: String,
@@ -25,14 +27,16 @@ pub struct MemoryEntry {
     pub updated_at: i64,
 }
 
+/// 用户纠正记录 — 记录用户对 Agent 行为的纠正
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectionEntry {
-    pub original: String,
-    pub corrected: String,
-    pub context: String,
+    pub original: String,  // 原始内容
+    pub corrected: String, // 纠正后内容
+    pub context: String,   // 上下文描述
     pub created_at: i64,
 }
 
+/// 用户偏好档案 — 存储用户偏好、通信风格、环境信息和纠正记录
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserProfile {
     pub preferences: Vec<MemoryEntry>,
@@ -41,17 +45,20 @@ pub struct UserProfile {
     pub corrections: Vec<CorrectionEntry>,
 }
 
+/// 记忆管理器 — 管理 Agent 的持久记忆 (MEMORY.md)
+/// 支持增删改查、安全扫描、容量管理
 pub struct MemoryManager {
-    memory_entries: Arc<RwLock<VecDeque<MemoryEntry>>>,
+    memory_entries: Arc<RwLock<VecDeque<MemoryEntry>>>, // 记忆条目队列
     #[allow(dead_code)]
-    user_profile: Arc<RwLock<UserProfile>>,
-    memory_path: PathBuf,
-    memory_char_limit: usize,
+    user_profile: Arc<RwLock<UserProfile>>, // 用户偏好档案
+    memory_path: PathBuf,                               // 记忆文件路径
+    memory_char_limit: usize,                           // 记忆字符限制 (默认2200)
     #[allow(dead_code)]
-    user_char_limit: usize,
+    user_char_limit: usize,      // 用户档案字符限制 (默认1375)
 }
 
 impl MemoryManager {
+    /// 创建新的记忆管理器
     pub fn new<P: AsRef<Path>>(
         memory_path: P,
         memory_char_limit: usize,
@@ -70,8 +77,9 @@ impl MemoryManager {
         }
     }
 
+    /// 添加记忆条目 — 安全扫描 + 容量检查
     pub fn add_entry(&self, content: &str) -> Result<(), MemoryError> {
-        let scanned = MemoryScanner::scan(content)?;
+        let scanned = MemoryScanner::scan(content)?; // 安全扫描
         let current_chars = self.current_memory_chars();
         if current_chars + scanned.len() > self.memory_char_limit {
             return Err(MemoryError::LimitExceeded(self.memory_char_limit));
@@ -87,6 +95,8 @@ impl MemoryManager {
         self.save_memory()
     }
 
+    /// 替换记忆 — 子串匹配替换 (不需要完整文本)
+    /// 避免死锁: 先快照再释放写锁, 最后持久化
     pub fn replace_entry(&self, old_text: &str, new_text: &str) -> Result<(), MemoryError> {
         let scanned = MemoryScanner::scan(new_text)?;
         let entries_snapshot;
@@ -104,6 +114,8 @@ impl MemoryManager {
         self.save_entries(&entries_snapshot)
     }
 
+    /// 删除记忆 — 子串匹配删除
+    /// 避免死锁: 先快照再释放写锁, 最后持久化
     pub fn remove_entry(&self, text: &str) -> Result<(), MemoryError> {
         let entries_snapshot;
         {
@@ -118,10 +130,12 @@ impl MemoryManager {
         self.save_entries(&entries_snapshot)
     }
 
+    /// 获取所有记忆条目 (只读)
     pub fn get_entries(&self) -> Vec<MemoryEntry> {
         self.memory_entries.read().iter().cloned().collect()
     }
 
+    /// 获取所有记忆文本 (拼接为单个字符串, 用于注入 system prompt)
     pub fn get_memory_text(&self) -> String {
         self.memory_entries
             .read()
@@ -131,6 +145,7 @@ impl MemoryManager {
             .join("\n")
     }
 
+    /// 计算当前记忆总字符数
     pub fn current_memory_chars(&self) -> usize {
         self.memory_entries
             .read()
@@ -139,15 +154,18 @@ impl MemoryManager {
             .sum()
     }
 
+    /// 获取记忆使用情况 (当前字符数, 限制字符数)
     pub fn memory_usage(&self) -> (usize, usize) {
         (self.current_memory_chars(), self.memory_char_limit)
     }
 
+    /// 持久化记忆到文件
     pub fn save_memory(&self) -> Result<(), MemoryError> {
         let entries = self.memory_entries.read();
         self.save_entries(&entries.iter().cloned().collect::<Vec<_>>())
     }
 
+    /// 持久化记忆条目到文件
     fn save_entries(&self, entries: &[MemoryEntry]) -> Result<(), MemoryError> {
         let json = serde_json::to_string_pretty(entries)
             .map_err(|e| MemoryError::IoError(e.to_string()))?;
@@ -155,6 +173,7 @@ impl MemoryManager {
         Ok(())
     }
 
+    /// 从文件加载记忆
     pub fn load_memory(&self) -> Result<(), MemoryError> {
         if !self.memory_path.exists() {
             return Ok(());
@@ -168,6 +187,7 @@ impl MemoryManager {
         Ok(())
     }
 
+    /// 记录用户纠正 (用于 Learning Loop 自我改进)
     pub fn record_correction(&self, original: &str, corrected: &str, context: &str) {
         let entry = CorrectionEntry {
             original: original.to_string(),
@@ -178,34 +198,41 @@ impl MemoryManager {
         self.user_profile.write().corrections.push(entry);
     }
 
+    /// 获取所有用户纠正记录
     pub fn get_corrections(&self) -> Vec<CorrectionEntry> {
         self.user_profile.read().corrections.clone()
     }
 
+    /// 清空所有记忆
     pub fn clear(&self) -> Result<(), MemoryError> {
         self.memory_entries.write().clear();
         self.save_memory()
     }
 }
 
+/// 记忆安全扫描器 — 防止 Prompt 注入和数据泄露
 struct MemoryScanner;
 
 impl MemoryScanner {
+    /// 扫描记忆内容 — 三重安全检查
     fn scan(content: &str) -> Result<String, MemoryError> {
         let trimmed = content.trim();
         if trimmed.is_empty() {
             return Err(MemoryError::InvalidEntry("Empty content".to_string()));
         }
+        // 检查1: 不可见 Unicode 字符 (可能用于隐藏注入)
         if Self::contains_invisible_chars(trimmed) {
             return Err(MemoryError::SecurityViolation(
                 "Invisible Unicode characters detected".to_string(),
             ));
         }
+        // 检查2: Prompt 注入模式 (试图覆盖系统指令)
         if Self::contains_prompt_injection(trimmed) {
             return Err(MemoryError::SecurityViolation(
                 "Potential prompt injection detected".to_string(),
             ));
         }
+        // 检查3: 数据泄露模式 (试图外传数据)
         if Self::contains_exfiltration_pattern(trimmed) {
             return Err(MemoryError::SecurityViolation(
                 "Potential data exfiltration pattern detected".to_string(),
@@ -214,27 +241,29 @@ impl MemoryScanner {
         Ok(trimmed.to_string())
     }
 
+    /// 检测不可见 Unicode 字符 (零宽字符、双向文本覆盖等)
     fn contains_invisible_chars(text: &str) -> bool {
         text.chars().any(|c| {
             matches!(
                 c,
-                '\u{200B}'
-                    | '\u{200C}'
-                    | '\u{200D}'
-                    | '\u{FEFF}'
-                    | '\u{2060}'
-                    | '\u{180E}'
-                    | '\u{200E}'
-                    | '\u{200F}'
-                    | '\u{202A}'
-                    | '\u{202B}'
-                    | '\u{202C}'
-                    | '\u{202D}'
-                    | '\u{202E}'
+                '\u{200B}'  // 零宽空格
+                    | '\u{200C}'  // 零宽非连接符
+                    | '\u{200D}'  // 零宽连接符
+                    | '\u{FEFF}'  // 零宽不换行空格
+                    | '\u{2060}'  // 词连接符
+                    | '\u{180E}'  // 蒙古文元音分隔符
+                    | '\u{200E}'  // 左至右标记
+                    | '\u{200F}'  // 右至左标记
+                    | '\u{202A}'  // 嵌入 LTR
+                    | '\u{202B}'  // 嵌入 RTL
+                    | '\u{202C}'  // 弹出方向格式
+                    | '\u{202D}'  // 覆盖 LTR
+                    | '\u{202E}' // 覆盖 RTL
             )
         })
     }
 
+    /// 检测 Prompt 注入模式 (12种常见注入模式)
     fn contains_prompt_injection(text: &str) -> bool {
         let lower = text.to_lowercase();
         let injection_patterns = [
@@ -256,6 +285,7 @@ impl MemoryScanner {
         injection_patterns.iter().any(|p| lower.contains(p))
     }
 
+    /// 检测数据泄露模式 (10种常见泄露模式)
     fn contains_exfiltration_pattern(text: &str) -> bool {
         let lower = text.to_lowercase();
         let exfil_patterns = [
