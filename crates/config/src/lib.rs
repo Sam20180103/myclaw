@@ -1,53 +1,59 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// 根配置结构 — 包含所有子配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub gateway: GatewayConfig,
-    pub agent: AgentConfig,
-    pub tools: ToolConfig,
-    pub providers: Vec<ProviderConfig>,
+    pub gateway: GatewayConfig,         // 网关配置
+    pub agent: AgentConfig,             // Agent 配置
+    pub tools: ToolConfig,              // 工具配置
+    pub providers: Vec<ProviderConfig>, // LLM 提供商配置
 }
 
+/// 网关配置 — HTTP/WS 服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
-    pub host: String,
-    pub port: u16,
-    pub device_id: String,
-    pub auth: AuthConfig,
+    pub host: String,      // 监听地址
+    pub port: u16,         // 监听端口
+    pub device_id: String, // 设备唯一标识
+    pub auth: AuthConfig,  // 认证配置
 }
 
+/// 认证配置 — 设备配对授权
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    pub require_pairing: bool,
-    pub allowed_devices: Vec<String>,
+    pub require_pairing: bool,        // 是否需要设备配对
+    pub allowed_devices: Vec<String>, // 允许的设备列表
 }
 
+/// Agent 配置 — 运行时参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    pub max_concurrent_sessions: usize,
-    pub default_model: String,
-    pub max_loop_iterations: u32,
-    pub tool_timeout_ms: u64,
+    pub max_concurrent_sessions: usize, // 最大并发会话数
+    pub default_model: String,          // 默认模型
+    pub max_loop_iterations: u32,       // 最大循环迭代次数
+    pub tool_timeout_ms: u64,           // 工具超时 (毫秒)
 }
 
+/// 工具配置 — 工具策略和沙箱设置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
-    pub enabled_tools: Vec<String>,
-    pub disabled_tools: Vec<String>,
-    pub require_approval: Vec<String>,
-    pub sandbox_enabled: bool,
-    pub max_memory_mb: u64,
-    pub max_timeout_ms: u64,
+    pub enabled_tools: Vec<String>,    // 启用的工具列表
+    pub disabled_tools: Vec<String>,   // 禁用的工具列表
+    pub require_approval: Vec<String>, // 需要审批的工具
+    pub sandbox_enabled: bool,         // 是否启用沙箱
+    pub max_memory_mb: u64,            // 最大内存 (MB)
+    pub max_timeout_ms: u64,           // 最大超时 (毫秒)
 }
 
+/// LLM 提供商配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    pub name: String,
-    pub provider_type: String,
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
-    pub default_model: Option<String>,
+    pub name: String,                  // 提供商名称
+    pub provider_type: String,         // 提供商类型 (openai/anthropic/nvidia)
+    pub api_key: Option<String>,       // API 密钥
+    pub base_url: Option<String>,      // 自定义 API 地址
+    pub default_model: Option<String>, // 默认模型
 }
 
 impl Default for Config {
