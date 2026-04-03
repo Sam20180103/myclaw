@@ -1,6 +1,7 @@
 use rustclaw_protocol::{Content, Message};
 use serde::{Deserialize, Serialize};
 
+/// 压缩错误类型
 #[derive(Debug, thiserror::Error)]
 pub enum CompressionError {
     #[error("Context window exceeded")]
@@ -9,21 +10,25 @@ pub enum CompressionError {
     CompressionFailed(String),
 }
 
+/// 压缩结果 — 包含压缩后的消息和统计信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionResult {
-    pub messages: Vec<Message>,
-    pub compressed: bool,
-    pub original_count: usize,
-    pub final_count: usize,
-    pub removed_tool_results: usize,
+    pub messages: Vec<Message>,      // 压缩后的消息列表
+    pub compressed: bool,            // 是否发生了压缩
+    pub original_count: usize,       // 原始消息数量
+    pub final_count: usize,          // 压缩后消息数量
+    pub removed_tool_results: usize, // 移除的工具结果数量
 }
 
+/// 会话清理器 — Gateway 层的粗略字符级压缩 (85% 阈值安全网)
+/// 负责清理旧的工具结果和字符级截断
 pub struct SessionHygiene {
-    threshold: f64,
-    max_chars: usize,
+    threshold: f64,   // 压缩阈值 (0.85 = 85%)
+    max_chars: usize, // 最大字符数 (上下文窗口大小)
 }
 
 impl SessionHygiene {
+    /// 创建会话清理器
     pub fn new(threshold: f64, max_chars: usize) -> Self {
         Self {
             threshold,
@@ -31,10 +36,13 @@ impl SessionHygiene {
         }
     }
 
+    /// 判断是否需要压缩 — 当前字符数 > 阈值 * 最大字符数
     pub fn should_compress(&self, current_chars: usize) -> bool {
         current_chars as f64 > self.max_chars as f64 * self.threshold
     }
 
+    /// 清理旧的工具结果 — 只保留最后一个工具结果
+    /// 从后向前遍历, 遇到第一个工具结果后跳过后续所有工具结果
     pub fn clean_old_tool_results(&self, messages: &[Message]) -> CompressionResult {
         let original_count = messages.len();
         let mut removed = 0;
@@ -45,7 +53,7 @@ impl SessionHygiene {
             if let Content::Text(text) = &msg.content {
                 if text.starts_with("Tool ") && text.contains("result:") {
                     if keep_tool_results {
-                        keep_tool_results = false;
+                        keep_tool_results = false; // 只保留最后一个工具结果
                         cleaned.push(msg.clone());
                     } else {
                         removed += 1;
@@ -68,6 +76,7 @@ impl SessionHygiene {
         }
     }
 
+    /// 按字符限制截断消息 — 从后向前保留, 直到超过限制
     pub fn truncate_to_char_limit(&self, messages: &[Message], limit: usize) -> Vec<Message> {
         let mut result = Vec::new();
         let mut total_chars = 0;
@@ -89,35 +98,41 @@ impl SessionHygiene {
     }
 }
 
+/// 压缩摘要模板 — 用于结构化摘要生成
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressedSummary {
-    pub goal: String,
-    pub constraints: String,
-    pub progress: String,
-    pub key_decisions: Vec<String>,
-    pub relevant_files: Vec<String>,
-    pub next_steps: Vec<String>,
+    pub goal: String,                // 当前目标
+    pub constraints: String,         // 约束条件
+    pub progress: String,            // 进度
+    pub key_decisions: Vec<String>,  // 关键决策
+    pub relevant_files: Vec<String>, // 相关文件
+    pub next_steps: Vec<String>,     // 下一步
 }
 
+/// 缓存断点 — 定义哪些消息应该被缓存
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheBreakpoint {
-    pub message_index: usize,
-    pub cache_type: CacheType,
+    pub message_index: usize,  // 消息索引
+    pub cache_type: CacheType, // 缓存类型
 }
 
+/// 缓存类型 — SystemPrompt (系统提示) 或 Rolling (滚动窗口)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheType {
-    SystemPrompt,
-    Rolling,
+    SystemPrompt, // 系统提示 — 跨所有轮次缓存
+    Rolling,      // 滚动窗口 — 最近3条消息
 }
 
+/// 缓存策略 — 管理 Anthropic cache_control 断点
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheStrategy {
-    pub breakpoints: Vec<CacheBreakpoint>,
-    pub ttl_seconds: u64,
+    pub breakpoints: Vec<CacheBreakpoint>, // 缓存断点列表
+    pub ttl_seconds: u64,                  // 缓存过期时间 (秒)
 }
 
 impl CacheStrategy {
+    /// 创建 system_and_3 策略 — 缓存系统提示 + 最后3条消息
+    /// 这是 Anthropic 推荐的缓存策略, 可降低 75% 输入 token 成本
     pub fn system_and_3(ttl_seconds: u64) -> Self {
         Self {
             breakpoints: vec![
@@ -142,6 +157,7 @@ impl CacheStrategy {
         }
     }
 
+    /// 动态计算缓存断点 — 系统提示 + 最后3条消息
     pub fn calculate_breakpoints(message_count: usize, ttl_seconds: u64) -> Self {
         if message_count <= 4 {
             return Self::system_and_3(ttl_seconds);
@@ -164,13 +180,16 @@ impl CacheStrategy {
     }
 }
 
+/// 上下文压缩器 — Agent 层的精确 token 级压缩 (50% 阈值)
+/// 结合 SessionHygiene 实现双级压缩
 pub struct ContextCompressor {
-    threshold: f64,
+    threshold: f64, // 压缩阈值 (0.50 = 50%)
     #[allow(dead_code)]
-    protect_last_n: usize,
+    protect_last_n: usize, // 最少保护的消息数
 }
 
 impl ContextCompressor {
+    /// 创建上下文压缩器
     pub fn new(threshold: f64, protect_last_n: usize) -> Self {
         Self {
             threshold,
@@ -178,6 +197,7 @@ impl ContextCompressor {
         }
     }
 
+    /// 估算消息总字符数
     pub fn estimate_chars(messages: &[Message]) -> usize {
         messages
             .iter()
@@ -188,14 +208,19 @@ impl ContextCompressor {
             .sum()
     }
 
+    /// 判断是否需要压缩 — 当前字符数 > 上下文窗口 * 阈值
     pub fn should_compress(&self, current_chars: usize, context_window: usize) -> bool {
         current_chars as f64 > context_window as f64 * self.threshold
     }
 
+    /// 执行压缩 — 两阶段压缩
+    /// 阶段1: 使用 SessionHygiene 清理旧工具结果 (85% 阈值)
+    /// 阶段2: 如果仍超限, 截断到 50% 上下文窗口
     pub fn compress(&self, messages: &[Message], context_window: usize) -> CompressionResult {
         let original_count = messages.len();
         let total_chars = Self::estimate_chars(messages);
 
+        // 如果不需要压缩, 直接返回原消息
         if !self.should_compress(total_chars, context_window) {
             return CompressionResult {
                 messages: messages.to_vec(),
@@ -206,6 +231,7 @@ impl ContextCompressor {
             };
         }
 
+        // 阶段1: 清理旧工具结果
         let hygiene = SessionHygiene::new(0.85, context_window);
         let cleaned = hygiene.clean_old_tool_results(messages);
 
@@ -215,6 +241,7 @@ impl ContextCompressor {
         let is_compressed = cleaned.compressed;
         let removed_so_far = cleaned.removed_tool_results;
 
+        // 如果清理后已满足阈值, 返回清理后的消息
         if remaining_chars as f64 <= context_window as f64 * self.threshold {
             return CompressionResult {
                 messages: msgs,
@@ -225,6 +252,7 @@ impl ContextCompressor {
             };
         }
 
+        // 阶段2: 截断到 50% 上下文窗口
         let target_chars = (context_window as f64 * 0.5) as usize;
         let truncated = hygiene.truncate_to_char_limit(&msgs, target_chars);
         let total_removed = removed_so_far + (count - truncated.len());
@@ -239,6 +267,7 @@ impl ContextCompressor {
         }
     }
 
+    /// 生成空的压缩摘要模板
     pub fn generate_summary_template() -> CompressedSummary {
         CompressedSummary {
             goal: String::new(),
