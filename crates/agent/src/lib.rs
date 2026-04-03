@@ -11,75 +11,91 @@ use uuid::Uuid;
 use tokio::sync::mpsc;
 use futures_util::stream::StreamExt;
 
+/// Agent 事件枚举 — 用于回调系统，通知外部 Agent 的运行状态
 pub enum AgentEvent {
+    /// 工具开始执行
     ToolStart { tool_name: String, args: String },
+    /// 工具执行结束
     ToolEnd { tool_name: String, success: bool },
+    /// 迭代步骤
     Step { iteration: u32, message_count: usize },
+    /// 状态变化 (started/completed/max_iterations/provider_error)
     Status { status: String },
+    /// 思考内容
     Thinking { content: String },
+    /// Skill 创建建议 (复杂任务完成后触发)
     SkillSuggestion { task_summary: String, tool_call_count: u32 },
+    /// 用户纠正记录
     UserCorrection { original: String, corrected: String },
 }
 
+/// 事件回调类型 — 用于外部监听 Agent 运行事件
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
 
+/// Agent 运行时 — 核心执行引擎
+/// 负责管理会话、执行 Agent 推理循环、调用工具和 LLM
 pub struct AgentRuntime {
-    config: AgentConfig,
-    session_manager: SessionManager,
-    lane_router: LaneRouter,
-    tool_registry: Arc<ToolRegistry>,
-    provider_client: ProviderClient,
-    memory_manager: Option<Arc<MemoryManager>>,
-    context_compressor: Option<Arc<ContextCompressor>>,
-    event_callback: Option<Arc<EventCallback>>,
-    iteration_budget: Option<u32>,
+    config: AgentConfig,                       // Agent 配置
+    session_manager: SessionManager,           // 会话管理器
+    lane_router: LaneRouter,                   // 车道路由器 (并发隔离)
+    tool_registry: Arc<ToolRegistry>,          // 工具注册表
+    provider_client: ProviderClient,           // LLM 提供商客户端
+    memory_manager: Option<Arc<MemoryManager>>, // 可选: 记忆管理器
+    context_compressor: Option<Arc<ContextCompressor>>, // 可选: 上下文压缩器
+    event_callback: Option<Arc<EventCallback>>, // 可选: 事件回调
+    iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
 }
 
+/// Agent 配置
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub max_loop_iterations: u32,
-    pub tool_timeout_ms: u64,
-    pub session_ttl_seconds: u64,
-    pub max_concurrent_per_lane: usize,
+    pub max_loop_iterations: u32,   // 最大循环迭代次数
+    pub tool_timeout_ms: u64,       // 工具执行超时 (毫秒)
+    pub session_ttl_seconds: u64,   // 会话过期时间 (秒)
+    pub max_concurrent_per_lane: usize, // 每车道最大并发数
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_loop_iterations: 100,
-            tool_timeout_ms: 60000,
-            session_ttl_seconds: 3600,
-            max_concurrent_per_lane: 10,
+            max_loop_iterations: 100,    // 默认最多100次迭代
+            tool_timeout_ms: 60000,      // 默认工具超时60秒
+            session_ttl_seconds: 3600,   // 默认会话TTL 1小时
+            max_concurrent_per_lane: 10, // 默认每车道10并发
         }
     }
 }
 
+/// 会话 — 代表一次完整的 Agent 交互
 #[derive(Clone)]
 pub struct Session {
-    pub key: String,
-    pub lane: String,
-    pub parent_session_id: Option<String>,
-    pub messages: Arc<Vec<Message>>,
-    pub metadata: Arc<SessionMetadata>,
-    pub last_accessed: Instant,
+    pub key: String,                        // 会话唯一标识
+    pub lane: String,                       // 所属车道
+    pub parent_session_id: Option<String>,  // 父会话ID (谱系追踪)
+    pub messages: Arc<Vec<Message>>,        // 消息历史 (Arc优化减少克隆开销)
+    pub metadata: Arc<SessionMetadata>,     // 元数据 (Arc优化)
+    pub last_accessed: Instant,             // 最后访问时间 (用于TTL清理)
 }
 
+/// 会话元数据
 #[derive(Clone)]
 pub struct SessionMetadata {
-    pub channel: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub tool_calls_enabled: bool,
+    pub channel: String,            // 通道类型 (http, websocket, etc.)
+    pub created_at: i64,            // 创建时间戳 (毫秒)
+    pub updated_at: i64,            // 更新时间戳 (毫秒)
+    pub tool_calls_enabled: bool,   // 是否启用工具调用
 }
 
+/// 会话管理器 — 管理 Agent 会话的生命周期
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    sessions: Arc<RwLock<HashMap<String, Session>>>, // 所有活跃会话
     #[allow(dead_code)]
-    max_sessions: usize,
-    ttl_seconds: u64,
+    max_sessions: usize,  // 最大会话数
+    ttl_seconds: u64,     // 会话过期时间 (秒)
 }
 
 impl SessionManager {
+    /// 创建新的会话管理器
     pub fn new(max_sessions: usize, ttl_seconds: u64) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::with_capacity(max_sessions))),
@@ -88,6 +104,7 @@ impl SessionManager {
         }
     }
 
+    /// 创建新会话 (生成 UUID 作为 key)
     pub fn create(&self, channel: &str, lane: &str) -> Session {
         let session = Session {
             key: Uuid::new_v4().to_string(),
@@ -106,10 +123,12 @@ impl SessionManager {
         session
     }
 
+    /// 获取会话 (只读)
     pub fn get(&self, key: &str) -> Option<Session> {
         self.sessions.read().get(key).cloned()
     }
 
+    /// 获取或创建会话 (原子操作,避免竞态条件)
     pub fn get_or_create(&self, key: &str, channel: &str, lane: &str) -> Session {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get(key) {
@@ -135,12 +154,15 @@ impl SessionManager {
         session
     }
 
+    /// 添加消息到会话 (使用 Arc 优化减少克隆开销)
     pub fn add_message(&self, key: &str, message: Message) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(key) {
+            // 克隆 messages Arc -> 新 Vec, 追加消息, 用新 Arc 替换
             let mut messages = (*session.messages).clone();
             messages.push(message);
             session.messages = Arc::new(messages);
+            // 克隆 metadata Arc -> 新 Metadata, 更新时间, 用新 Arc 替换
             let mut metadata = (*session.metadata).clone();
             metadata.updated_at = chrono::Utc::now().timestamp_millis();
             session.metadata = Arc::new(metadata);
@@ -148,15 +170,18 @@ impl SessionManager {
         }
     }
 
+    /// 删除会话
     pub fn delete(&self, key: &str) {
         self.sessions.write().remove(key);
     }
 
+    /// 清理过期会话 (两阶段: 先读锁收集, 再写锁删除)
     pub fn cleanup_expired(&self) -> usize {
         let ttl = Duration::from_secs(self.ttl_seconds);
         let now = Instant::now();
         let mut to_remove = vec![];
         
+        // 阶段1: 读锁收集过期 key
         {
             let sessions = self.sessions.read();
             for (key, session) in sessions.iter() {
@@ -166,16 +191,19 @@ impl SessionManager {
             }
         }
         
+        // 阶段2: 写锁逐个删除
         for key in &to_remove {
             self.sessions.write().remove(key);
         }
         to_remove.len()
     }
 
+    /// 列出所有会话
     pub fn list(&self) -> Vec<Session> {
         self.sessions.read().values().cloned().collect()
     }
 
+    /// 获取会话数量
     pub fn count(&self) -> usize {
         self.sessions.read().len()
     }
