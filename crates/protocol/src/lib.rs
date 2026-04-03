@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// JSON-RPC 请求枚举 — 支持标准请求和通知
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcRequest {
-    Standard(Request),
-    Notification(Notification),
+    Standard(Request),          // 带 ID 的请求 (需要响应)
+    Notification(Notification), // 不带 ID 的通知 (不需要响应)
 }
 
+/// JSON-RPC 标准请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub jsonrpc: String,
@@ -17,6 +19,7 @@ pub struct Request {
     pub params: serde_json::Value,
 }
 
+/// JSON-RPC 通知 (不需要响应)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub jsonrpc: String,
@@ -25,6 +28,7 @@ pub struct Notification {
     pub params: serde_json::Value,
 }
 
+/// JSON-RPC 响应枚举 — 成功或错误
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcResponse {
@@ -32,6 +36,7 @@ pub enum JsonRpcResponse {
     Error(ErrorResponse),
 }
 
+/// JSON-RPC 成功响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub jsonrpc: String,
@@ -39,6 +44,7 @@ pub struct SuccessResponse {
     pub result: serde_json::Value,
 }
 
+/// JSON-RPC 错误响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub jsonrpc: String,
@@ -46,6 +52,7 @@ pub struct ErrorResponse {
     pub error: RpcError,
 }
 
+/// JSON-RPC 错误结构 — 符合 JSON-RPC 2.0 规范
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i32,
@@ -55,6 +62,7 @@ pub struct RpcError {
 }
 
 impl RpcError {
+    /// -32700: 解析错误
     pub fn parse_error() -> Self {
         Self {
             code: -32700,
@@ -63,6 +71,7 @@ impl RpcError {
         }
     }
 
+    /// -32600: 无效请求
     pub fn invalid_request() -> Self {
         Self {
             code: -32600,
@@ -71,6 +80,7 @@ impl RpcError {
         }
     }
 
+    /// -32601: 方法未找到
     pub fn method_not_found() -> Self {
         Self {
             code: -32601,
@@ -79,6 +89,7 @@ impl RpcError {
         }
     }
 
+    /// -32602: 无效参数
     pub fn invalid_params(msg: &str) -> Self {
         Self {
             code: -32602,
@@ -87,6 +98,7 @@ impl RpcError {
         }
     }
 
+    /// -32603: 内部错误
     pub fn internal_error(msg: &str) -> Self {
         Self {
             code: -32603,
