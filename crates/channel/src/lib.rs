@@ -3,25 +3,39 @@ use futures_util::Stream;
 use rustclaw_protocol::Envelope;
 use std::pin::Pin;
 
+/// 通道事件流类型 — 用于订阅通道事件
 pub type EventStream = Pin<Box<dyn Stream<Item = ChannelEvent> + Send>>;
 
+/// 通道抽象接口 — 所有消息通道必须实现此 trait
+/// 支持 WebSocket、HTTP、Webhook 等消息入口
 #[async_trait]
 pub trait Channel: Send + Sync {
+    /// 通道名称
     fn name(&self) -> &str;
+    /// 连接通道
     async fn connect(&self) -> anyhow::Result<()>;
+    /// 断开通道
     async fn disconnect(&self) -> anyhow::Result<()>;
+    /// 发送消息 (Envelope)
     async fn send(&self, envelope: Envelope) -> anyhow::Result<()>;
+    /// 订阅通道事件流
     fn events(&self) -> EventStream;
 }
 
+/// 通道事件枚举
 #[derive(Debug, Clone)]
 pub enum ChannelEvent {
+    /// 收到消息
     Message(Envelope),
+    /// 通道已连接
     Connected { channel: String },
+    /// 通道已断开
     Disconnected { channel: String },
+    /// 通道错误
     Error { channel: String, error: String },
 }
 
+/// WebSocket 通道实现 (当前为占位实现)
 pub struct WebSocketChannel {
     name: String,
 }
@@ -57,6 +71,7 @@ impl Channel for WebSocketChannel {
     }
 }
 
+/// HTTP 通道实现 (当前为占位实现)
 pub struct HttpChannel {
     name: String,
 }
@@ -92,6 +107,7 @@ impl Channel for HttpChannel {
     }
 }
 
+/// Webhook 通道实现 (当前为占位实现)
 pub struct WebhookChannel {
     name: String,
 }
