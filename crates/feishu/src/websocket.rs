@@ -117,15 +117,28 @@ impl WebSocketManager {
     async fn connect_and_listen(
         _config: &FeishuConfig,
         _channel: &Arc<FeishuChannel>,
-        _client: &Arc<FeishuClient>,
+        client: &Arc<FeishuClient>,
     ) -> Result<()> {
         // 这里使用 HTTP 长轮询作为 WebSocket 的替代方案
         // 因为飞书的 WebSocket 连接需要特殊的握手流程
         // 实际生产环境中应该使用 tokio-tungstenite 建立真正的 WebSocket 连接
         tracing::info!("Starting Feishu long-polling connection");
 
+        // 心跳保活间隔 (30秒)
+        let heartbeat_interval = std::time::Duration::from_secs(30);
+        let mut last_heartbeat = std::time::Instant::now();
+
         // 模拟长轮询循环
         loop {
+            // 心跳保活: 定期刷新租户令牌
+            if last_heartbeat.elapsed() >= heartbeat_interval {
+                match client.get_tenant_token().await {
+                    Ok(_) => tracing::debug!("Feishu heartbeat: token refreshed"),
+                    Err(e) => tracing::warn!("Feishu heartbeat: failed to refresh token: {}", e),
+                }
+                last_heartbeat = std::time::Instant::now();
+            }
+
             // 在实际实现中, 这里应该:
             // 1. 建立 WebSocket 连接到 wss://open.feishu.cn/websocket
             // 2. 接收消息
