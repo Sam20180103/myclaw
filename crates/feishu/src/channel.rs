@@ -101,7 +101,8 @@ impl FeishuChannel {
         };
         let envelope = Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message);
 
-        if let Some(tx) = self.event_tx.read().as_ref() {
+        let tx = self.event_tx.read().clone();
+        if let Some(tx) = tx.as_ref() {
             tx.send(ChannelEvent::Message(envelope)).await?;
         }
 
