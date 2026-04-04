@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::config::FeishuConfig;
 use crate::client::FeishuClient;
-use crate::message::{FeishuEvent, FeishuEventMessage, FeishuMsgType, FeishuMention};
+use crate::message::{FeishuEvent, FeishuEventMessage, FeishuMsgType};
 
 /// 飞书通道 — 实现 Channel trait
 /// 通过飞书开放平台 API 实现与用户的消息交互
@@ -72,6 +72,43 @@ impl FeishuChannel {
             .send_message(chat_id, "chat_id", "text", &content)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
+
+        Ok(())
+    }
+
+    /// 发送流式响应 (先发送思考中卡片, 然后发送文本消息)
+    pub async fn send_streaming_response(&self, text: &str, chat_id: &str) -> Result<()> {
+        // 先发送思考中卡片
+        let thinking_card = crate::card::FeishuCard::thinking_card();
+        let card_json: serde_json::Value = serde_json::from_str(&thinking_card.to_json()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize thinking card: {}", e))?)
+            .map_err(|e| anyhow::anyhow!("Failed to parse card JSON: {}", e))?;
+
+        self.client
+            .send_card(chat_id, "chat_id", card_json)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send thinking card: {}", e))?;
+
+        // 发送文本响应
+        let content = json!({"text": text}).to_string();
+        self.client
+            .send_message(chat_id, "chat_id", "text", &content)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
+
+        Ok(())
+    }
+
+    /// 发送交互卡片 (用于状态更新)
+    pub async fn send_interactive_card(&self, card: crate::card::FeishuCard, chat_id: &str) -> Result<()> {
+        let card_json: serde_json::Value = serde_json::from_str(&card.to_json()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize card: {}", e))?)
+            .map_err(|e| anyhow::anyhow!("Failed to parse card JSON: {}", e))?;
+
+        self.client
+            .send_card(chat_id, "chat_id", card_json)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send interactive card: {}", e))?;
 
         Ok(())
     }
