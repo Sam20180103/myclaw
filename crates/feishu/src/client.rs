@@ -258,6 +258,88 @@ impl FeishuClient {
 
         self.send_message(receive_id, receive_id_type, "interactive", &content_str).await
     }
+
+    /// 下载文件/图片
+    pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = format!(
+            "https://open.feishu.cn/open-apis/im/v1/files/{}",
+            file_key
+        );
+
+        let response = self.client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(FeishuError::ApiError(format!(
+                "Download failed: {}", response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        Ok(bytes.to_vec())
+    }
+
+    /// 上传文件
+    pub async fn upload_file(
+        &self,
+        file_type: &str,
+        file_name: &str,
+        data: &[u8],
+    ) -> Result<String, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = "https://open.feishu.cn/open-apis/im/v1/files";
+
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", file_type.to_string())
+            .text("file_name", file_name.to_string())
+            .part("file", reqwest::multipart::Part::bytes(data.to_vec()).file_name(file_name.to_string()));
+
+        let response = self.client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        #[derive(serde::Deserialize)]
+        struct UploadResponse {
+            code: i64,
+            msg: Option<String>,
+            data: Option<UploadData>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct UploadData {
+            key: Option<String>,
+        }
+
+        let resp: UploadResponse = response
+            .json()
+            .await
+            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+
+        if resp.code != 0 {
+            return Err(FeishuError::ApiError(
+                resp.msg.unwrap_or_else(|| "Unknown API error".to_string()),
+            ));
+        }
+
+        let file_key = resp.data
+            .and_then(|d| d.key)
+            .ok_or_else(|| FeishuError::ApiError("No file key in response".to_string()))?;
+
+        Ok(file_key)
+    }
 }
 
 #[cfg(test)]

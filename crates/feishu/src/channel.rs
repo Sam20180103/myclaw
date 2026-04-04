@@ -1,16 +1,22 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use governor::{Quota, RateLimiter};
+use governor::clock::DefaultClock;
+use governor::state::{InMemoryState, NotKeyed};
 use rustclaw_channel::{Channel, ChannelEvent, EventStream};
 use rustclaw_protocol::{Content, Envelope, Message, Role};
 use rustclaw_agent::AgentResponse;
 use parking_lot::RwLock;
 use serde_json::json;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::FeishuConfig;
 use crate::client::FeishuClient;
 use crate::message::{FeishuEvent, FeishuEventMessage, FeishuMsgType};
+
+type DefaultRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
 /// 飞书通道 — 实现 Channel trait
 /// 通过飞书开放平台 API 实现与用户的消息交互
@@ -19,6 +25,8 @@ pub struct FeishuChannel {
     client: Arc<FeishuClient>,
     event_tx: Arc<RwLock<Option<mpsc::Sender<ChannelEvent>>>>,
     event_rx: Arc<RwLock<Option<mpsc::Receiver<ChannelEvent>>>>,
+    #[allow(dead_code)]
+    rate_limiter: Arc<DefaultRateLimiter>,
 }
 
 impl FeishuChannel {
@@ -26,16 +34,26 @@ impl FeishuChannel {
     pub fn new(config: FeishuConfig) -> Self {
         let client = Arc::new(FeishuClient::new(config.clone()));
         let (tx, rx) = mpsc::channel(100);
+        // 频率限制: 60次/分钟
+        let quota = Quota::per_minute(NonZeroU32::new(60).unwrap());
+        let rate_limiter = Arc::new(RateLimiter::direct(quota));
         Self {
             config,
             client,
             event_tx: Arc::new(RwLock::new(Some(tx))),
             event_rx: Arc::new(RwLock::new(Some(rx))),
+            rate_limiter,
         }
     }
 
     /// 处理飞书事件
     pub async fn handle_event(&self, event: &FeishuEvent) -> Result<()> {
+        // 频率限制检查
+        if self.rate_limiter.check().is_err() {
+            tracing::warn!("Rate limit exceeded for feishu channel");
+            return Ok(());
+        }
+
         // 解析消息
         let msg = self.parse_event_message(&event.event.message);
 
