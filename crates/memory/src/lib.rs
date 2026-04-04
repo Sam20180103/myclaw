@@ -211,11 +211,11 @@ impl MemoryManager {
 }
 
 /// 记忆安全扫描器 — 防止 Prompt 注入和数据泄露
-struct MemoryScanner;
+pub struct MemoryScanner;
 
 impl MemoryScanner {
-    /// 扫描记忆内容 — 三重安全检查
-    fn scan(content: &str) -> Result<String, MemoryError> {
+    /// 扫描内容 — 三重安全检查 (公开方法)
+    pub fn scan(content: &str) -> Result<String, MemoryError> {
         let trimmed = content.trim();
         if trimmed.is_empty() {
             return Err(MemoryError::InvalidEntry("Empty content".to_string()));

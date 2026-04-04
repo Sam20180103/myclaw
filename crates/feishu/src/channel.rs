@@ -6,6 +6,7 @@ use governor::state::{InMemoryState, NotKeyed};
 use rustclaw_channel::{Channel, ChannelEvent, EventStream};
 use rustclaw_protocol::{Content, Envelope, Message, Role};
 use rustclaw_agent::AgentResponse;
+use rustclaw_memory::MemoryScanner;
 use parking_lot::RwLock;
 use serde_json::json;
 use std::num::NonZeroU32;
@@ -66,8 +67,19 @@ impl FeishuChannel {
             return Ok(());
         }
 
+        // 提取文本内容并进行安全扫描
+        let text = self.extract_text(&msg);
+        if let Err(e) = MemoryScanner::scan(&text) {
+            tracing::warn!("Security scan failed for feishu message: {}", e);
+            return Ok(());
+        }
+
         // 转换为 Envelope 并发送
-        let envelope = self.message_to_envelope(&msg);
+        let message = Message {
+            role: Role::User,
+            content: Content::text(text),
+        };
+        let envelope = Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message);
 
         if let Some(tx) = self.event_tx.read().as_ref() {
             tx.send(ChannelEvent::Message(envelope)).await?;
@@ -161,7 +173,8 @@ impl FeishuChannel {
         }
     }
 
-    /// 将飞书消息转换为 Envelope
+    /// 将飞书消息转换为 Envelope (已废弃, 使用内联转换代替)
+    #[allow(dead_code)]
     fn message_to_envelope(&self, msg: &crate::message::FeishuMessage) -> Envelope {
         // 提取文本内容
         let text = self.extract_text(msg);
