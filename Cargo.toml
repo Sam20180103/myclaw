@@ -13,6 +13,7 @@ members = [
 "crates/skill",
 "crates/memory",
 "crates/compression",
+"crates/feishu",
 ]
 
 [workspace.package]
