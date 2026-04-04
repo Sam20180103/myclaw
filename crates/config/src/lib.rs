@@ -8,6 +8,32 @@ pub struct Config {
     pub agent: AgentConfig,             // Agent 配置
     pub tools: ToolConfig,              // 工具配置
     pub providers: Vec<ProviderConfig>, // LLM 提供商配置
+    pub channels: ChannelsConfig,       // 通道配置
+}
+
+/// 通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelsConfig {
+    pub feishu: Option<FeishuChannelConfig>,
+    pub websocket_enabled: bool,
+    pub http_enabled: bool,
+    pub webhook_enabled: bool,
+}
+
+/// 飞书通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuChannelConfig {
+    pub enabled: bool,
+    pub app_id: String,
+    pub app_secret: String,
+    pub verification_token: String,
+    pub encrypt_key: Option<String>,
+    pub default_model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub dm_enabled: bool,
+    pub group_enabled: bool,
+    pub allowed_groups: Vec<String>,
+    pub allowed_users: Vec<String>,
 }
 
 /// 网关配置 — HTTP/WS 服务器配置
@@ -94,6 +120,12 @@ impl Default for Config {
                 base_url: Some("https://api.anthropic.com".to_string()),
                 default_model: Some("claude-3-5-sonnet-20241022".to_string()),
             }],
+            channels: ChannelsConfig {
+                feishu: None,
+                websocket_enabled: true,
+                http_enabled: true,
+                webhook_enabled: false,
+            },
         }
     }
 }
