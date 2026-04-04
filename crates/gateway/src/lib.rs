@@ -284,6 +284,7 @@ impl Gateway {
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
             .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
             .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
+            .route("/api/channel/feishu/status", get(feishu_status_handler))
             .layer(cors)
             .with_state(Arc::new(self.clone()));
 
@@ -966,6 +967,28 @@ async fn memory_status_handler(
             "sessions_per_lane": sessions_per_lane,
             "oldest_session": sessions.iter().map(|s| s.metadata.created_at).min(),
             "newest_session": sessions.iter().map(|s| s.metadata.created_at).max(),
+        }
+    }))
+}
+
+/// 飞书通道状态查询
+async fn feishu_status_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    let feishu_config = state.full_config.channels.feishu.as_ref();
+    let is_configured = feishu_config.is_some() && feishu_config.map(|c| !c.app_id.is_empty()).unwrap_or(false);
+    let is_connected = state.feishu_ws.as_ref().map(|ws| ws.is_connected()).unwrap_or(false);
+
+    Json(serde_json::json!({
+        "success": true,
+        "feishu": {
+            "configured": is_configured,
+            "connected": is_connected,
+            "dm_enabled": feishu_config.map(|c| c.dm_enabled).unwrap_or(false),
+            "group_enabled": feishu_config.map(|c| c.group_enabled).unwrap_or(false),
+            "allowed_groups_count": feishu_config.map(|c| c.allowed_groups.len()).unwrap_or(0),
+            "allowed_users_count": feishu_config.map(|c| c.allowed_users.len()).unwrap_or(0),
+            "group_configs_count": feishu_config.and_then(|c| c.group_configs.as_ref()).map(|c| c.len()).unwrap_or(0),
         }
     }))
 }
