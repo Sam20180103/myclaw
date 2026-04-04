@@ -19,6 +19,7 @@ use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
 use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequest};
 use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
+use rustclaw_feishu::{FeishuChannel, FeishuConfig, WebSocketManager};
 
 const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
@@ -41,6 +42,8 @@ pub struct Gateway {
     skill_manager: Arc<SkillManager>,
     approval_broadcaster: broadcast::Sender<SkillApprovalRequest>,
     channels: Arc<RwLock<HashMap<String, ChannelInfo>>>,
+    feishu_channel: Option<Arc<FeishuChannel>>,
+    feishu_ws: Option<Arc<WebSocketManager>>,
 }
 
 pub struct GatewayConfig {
@@ -131,6 +134,42 @@ impl Gateway {
             config: HashMap::new(),
         });
 
+        // 初始化飞书通道 (如果配置了)
+        let feishu_channel = config.channels.feishu.as_ref().map(|fc| {
+            let feishu_config = FeishuConfig {
+                app_id: fc.app_id.clone(),
+                app_secret: fc.app_secret.clone(),
+                verification_token: fc.verification_token.clone(),
+                encrypt_key: fc.encrypt_key.clone(),
+                default_model: fc.default_model.clone(),
+                system_prompt: fc.system_prompt.clone(),
+                dm_enabled: fc.dm_enabled,
+                group_enabled: fc.group_enabled,
+                allowed_groups: fc.allowed_groups.clone(),
+                allowed_users: fc.allowed_users.clone(),
+            };
+            Arc::new(FeishuChannel::new(feishu_config))
+        });
+
+        let feishu_ws = feishu_channel.as_ref().map(|ch| {
+            let ws = WebSocketManager::new(
+                FeishuConfig {
+                    app_id: config.channels.feishu.as_ref().map(|c| c.app_id.clone()).unwrap_or_default(),
+                    app_secret: config.channels.feishu.as_ref().map(|c| c.app_secret.clone()).unwrap_or_default(),
+                    verification_token: config.channels.feishu.as_ref().map(|c| c.verification_token.clone()).unwrap_or_default(),
+                    encrypt_key: config.channels.feishu.as_ref().and_then(|c| c.encrypt_key.clone()),
+                    default_model: config.channels.feishu.as_ref().and_then(|c| c.default_model.clone()),
+                    system_prompt: config.channels.feishu.as_ref().and_then(|c| c.system_prompt.clone()),
+                    dm_enabled: config.channels.feishu.as_ref().map(|c| c.dm_enabled).unwrap_or(true),
+                    group_enabled: config.channels.feishu.as_ref().map(|c| c.group_enabled).unwrap_or(false),
+                    allowed_groups: config.channels.feishu.as_ref().map(|c| c.allowed_groups.clone()).unwrap_or_default(),
+                    allowed_users: config.channels.feishu.as_ref().map(|c| c.allowed_users.clone()).unwrap_or_default(),
+                },
+                ch.clone(),
+            );
+            Arc::new(ws)
+        });
+
         Self {
             config: gateway_config,
             full_config: config,
@@ -140,6 +179,8 @@ impl Gateway {
             skill_manager,
             approval_broadcaster: approval_tx,
             channels: Arc::new(RwLock::new(channels)),
+            feishu_channel,
+            feishu_ws,
         }
     }
 
