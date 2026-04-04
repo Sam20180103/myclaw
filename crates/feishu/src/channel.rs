@@ -74,10 +74,25 @@ impl FeishuChannel {
             return Ok(());
         }
 
+        // 构建消息内容 (注入群聊自定义 System Prompt)
+        let final_content = if msg.chat_type == "group" {
+            if let Some(group_config) = self.get_group_config(&msg.chat_id) {
+                if let Some(ref prompt) = group_config.system_prompt {
+                    format!("{}\n\n[群聊系统提示]\n{}", prompt, text)
+                } else {
+                    text
+                }
+            } else {
+                text
+            }
+        } else {
+            text
+        };
+
         // 转换为 Envelope 并发送
         let message = Message {
             role: Role::User,
-            content: Content::text(text),
+            content: Content::text(final_content),
         };
         let envelope = Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message);
 
