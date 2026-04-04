@@ -149,6 +149,15 @@ impl Gateway {
                 group_enabled: fc.group_enabled,
                 allowed_groups: fc.allowed_groups.clone(),
                 allowed_users: fc.allowed_users.clone(),
+                group_configs: fc.group_configs.clone().unwrap_or_default().into_iter().map(|gc| {
+                    rustclaw_feishu::config::GroupConfig {
+                        group_id: gc.group_id,
+                        allowed_users: gc.allowed_users,
+                        bound_skills: gc.bound_skills,
+                        system_prompt: gc.system_prompt,
+                        rate_limit_per_minute: gc.rate_limit_per_minute.unwrap_or(60),
+                    }
+                }).collect(),
             };
             Arc::new(FeishuChannel::new(feishu_config))
         });
@@ -166,6 +175,15 @@ impl Gateway {
                     group_enabled: config.channels.feishu.as_ref().map(|c| c.group_enabled).unwrap_or(false),
                     allowed_groups: config.channels.feishu.as_ref().map(|c| c.allowed_groups.clone()).unwrap_or_default(),
                     allowed_users: config.channels.feishu.as_ref().map(|c| c.allowed_users.clone()).unwrap_or_default(),
+                    group_configs: config.channels.feishu.as_ref().and_then(|c| c.group_configs.clone()).unwrap_or_default().into_iter().map(|gc| {
+                        rustclaw_feishu::config::GroupConfig {
+                            group_id: gc.group_id,
+                            allowed_users: gc.allowed_users,
+                            bound_skills: gc.bound_skills,
+                            system_prompt: gc.system_prompt,
+                            rate_limit_per_minute: gc.rate_limit_per_minute.unwrap_or(60),
+                        }
+                    }).collect(),
                 },
                 ch.clone(),
             );

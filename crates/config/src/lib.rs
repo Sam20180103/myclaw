@@ -34,6 +34,17 @@ pub struct FeishuChannelConfig {
     pub group_enabled: bool,
     pub allowed_groups: Vec<String>,
     pub allowed_users: Vec<String>,
+    pub group_configs: Option<Vec<GroupChannelConfig>>,
+}
+
+/// 群聊通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupChannelConfig {
+    pub group_id: String,
+    pub allowed_users: Vec<String>,
+    pub bound_skills: Vec<String>,
+    pub system_prompt: Option<String>,
+    pub rate_limit_per_minute: Option<u32>,
 }
 
 /// 网关配置 — HTTP/WS 服务器配置
