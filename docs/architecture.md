@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.36.0
+> 版本: v0.38.0
 > 日期: 2026-04-01
-> 状态: Phase 16 飞书通道集成设计 (规划中)
+> 状态: Phase 16 飞书通道集成完成
 
 ---
 
@@ -577,8 +577,10 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.32.0 | 2026-04-01 | SkillManageTool patch动作 + 145 tests |
 | v0.33.0 | 2026-04-01 | 会话谱系 (parent_session_id) + 146 tests |
 | v0.34.0 | 2026-04-01 | Phase 15全部完成 + 147 tests |
-| v0.35.0 | 2026-04-01 | 中文注释补充 (agent/memory/storage/compression/skill/channel/config/protocol) |
+| v0.35.0 | 2026-04-01 | 中文注释补充 (全核心模块) |
 | v0.36.0 | 2026-04-01 | Phase 16 飞书通道集成设计 (规划中) |
+| v0.37.0 | 2026-04-01 | Phase 16 飞书通道实现 (客户端/消息/通道/卡片/WebSocket/配置) |
+| v0.38.0 | 2026-04-01 | Phase 16 完成 (文件API/频率限制/Gateway集成) + 161 tests |
 
 ---
 
@@ -1994,13 +1996,13 @@ Phase 15.5: 代码质量加固 (1周)
 
 | 能力 | Hermes Agent | RustClaw 当前 | 差距评估 |
 |------|-------------|---------------|----------|
-| 持久化存储 | SQLite WAL + FTS5 | 内存 HashMap | 🔴 需 Phase 15 |
-| 跨会话记忆 | MEMORY.md + USER.md | 无 | 🔴 需 Phase 15 |
-| 上下文压缩 | 双级 (85% + 50%) | 无 | 🔴 需 Phase 15 |
-| Prompt 缓存 | Anthropic cache_control | 无 | 🟡 Phase 15 可选 |
-| Skill 自创 | 5+ tool calls 自动触发 | 需外部 CLI | 🟡 Phase 15 可选 |
-| 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
-| 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
+| 持久化存储 | SQLite WAL + FTS5 | SQLiteSessionStore (WAL + 搜索) | ✅ 已实现 (Phase 15) |
+| 跨会话记忆 | MEMORY.md + USER.md | MemoryManager + 安全扫描 | ✅ 已实现 (Phase 15) |
+| 上下文压缩 | 双级 (85% + 50%) | SessionHygiene + ContextCompressor | ✅ 已实现 (Phase 15) |
+| Prompt 缓存 | Anthropic cache_control | CacheStrategy (system_and_3) | ✅ 已实现 (Phase 15) |
+| Skill 自创 | 5+ tool calls 自动触发 | SkillSuggestion + SkillManageTool | ✅ 已实现 (Phase 15) |
+| 会话搜索 | FTS5 + LLM 摘要 | LIKE搜索 + 索引优化 | ✅ 已实现 (Phase 15) |
+| 回调系统 | 7 种回调 | AgentEvent (6种) | ✅ 已实现 (Phase 15) |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
 | 测试覆盖 | pytest 全量 | 147 个 (全 crate 覆盖) | ✅ 良好 |
 

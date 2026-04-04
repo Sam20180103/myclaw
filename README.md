@@ -1,8 +1,8 @@
 # RustClaw
 
-[![Version](https://img.shields.io/badge/version-v0.36.0-blue.svg)](https://github.com/Sam20180103/myclaw)
+[![Version](https://img.shields.io/badge/version-v0.38.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-147%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
+[![Tests](https://img.shields.io/badge/tests-161%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参考 OpenClaw 和 Nous Research Hermes Agent，使用 Rust 实现以获得更高的性能和安全性。
@@ -227,7 +227,7 @@ rustclaw open-code sessions list
 - **Phase 14**: 高级平台工具集成 ✅
 - **Phase 15**: 记忆系统与自我进化 ✅
 - **Phase 15.5**: 代码质量加固 ✅
-- **Phase 16**: 飞书通道集成 ⏳ 规划中
+- **Phase 16**: 飞书通道集成 ✅
 
 ## 测试统计
 
