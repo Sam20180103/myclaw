@@ -1,6 +1,6 @@
 # RustClaw
 
-[![Version](https://img.shields.io/badge/version-v0.35.0-blue.svg)](https://github.com/Sam20180103/myclaw)
+[![Version](https://img.shields.io/badge/version-v0.36.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-147%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -41,6 +41,13 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 - **社交/资讯**: TwitterReach, RedditReach, WeiboReach, FeedReach (RSS)
 - **中文平台**: XhsReach (小红书), DouyinReach (抖音)
 - **高级平台**: LinkedInReach, WeChatReach (公众号), BossZhipinReach (Boss直聘), PodcastReach (小宇宙)
+
+### 飞书通道 (Phase 16 规划中)
+- **消息收发**: 纯文本、富文本、图片、文件
+- **交互卡片**: 实时状态更新 (Thinking/Generating/Complete)
+- **流式响应**: 卡片内实时更新文本
+- **权限策略**: DM 白名单、群聊授权、敏感操作确认
+- **WebSocket 长连接**: 自动重连、心跳保活
 
 ## 系统架构
 
@@ -220,6 +227,7 @@ rustclaw open-code sessions list
 - **Phase 14**: 高级平台工具集成 ✅
 - **Phase 15**: 记忆系统与自我进化 ✅
 - **Phase 15.5**: 代码质量加固 ✅
+- **Phase 16**: 飞书通道集成 ⏳ 规划中
 
 ## 测试统计
 

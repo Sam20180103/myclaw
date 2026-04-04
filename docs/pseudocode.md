@@ -1040,5 +1040,240 @@ NvProvider 实现 (NVIDIA NIM, OpenAI兼容):
 
 ---
 
-*文档版本: v0.35.0*
+## 16. FeishuChannel — 飞书通道
+
+**文件**: `crates/feishu/src/` (新增)
+**职责**: 通过飞书 WebSocket 长连接实现与用户的消息交互
+
+### 16.1 FeishuConfig — 飞书配置
+
+```
+结构体 FeishuConfig:
+    属性:
+        app_id: String                    // 飞书应用 ID
+        app_secret: String                // 飞书应用密钥
+        verification_token: String        // 事件验证 Token
+        encrypt_key: Option<String>       // 事件加密密钥 (可选)
+        default_model: Option<String>     // 默认模型
+        system_prompt: Option<String>     // 系统提示
+        dm_enabled: bool                  // 是否启用私聊
+        group_enabled: bool               // 是否启用群聊
+        allowed_groups: Vec<String>       // 允许的群聊 ID 白名单
+        allowed_users: Vec<String>        // 允许的用户 ID 白名单
+```
+
+### 16.2 FeishuClient — 飞书 API 客户端
+
+```
+结构体 FeishuClient:
+    属性:
+        app_id: String
+        app_secret: String
+        tenant_access_token: Arc<RwLock<String>>  // 租户访问令牌 (自动刷新)
+        client: reqwest::Client
+
+    方法 get_tenant_token() -> Result<String, FeishuError>:
+        1. 获取读锁, 检查 token 是否过期
+        2. 如果未过期: 返回缓存的 token
+        3. 否则获取写锁:
+           a. POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+           b. 解析响应, 获取新 token
+           c. 缓存 token
+           d. 返回 token
+
+    方法 send_message(receive_id, msg_type, content) -> Result<String, FeishuError>:
+        1. 获取 tenant_token
+        2. POST https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id
+           - 头部: Authorization: Bearer {token}
+           - 体: { receive_id, msg_type, content }
+        3. 返回 message_id
+
+    方法 reply_message(message_id, msg_type, content) -> Result<String, FeishuError>:
+        1. 获取 tenant_token
+        2. POST https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply
+           - 体: { msg_type, content }
+        3. 返回 reply_message_id
+
+    方法 update_message(message_id, content) -> Result<(), FeishuError>:
+        1. 获取 tenant_token
+        2. PUT https://open.feishu.cn/open-apis/im/v1/messages/{message_id}
+           - 体: { content }
+        3. 返回 Ok
+
+    方法 download_file(file_key) -> Result<Vec<u8>, FeishuError>:
+        1. 获取 tenant_token
+        2. GET https://open.feishu.cn/open-apis/im/v1/files/{file_key}
+        3. 返回文件字节流
+
+    方法 upload_file(file_type, file_name, data) -> Result<String, FeishuError>:
+        1. 获取 tenant_token
+        2. POST https://open.feishu.cn/open-apis/im/v1/files
+           - multipart/form-data: { file_type, file_name, file }
+        3. 返回 file_key
+```
+
+### 16.3 FeishuMessage — 飞书消息结构
+
+```
+枚举 FeishuMsgType:
+    - Text        // 纯文本
+    - Post        // 富文本
+    - Image       // 图片
+    - File        // 文件
+    - Interactive // 交互卡片
+
+结构体 FeishuMessage:
+    message_id: String           // 消息 ID
+    chat_id: String              // 会话 ID
+    chat_type: String            // p2p(私聊) / group(群聊)
+    sender_id: String            // 发送者 ID
+    msg_type: FeishuMsgType      // 消息类型
+    content: String              // 消息内容 (JSON)
+    mentions: Vec<FeishuMention> // @提及列表
+    parent_id: Option<String>    // 父消息 ID (回复)
+    create_time: i64             // 创建时间
+
+结构体 FeishuMention:
+    key: String       // 占位符 key
+    id: String        // 用户 ID
+    name: String      // 用户名称
+```
+
+### 16.4 FeishuChannel — 飞书通道实现
+
+```
+结构体 FeishuChannel:
+    属性:
+        config: FeishuConfig
+        client: Arc<FeishuClient>
+        event_tx: Arc<RwLock<Option<Sender<ChannelEvent>>>>
+        ws_handle: Option<JoinHandle<()>>  // WebSocket 连接句柄
+
+    方法 connect() -> Result<()>:
+        1. 建立 WebSocket 连接到飞书
+           a. 获取 tenant_token
+           b. 连接 wss://open.feishu.cn/websocket
+        2. 启动消息处理循环 (spawn 异步任务):
+           a. 接收 WebSocket 消息
+           b. 解析为 FeishuEvent
+           c. 调用 handle_event(event)
+        3. 保存 ws_handle
+        4. 返回 Ok
+
+    方法 disconnect() -> Result<()>:
+        1. 如果 ws_handle 存在:
+           a. 中止任务 (abort)
+           b. 关闭 WebSocket 连接
+        2. 清空 ws_handle
+        3. 返回 Ok
+
+    方法 handle_event(event) -> Result<()>:
+        1. 如果 event 是 URL 验证:
+           a. 返回 challenge 响应
+           b. 返回
+        2. 如果 event 是消息事件:
+           a. 解析 FeishuMessage
+           b. 检查权限:
+              - 如果 chat_type == p2p 且 !dm_enabled: 返回
+              - 如果 chat_type == group 且 !group_enabled: 返回
+              - 检查 allowed_users/allowed_groups 白名单
+           c. 提取文本内容:
+              - 如果 msg_type == Text: 直接使用 content
+              - 如果 msg_type == Post: 解析富文本, 提取纯文本
+              - 如果 msg_type == Image: 下载图片, 生成描述
+              - 如果 msg_type == File: 下载文件, 生成描述
+           d. 处理 @提及:
+              - 移除 @机器人 的提及标记
+              - 保留其他 @提及 作为上下文
+           e. 转换为 Envelope:
+              - channel: "feishu"
+              - session_key: "{chat_type}_{chat_id}"
+              - message: { role: User, content: Text(extracted_text) }
+           f. 发送到 AgentRuntime:
+              - 调用 agent.process(envelope) 或 agent.process_with_loop(envelope)
+           g. 发送响应到飞书:
+              - 调用 send_response(response, chat_id)
+
+    方法 send_response(response, chat_id) -> Result<()>:
+        1. 提取响应文本
+        2. 如果文本长度 > 飞书限制 (15000 字符):
+           a. 分割为多条消息
+           b. 逐条发送
+        3. 否则:
+           a. 调用 client.send_message(chat_id, "text", json({text: response_text}))
+        4. 返回 Ok
+
+    方法 send_streaming_response(stream, chat_id) -> Result<()>:
+        1. 先发送一个 "思考中..." 的交互卡片
+        2. 创建空消息缓冲区
+        3. 遍历 stream 的每个 token:
+           a. 追加 token 到缓冲区
+           b. 如果缓冲区长度 > 更新阈值 (200 字符):
+              - 调用 client.update_message(message_id, 格式化内容)
+              - 清空缓冲区
+        4. 发送剩余内容
+        5. 更新卡片状态为 "完成"
+        6. 返回 Ok
+
+    方法 send_interactive_card(card, chat_id) -> Result<()>:
+        1. 序列化 card 为 JSON
+        2. 调用 client.send_message(chat_id, "interactive", json)
+        3. 返回 Ok
+
+    方法 message_to_envelope(msg) -> Envelope:
+        1. session_key = "{msg.chat_type}_{msg.chat_id}"
+        2. 提取文本内容 (处理 @提及, 图片描述等)
+        3. 创建 Message { role: User, content: Text(extracted_text) }
+        4. 返回 Envelope::new("feishu", session_key, message)
+```
+
+### 16.5 交互卡片构建
+
+```
+结构体 FeishuCard:
+    header: CardHeader          // 卡片头部 (标题, 颜色模板)
+    elements: Vec<CardElement>  // 卡片元素列表
+
+枚举 CardElement:
+    - Markdown { content: String }        // Markdown 文本
+    - Action { actions: Vec<CardAction> } // 操作按钮组
+
+结构体 CardAction:
+    tag: String           // "button"
+    text: CardText        // 按钮文本
+    type: String          // "primary" / "danger" / "default"
+    value: JSON           // 点击回调值
+
+方法 build_status_card(status, actions) -> FeishuCard:
+    1. 创建 CardHeader:
+       - title: "🤖 RustClaw Agent"
+       - template: 根据 status 选择颜色 (blue=Thinking, green=Complete, red=Error)
+    2. 创建元素列表:
+       - Markdown 元素: "**状态**: {status}"
+       - 如果有 actions: 添加 Action 元素
+    3. 返回 FeishuCard
+```
+
+### 16.6 权限策略检查
+
+```
+结构体 FeishuPermission:
+    dm_enabled: bool
+    group_enabled: bool
+    allowed_users: HashSet<String>
+    allowed_groups: HashSet<String>
+
+方法 check_permission(chat_type, chat_id, sender_id) -> bool:
+    1. 如果 chat_type == "p2p":
+       a. 如果 !dm_enabled: 返回 false
+       b. 如果 allowed_users 非空 且 sender_id 不在其中: 返回 false
+    2. 如果 chat_type == "group":
+       a. 如果 !group_enabled: 返回 false
+       b. 如果 allowed_groups 非空 且 chat_id 不在其中: 返回 false
+    3. 返回 true
+```
+
+---
+
+*文档版本: v0.36.0*
 *生成日期: 2026-04-01*

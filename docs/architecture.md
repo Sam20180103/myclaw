@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.35.0
+> 版本: v0.36.0
 > 日期: 2026-04-01
-> 状态: 全部功能完成 + 文档清理 + 147 tests
+> 状态: Phase 16 飞书通道集成设计 (规划中)
 
 ---
 
@@ -482,6 +482,54 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 - [x] 会话谱系 (parent_session_id 链式追踪)
 - [x] 经验回放 (历史会话压缩摘要)
 
+### Phase 16: 飞书通道集成 (2周) ⏳ 规划中
+
+**灵感来源**: OpenClaw 官方飞书插件 (larksuite/openclaw-lark, 1.8k ⭐)
+
+**核心架构**:
+```
+飞书客户端 (WebSocket长连接)
+    │
+    ├── 消息接收 → 解析飞书消息 → 转换为 Envelope → 发送到 AgentRuntime
+    │
+    ├── 消息发送 ← 接收 AgentResponse ← 转换为飞书消息格式
+    │
+    ├── 交互卡片 → 实时状态更新 (Thinking/Generating/Complete)
+    │
+    └── 流式响应 → 实时更新飞书消息卡片内容
+```
+
+**消息类型支持**:
+- 纯文本消息 (Text)
+- 富文本消息 (Post)
+- 图片消息 (Image)
+- 文件消息 (File)
+- 交互卡片消息 (Interactive Card)
+
+**功能特性**:
+- [ ] WebSocket 长连接 (替代 Webhook 轮询)
+- [ ] 群聊/私聊双向消息收发
+- [ ] 消息回复 (Reply) 和话题线程 (Thread)
+- [ ] 图片/文件下载和上传
+- [ ] 交互卡片 (实时状态: Thinking/Generating/Complete)
+- [ ] 流式响应 (卡片内实时更新文本)
+- [ ] 权限策略 (DM/群聊访问控制)
+- [ ] 群配置 (白名单/Skill绑定/自定义System Prompt)
+- [ ] @机器人触发 (支持 @提及 和直接对话)
+- [ ] 安全保护 (默认多层安全策略, 防止 Prompt 注入)
+
+**飞书 API 集成**:
+- 飞书开放平台 WebSocket 连接
+- 消息收发 API (im/v1/messages)
+- 图片/文件上传下载 API
+- 交互卡片 API (im/v1/interactive/cards)
+
+**安全设计**:
+- 默认启用 DM 白名单
+- 群聊需要管理员授权
+- 敏感操作需要确认按钮
+- 防止模型幻觉导致的误操作
+
 ---
 
 ## 七、版本历史
@@ -529,6 +577,8 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.32.0 | 2026-04-01 | SkillManageTool patch动作 + 145 tests |
 | v0.33.0 | 2026-04-01 | 会话谱系 (parent_session_id) + 146 tests |
 | v0.34.0 | 2026-04-01 | Phase 15全部完成 + 147 tests |
+| v0.35.0 | 2026-04-01 | 中文注释补充 (agent/memory/storage/compression/skill/channel/config/protocol) |
+| v0.36.0 | 2026-04-01 | Phase 16 飞书通道集成设计 (规划中) |
 
 ---
 
@@ -1952,8 +2002,255 @@ Phase 15.5: 代码质量加固 (1周)
 | 会话搜索 | FTS5 + LLM 摘要 | 无 | 🔴 需 Phase 15 |
 | 回调系统 | 7 种回调 | 无 | 🟡 Phase 15 可选 |
 | 迭代预算 | 父子共享 | 简单计数器 | 🟢 可接受 |
-| 测试覆盖 | pytest 全量 | 115 个 (agent 10 + provider 12 + tool 39 + skill 9 + config 7 + protocol 9 + gateway 6 + storage 6 + channel 11 + integration 6) | ✅ 良好 |
+| 测试覆盖 | pytest 全量 | 147 个 (全 crate 覆盖) | ✅ 良好 |
 
 ---
 
-*文档版本: v0.24.0*
+## 十八、Phase 16 详细设计 — 飞书通道集成
+
+### 18.1 设计目标
+
+参考 OpenClaw 官方飞书插件 (larksuite/openclaw-lark, 1.8k ⭐), 为 RustClaw 实现飞书/Lark 消息通道集成, 让用户可以通过飞书与 Agent 进行自然对话。
+
+### 18.2 架构设计
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      飞书/Lark 客户端                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │ WebSocket   │  │ 消息解析器    │  │ 消息格式转换器       │  │
+│  │ 长连接管理器 │  │ (Text/Post/  │  │ (Envelope ↔ Feishu) │  │
+│  │             │  │  Image/File)  │  │                     │  │
+│  └──────┬──────┘  └──────┬───────┘  └──────────┬──────────┘  │
+│         │                │                      │             │
+│         └────────────────┼──────────────────────┘             │
+│                          │                                    │
+│  ┌───────────────────────┴─────────────────────────────────┐  │
+│  │              FeishuChannel (实现 Channel trait)          │  │
+│  │                                                         │  │
+│  │  - connect(): 建立 WebSocket 长连接                      │  │
+│  │  - disconnect(): 断开连接                                │  │
+│  │  - send(): 发送消息到飞书                                │  │
+│  │  - events(): 返回事件流                                  │  │
+│  └───────────────────────┬─────────────────────────────────┘  │
+│                          │                                    │
+└──────────────────────────┼────────────────────────────────────┘
+                           │ Envelope
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    RustClaw Gateway                          │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │  AgentRuntime                                           │ │
+│  │  - process(envelope) → AgentResponse                    │ │
+│  │  - process_with_loop(envelope) → AgentResponse          │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 18.3 核心模块设计
+
+#### 18.3.1 FeishuConfig — 飞书配置
+
+```rust
+pub struct FeishuConfig {
+    pub app_id: String,              // 飞书应用 ID
+    pub app_secret: String,          // 飞书应用密钥
+    pub verification_token: String,  // 事件验证 Token
+    pub encrypt_key: Option<String>, // 事件加密密钥 (可选)
+    pub default_model: Option<String>,  // 默认模型
+    pub system_prompt: Option<String>,  // 系统提示
+    pub dm_enabled: bool,            // 是否启用私聊
+    pub group_enabled: bool,         // 是否启用群聊
+    pub allowed_groups: Vec<String>, // 允许的群聊 ID 白名单
+    pub allowed_users: Vec<String>,  // 允许的用户 ID 白名单
+}
+```
+
+#### 18.3.2 FeishuClient — 飞书 API 客户端
+
+```rust
+pub struct FeishuClient {
+    app_id: String,
+    app_secret: String,
+    tenant_access_token: Arc<RwLock<String>>,  // 租户访问令牌 (自动刷新)
+    client: reqwest::Client,
+}
+
+impl FeishuClient {
+    // 获取租户访问令牌 (自动刷新, 过期前5分钟自动续期)
+    async fn get_tenant_token(&self) -> Result<String, FeishuError>;
+    
+    // 发送消息
+    async fn send_message(&self, receive_id: &str, msg_type: &str, content: &str) -> Result<String, FeishuError>;
+    
+    // 回复消息
+    async fn reply_message(&self, message_id: &str, msg_type: &str, content: &str) -> Result<String, FeishuError>;
+    
+    // 更新消息 (用于流式响应)
+    async fn update_message(&self, message_id: &str, content: &str) -> Result<(), FeishuError>;
+    
+    // 下载图片/文件
+    async fn download_file(&self, file_key: &str) -> Result<Vec<u8>, FeishuError>;
+    
+    // 上传文件
+    async fn upload_file(&self, file_type: &str, file_name: &str, data: &[u8]) -> Result<String, FeishuError>;
+}
+```
+
+#### 18.3.3 FeishuMessage — 飞书消息结构
+
+```rust
+// 飞书消息类型
+pub enum FeishuMsgType {
+    Text,       // 纯文本
+    Post,       // 富文本
+    Image,      // 图片
+    File,       // 文件
+    Interactive, // 交互卡片
+}
+
+// 飞书消息
+pub struct FeishuMessage {
+    pub message_id: String,           // 消息 ID
+    pub chat_id: String,              // 会话 ID
+    pub chat_type: String,            // p2p(私聊) / group(群聊)
+    pub sender_id: String,            // 发送者 ID
+    pub msg_type: FeishuMsgType,      // 消息类型
+    pub content: String,              // 消息内容 (JSON)
+    pub mentions: Vec<FeishuMention>, // @提及列表
+    pub parent_id: Option<String>,    // 父消息 ID (回复)
+    pub create_time: i64,             // 创建时间
+}
+```
+
+#### 18.3.4 FeishuChannel — 飞书通道实现
+
+```rust
+pub struct FeishuChannel {
+    config: FeishuConfig,
+    client: Arc<FeishuClient>,
+    event_tx: Arc<RwLock<Option<mpsc::Sender<ChannelEvent>>>>,
+    ws_handle: Option<JoinHandle<()>>,  // WebSocket 连接句柄
+}
+
+impl FeishuChannel {
+    // 建立 WebSocket 长连接到飞书
+    async fn connect(&self) -> Result<()>;
+    // 断开连接
+    async fn disconnect(&self) -> Result<()>;
+    // 处理飞书事件 (消息回调)
+    async fn handle_event(&self, event: FeishuEvent) -> Result<()>;
+    // 将飞书消息转换为 Envelope
+    fn message_to_envelope(&self, msg: &FeishuMessage) -> Envelope;
+    // 将 AgentResponse 转换为飞书消息并发送
+    async fn send_response(&self, response: &AgentResponse, chat_id: &str) -> Result<()>;
+    // 发送流式响应 (实时更新消息卡片)
+    async fn send_streaming_response(&self, stream: TokenStream, chat_id: &str) -> Result<()>;
+    // 发送交互卡片 (状态更新)
+    async fn send_interactive_card(&self, card: FeishuCard, chat_id: &str) -> Result<()>;
+}
+```
+
+### 18.4 消息流转流程
+
+```
+飞书用户发送消息 → 飞书服务器推送事件 → WebSocket 长连接
+    │
+    ▼
+FeishuChannel.handle_event()
+    ├── 1. 解析 FeishuMessage
+    ├── 2. 检查权限 (DM/群聊白名单)
+    ├── 3. 提取文本内容 (处理 @提及)
+    ├── 4. 下载图片/文件 (如果有)
+    └── 5. 转换为 Envelope → AgentRuntime.process(envelope)
+                                    │
+                                    ├── 6. 获取/创建会话
+                                    ├── 7. 注入记忆 (如果有)
+                                    ├── 8. 上下文压缩 (如果需要)
+                                    ├── 9. 调用 LLM
+                                    └── 10. 解析工具调用
+                                    │
+                                    ▼
+                            AgentResponse → FeishuChannel.send_response()
+                                    │
+                                    ├── 11. 转换为飞书消息格式
+                                    ├── 12. 发送消息到飞书
+                                    └── 13. 如果有工具调用, 继续循环
+```
+
+### 18.5 交互卡片设计
+
+```json
+{
+  "config": { "wide_screen_mode": true },
+  "header": {
+    "title": { "tag": "plain_text", "content": "🤖 RustClaw Agent" },
+    "template": "blue"
+  },
+  "elements": [
+    { "tag": "markdown", "content": "**状态**: 思考中..." },
+    {
+      "tag": "action",
+      "actions": [
+        { "tag": "button", "text": {"tag": "plain_text", "content": "停止"}, "type": "danger" },
+        { "tag": "button", "text": {"tag": "plain_text", "content": "重新生成"}, "type": "primary" }
+      ]
+    }
+  ]
+}
+```
+
+### 18.6 安全策略
+
+| 策略 | 默认值 | 说明 |
+|------|--------|------|
+| DM 白名单 | 启用 | 只有白名单用户才能与 Agent 对话 |
+| 群聊授权 | 禁用 | 群聊需要管理员手动授权 |
+| 敏感操作确认 | 启用 | 文件写入/Shell 执行需要确认按钮 |
+| Prompt 注入防护 | 启用 | 复用 MemoryScanner 三重检查 |
+| 频率限制 | 60次/分钟 | 防止滥用 |
+
+### 18.7 Crate 结构
+
+```
+crates/
+└── feishu/              # 新增: 飞书通道
+    ├── src/
+    │   ├── lib.rs       # FeishuChannel 主入口
+    │   ├── config.rs    # FeishuConfig
+    │   ├── client.rs    # FeishuClient (API 调用)
+    │   ├── message.rs   # FeishuMessage 解析和转换
+    │   ├── card.rs      # 交互卡片构建
+    │   ├── websocket.rs # WebSocket 长连接管理
+    │   └── permission.rs # 权限策略检查
+    └── Cargo.toml
+```
+
+### 18.8 新增依赖
+
+```toml
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "stream"] }
+tokio-tungstenite = "0.20"  # WebSocket 客户端
+```
+
+### 18.9 配置 Schema
+
+```toml
+[channels.feishu]
+enabled = true
+app_id = "cli_xxx"
+app_secret = "xxx"
+verification_token = "xxx"
+encrypt_key = "xxx"  # 可选
+dm_enabled = true
+group_enabled = false
+allowed_groups = []
+allowed_users = []
+default_model = "claude-3-5-sonnet-20241022"
+system_prompt = ""
+```
+
+---
+
+*文档版本: v0.36.0*
