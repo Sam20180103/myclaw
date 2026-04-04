@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.41.0
+> 版本: v0.42.0
 > 日期: 2026-04-01
-> 状态: Phase 16 完成 (群聊SystemPrompt注入/心跳保活)
+> 状态: Phase 16 全部完成 (architecture.md 任务清单全勾选)
 
 ---
 
@@ -482,7 +482,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 - [x] 会话谱系 (parent_session_id 链式追踪)
 - [x] 经验回放 (历史会话压缩摘要)
 
-### Phase 16: 飞书通道集成 (2周) ⏳ 规划中
+### Phase 16: 飞书通道集成 (2周) ✅ 完成
 
 **灵感来源**: OpenClaw 官方飞书插件 (larksuite/openclaw-lark, 1.8k ⭐)
 
@@ -507,16 +507,16 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 - 交互卡片消息 (Interactive Card)
 
 **功能特性**:
-- [ ] WebSocket 长连接 (替代 Webhook 轮询)
-- [ ] 群聊/私聊双向消息收发
-- [ ] 消息回复 (Reply) 和话题线程 (Thread)
-- [ ] 图片/文件下载和上传
-- [ ] 交互卡片 (实时状态: Thinking/Generating/Complete)
-- [ ] 流式响应 (卡片内实时更新文本)
-- [ ] 权限策略 (DM/群聊访问控制)
-- [ ] 群配置 (白名单/Skill绑定/自定义System Prompt)
-- [ ] @机器人触发 (支持 @提及 和直接对话)
-- [ ] 安全保护 (默认多层安全策略, 防止 Prompt 注入)
+- [x] WebSocket 长连接 (替代 Webhook 轮询)
+- [x] 群聊/私聊双向消息收发
+- [x] 消息回复 (Reply) 和话题线程 (Thread)
+- [x] 图片/文件下载和上传
+- [x] 交互卡片 (实时状态: Thinking/Generating/Complete)
+- [x] 流式响应 (卡片内实时更新文本)
+- [x] 权限策略 (DM/群聊访问控制)
+- [x] 群配置 (白名单/Skill绑定/自定义System Prompt)
+- [x] @机器人触发 (支持 @提及 和直接对话)
+- [x] 安全保护 (默认多层安全策略, 防止 Prompt 注入)
 
 **飞书 API 集成**:
 - 飞书开放平台 WebSocket 连接
@@ -583,6 +583,8 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.38.0 | 2026-04-01 | Phase 16 完成 (文件API/频率限制/Gateway集成) + 161 tests |
 | v0.39.0 | 2026-04-01 | Phase 16 Gateway 激活 (WebSocketManager.start()) |
 | v0.40.0 | 2026-04-01 | Phase 16 完成 (群聊配置/状态API/文件下载/安全扫描) |
+| v0.41.0 | 2026-04-01 | Phase 16 群聊SystemPrompt注入/心跳保活 |
+| v0.42.0 | 2026-04-01 | Phase 16 全部完成 (architecture.md 任务清单全勾选) |
 
 ---
 
