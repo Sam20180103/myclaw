@@ -1,6 +1,6 @@
 # RustClaw
 
-[![Version](https://img.shields.io/badge/version-v0.38.0-blue.svg)](https://github.com/Sam20180103/myclaw)
+[![Version](https://img.shields.io/badge/version-v0.40.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-161%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)

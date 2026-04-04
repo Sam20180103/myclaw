@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.39.0
+> 版本: v0.40.0
 > 日期: 2026-04-01
-> 状态: Phase 16 飞书通道 Gateway 激活
+> 状态: Phase 16 完成 (群聊配置/状态API/文件下载/安全扫描)
 
 ---
 
@@ -582,6 +582,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.37.0 | 2026-04-01 | Phase 16 飞书通道实现 (客户端/消息/通道/卡片/WebSocket/配置) |
 | v0.38.0 | 2026-04-01 | Phase 16 完成 (文件API/频率限制/Gateway集成) + 161 tests |
 | v0.39.0 | 2026-04-01 | Phase 16 Gateway 激活 (WebSocketManager.start()) |
+| v0.40.0 | 2026-04-01 | Phase 16 完成 (群聊配置/状态API/文件下载/安全扫描) |
 
 ---
 
