@@ -68,7 +68,7 @@ impl FeishuChannel {
         }
 
         // 提取文本内容并进行安全扫描
-        let text = self.extract_text(&msg);
+        let text = self.extract_text(&msg).await;
         if let Err(e) = MemoryScanner::scan(&text) {
             tracing::warn!("Security scan failed for feishu message: {}", e);
             return Ok(());
@@ -176,8 +176,12 @@ impl FeishuChannel {
     /// 将飞书消息转换为 Envelope (已废弃, 使用内联转换代替)
     #[allow(dead_code)]
     fn message_to_envelope(&self, msg: &crate::message::FeishuMessage) -> Envelope {
-        // 提取文本内容
-        let text = self.extract_text(msg);
+        // 注意: 此方法不支持异步文件下载, 仅用于测试
+        let text = match &msg.msg_type {
+            FeishuMsgType::Image => "[图片消息]".to_string(),
+            FeishuMsgType::File => "[文件消息]".to_string(),
+            _ => self.extract_text_sync(msg),
+        };
 
         let message = Message {
             role: Role::User,
@@ -187,8 +191,39 @@ impl FeishuChannel {
         Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message)
     }
 
-    /// 从飞书消息中提取文本内容
-    fn extract_text(&self, msg: &crate::message::FeishuMessage) -> String {
+    /// 同步版本的文本提取 (用于测试和废弃方法)
+    fn extract_text_sync(&self, msg: &crate::message::FeishuMessage) -> String {
+        match &msg.msg_type {
+            FeishuMsgType::Text => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                    json.get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    msg.content.clone()
+                }
+            }
+            FeishuMsgType::Post => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                    self.extract_post_text(&json)
+                } else {
+                    msg.content.clone()
+                }
+            }
+            FeishuMsgType::Image => "[图片消息]".to_string(),
+            FeishuMsgType::File => "[文件消息]".to_string(),
+            FeishuMsgType::Audio => "[语音消息]".to_string(),
+            FeishuMsgType::Media => "[视频消息]".to_string(),
+            FeishuMsgType::Sticker => "[表情消息]".to_string(),
+            FeishuMsgType::Interactive => "[卡片消息]".to_string(),
+            FeishuMsgType::Unknown(t) => format!("[未知消息类型: {}]", t),
+            _ => msg.content.clone(),
+        }
+    }
+
+    /// 从飞书消息中提取文本内容 (支持文件下载)
+    async fn extract_text(&self, msg: &crate::message::FeishuMessage) -> String {
         match &msg.msg_type {
             FeishuMsgType::Text => {
                 // 解析 JSON 文本: {"text": "content"}
@@ -209,8 +244,36 @@ impl FeishuChannel {
                     msg.content.clone()
                 }
             }
-            FeishuMsgType::Image => "[图片消息]".to_string(),
-            FeishuMsgType::File => "[文件消息]".to_string(),
+            FeishuMsgType::Image => {
+                // 图片消息, 尝试下载并生成描述
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                    if let Some(file_key) = json.get("image_key").and_then(|v| v.as_str()) {
+                        match self.client.download_file(file_key).await {
+                            Ok(_) => format!("[图片已下载: {}]", file_key),
+                            Err(e) => format!("[图片下载失败: {}]", e),
+                        }
+                    } else {
+                        "[图片消息]".to_string()
+                    }
+                } else {
+                    "[图片消息]".to_string()
+                }
+            }
+            FeishuMsgType::File => {
+                // 文件消息, 尝试下载
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                    if let Some(file_key) = json.get("file_key").and_then(|v| v.as_str()) {
+                        match self.client.download_file(file_key).await {
+                            Ok(_) => format!("[文件已下载: {}]", file_key),
+                            Err(e) => format!("[文件下载失败: {}]", e),
+                        }
+                    } else {
+                        "[文件消息]".to_string()
+                    }
+                } else {
+                    "[文件消息]".to_string()
+                }
+            }
             FeishuMsgType::Audio => "[语音消息]".to_string(),
             FeishuMsgType::Media => "[视频消息]".to_string(),
             FeishuMsgType::Sticker => "[表情消息]".to_string(),
@@ -335,7 +398,7 @@ mod tests {
             parent_id: None,
             create_time: 0,
         };
-        let text = channel.extract_text(&msg);
+        let text = channel.extract_text_sync(&msg);
         assert_eq!(text, "Hello World");
     }
 
