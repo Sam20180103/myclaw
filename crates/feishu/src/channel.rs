@@ -16,18 +16,21 @@ use tokio::sync::mpsc;
 use crate::config::FeishuConfig;
 use crate::client::FeishuClient;
 use crate::message::{FeishuEvent, FeishuEventMessage, FeishuMsgType};
+use crate::permission::FeishuPermission;
 
 type DefaultRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
 /// 飞书通道 — 实现 Channel trait
 /// 通过飞书开放平台 API 实现与用户的消息交互
 pub struct FeishuChannel {
+    #[allow(dead_code)]
     config: FeishuConfig,
     client: Arc<FeishuClient>,
     event_tx: Arc<RwLock<Option<mpsc::Sender<ChannelEvent>>>>,
     event_rx: Arc<RwLock<Option<mpsc::Receiver<ChannelEvent>>>>,
     #[allow(dead_code)]
     rate_limiter: Arc<DefaultRateLimiter>,
+    permission: FeishuPermission,
 }
 
 impl FeishuChannel {
@@ -38,12 +41,14 @@ impl FeishuChannel {
         // 频率限制: 60次/分钟
         let quota = Quota::per_minute(NonZeroU32::new(60).unwrap());
         let rate_limiter = Arc::new(RateLimiter::direct(quota));
+        let permission = FeishuPermission::new(config.clone());
         Self {
             config,
             client,
             event_tx: Arc::new(RwLock::new(Some(tx))),
             event_rx: Arc::new(RwLock::new(Some(rx))),
             rate_limiter,
+            permission,
         }
     }
 
@@ -59,7 +64,7 @@ impl FeishuChannel {
         let msg = self.parse_event_message(&event.event.message);
 
         // 检查权限
-        if !self.check_permission(&msg.chat_type, &msg.chat_id, &msg.sender_id) {
+        if !self.permission.check_permission(&msg.chat_type, &msg.chat_id, &msg.sender_id) {
             tracing::warn!(
                 "Permission denied for user {} in chat {} ({})",
                 msg.sender_id, msg.chat_id, msg.chat_type
@@ -76,7 +81,7 @@ impl FeishuChannel {
 
         // 构建消息内容 (注入群聊自定义 System Prompt)
         let final_content = if msg.chat_type == "group" {
-            if let Some(group_config) = self.get_group_config(&msg.chat_id) {
+            if let Some(group_config) = self.permission.get_group_config(&msg.chat_id) {
                 if let Some(ref prompt) = group_config.system_prompt {
                     format!("{}\n\n[群聊系统提示]\n{}", prompt, text)
                 } else {
@@ -314,44 +319,6 @@ impl FeishuChannel {
         }
         texts.join("\n")
     }
-
-    /// 获取群聊配置 (如果存在)
-    pub fn get_group_config(&self, group_id: &str) -> Option<&crate::config::GroupConfig> {
-        self.config.group_configs.iter().find(|gc| gc.group_id == group_id)
-    }
-
-    /// 检查权限
-    fn check_permission(&self, chat_type: &str, chat_id: &str, sender_id: &str) -> bool {
-        if chat_type == "p2p" {
-            if !self.config.dm_enabled {
-                return false;
-            }
-            if !self.config.allowed_users.is_empty()
-                && !self.config.allowed_users.contains(&sender_id.to_string())
-            {
-                return false;
-            }
-        } else if chat_type == "group" {
-            if !self.config.group_enabled {
-                return false;
-            }
-            // 检查群聊白名单
-            if !self.config.allowed_groups.is_empty()
-                && !self.config.allowed_groups.contains(&chat_id.to_string())
-            {
-                return false;
-            }
-            // 检查群聊独立配置中的用户白名单
-            if let Some(group_config) = self.get_group_config(chat_id) {
-                if !group_config.allowed_users.is_empty()
-                    && !group_config.allowed_users.contains(&sender_id.to_string())
-                {
-                    return false;
-                }
-            }
-        }
-        true
-    }
 }
 
 #[async_trait]
@@ -441,7 +408,7 @@ mod tests {
             ..Default::default()
         };
         let channel = FeishuChannel::new(config);
-        assert!(channel.check_permission("p2p", "chat_1", "user_1"));
+        assert!(channel.permission.check_permission("p2p", "chat_1", "user_1"));
     }
 
     #[test]
@@ -451,7 +418,7 @@ mod tests {
             ..Default::default()
         };
         let channel = FeishuChannel::new(config);
-        assert!(!channel.check_permission("p2p", "chat_1", "user_1"));
+        assert!(!channel.permission.check_permission("p2p", "chat_1", "user_1"));
     }
 
     #[test]
@@ -464,7 +431,7 @@ mod tests {
             ..Default::default()
         };
         let channel = FeishuChannel::new(config);
-        assert!(channel.check_permission("group", "group_1", "user_1"));
+        assert!(channel.permission.check_permission("group", "group_1", "user_1"));
     }
 
     #[test]
@@ -476,7 +443,7 @@ mod tests {
             ..Default::default()
         };
         let channel = FeishuChannel::new(config);
-        assert!(!channel.check_permission("group", "group_1", "user_1"));
+        assert!(!channel.permission.check_permission("group", "group_1", "user_1"));
     }
 
     #[test]
