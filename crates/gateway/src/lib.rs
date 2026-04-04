@@ -42,7 +42,9 @@ pub struct Gateway {
     skill_manager: Arc<SkillManager>,
     approval_broadcaster: broadcast::Sender<SkillApprovalRequest>,
     channels: Arc<RwLock<HashMap<String, ChannelInfo>>>,
+    #[allow(dead_code)]
     feishu_channel: Option<Arc<FeishuChannel>>,
+    #[allow(dead_code)]
     feishu_ws: Option<Arc<WebSocketManager>>,
 }
 
@@ -268,6 +270,15 @@ impl Gateway {
             .with_state(Arc::new(self.clone()));
 
         info!("Starting Gateway on {}", addr);
+
+        // 启动飞书 WebSocket 连接 (如果配置了)
+        if let Some(ref ws) = self.feishu_ws {
+            info!("Starting Feishu WebSocket connection...");
+            match ws.start().await {
+                Ok(()) => info!("Feishu WebSocket connected"),
+                Err(e) => warn!("Failed to start Feishu WebSocket: {}", e),
+            }
+        }
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
