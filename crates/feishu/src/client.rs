@@ -113,6 +113,41 @@ impl FeishuClient {
         Ok(token)
     }
 
+    pub async fn get_websocket_link(&self) -> Result<String, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = "https://open.feishu.cn/open-apis/ws/v2/link";
+
+        let response = self.client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+
+        tracing::debug!("WebSocket link response: {}", body);
+
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+
+        if json.get("code").and_then(|v| v.as_i64()).unwrap_or(-1) != 0 {
+            let msg = json.get("msg").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            return Err(FeishuError::ApiError(msg.to_string()));
+        }
+
+        let ws_url = json.get("data")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| FeishuError::ApiError("No WebSocket URL in response".to_string()))?
+            .to_string();
+
+        Ok(ws_url)
+    }
+
     /// 发送消息到飞书
     pub async fn send_message(
         &self,

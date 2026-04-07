@@ -271,6 +271,7 @@ impl Gateway {
             .route("/api/config", axum::routing::post(config_update_handler))
             .route("/api/config/save", axum::routing::post(config_save_handler))
             .route("/api/config/model", axum::routing::post(config_model_handler))
+            .route("/api/channel/feishu/status", get(feishu_status_handler))
             .route("/api/channel", axum::routing::get(channel_list_handler))
             .route("/api/channel/{name}", axum::routing::get(channel_get_handler))
             .route("/api/channel/{name}", axum::routing::post(channel_update_handler))
@@ -284,7 +285,6 @@ impl Gateway {
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
             .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
             .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
-            .route("/api/channel/feishu/status", get(feishu_status_handler))
             .layer(cors)
             .with_state(Arc::new(self.clone()));
 

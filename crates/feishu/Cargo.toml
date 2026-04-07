@@ -23,3 +23,6 @@ uuid = { workspace = true }
 futures-util = { workspace = true }
 governor = "0.6"
 rustclaw-memory = { path = "../memory" }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tungstenite = "0.24"
+prost = "0.13"
