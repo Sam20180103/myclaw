@@ -118,7 +118,7 @@ impl FeishuClient {
         let url = "https://open.feishu.cn/open-apis/ws/v2/link";
 
         let response = self.client
-            .get(url)
+            .post(url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
             .await

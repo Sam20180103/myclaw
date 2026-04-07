@@ -104,3 +104,20 @@ pub struct FeishuChallenge {
     pub header: FeishuEventHeader,
     pub challenge: String,
 }
+
+/// 飞书事件确认 (WebSocket ACK)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuEventAck {
+    pub header: FeishuEventAckHeader,
+    pub response: FeishuEventAckResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuEventAckHeader {
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeishuEventAckResponse {
+    pub code: i32,
+}

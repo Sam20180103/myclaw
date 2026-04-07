@@ -14,11 +14,7 @@ use crate::client::FeishuClient;
 use crate::config::FeishuConfig;
 use crate::message::FeishuEvent;
 
-#[derive(Debug, Serialize)]
-struct AuthPayload {
-    app_id: String,
-    app_secret: String,
-}
+
 
 pub struct WebSocketManager {
     config: FeishuConfig,
@@ -137,40 +133,8 @@ impl WebSocketManager {
 
         let (mut write, mut read) = ws_stream.split();
 
-        let auth_payload = AuthPayload {
-            app_id: config.app_id.clone(),
-            app_secret: config.app_secret.clone(),
-        };
-        let auth_json = serde_json::to_string(&auth_payload)?;
-        write
-            .send(WsMessage::Text(auth_json))
-            .await?;
-        tracing::info!("Auth message sent");
-
-        loop {
-            let msg = read.next().await;
-            match msg {
-                Some(Ok(WsMessage::Text(text))) => {
-                    tracing::info!("Received: {}", text);
-                    if text.contains("\"code\":0") || text.contains("\"msg\":\"success\"") {
-                        tracing::info!("Auth acknowledged");
-                        break;
-                    }
-                }
-                Some(Ok(WsMessage::Close(frame))) => {
-                    return Err(anyhow::anyhow!("WebSocket closed: {:?}", frame));
-                }
-                Some(Err(e)) => {
-                    return Err(anyhow::anyhow!("WebSocket error: {}", e));
-                }
-                None => {
-                    return Err(anyhow::anyhow!("WebSocket stream ended"));
-                }
-                Some(Ok(other)) => {
-                    tracing::debug!("Non-text message during auth: {:?}", other);
-                }
-            }
-        }
+        // No manual auth required for ws/v2/link
+        tracing::info!("Waiting for events...");
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -197,12 +161,33 @@ impl WebSocketManager {
                                 if event.header.event_type != "url_verification" {
                                     let ch = channel.clone();
                                     let evt = event.clone();
+                                    let event_id = evt.header.event_id.clone();
+                                    
+                                    // Send ACK first to avoid timeout (3s limit)
+                                    let ack = crate::message::FeishuEventAck {
+                                        header: crate::message::FeishuEventAckHeader {
+                                            event_id: event_id.clone(),
+                                        },
+                                        response: crate::message::FeishuEventAckResponse {
+                                            code: 0,
+                                        },
+                                    };
+                                    if let Ok(ack_json) = serde_json::to_string(&ack) {
+                                        if let Err(e) = write.send(WsMessage::Text(ack_json)).await {
+                                            tracing::warn!("Failed to send ACK for {}: {}", event_id, e);
+                                        } else {
+                                            tracing::debug!("Sent ACK for {}", event_id);
+                                        }
+                                    }
+
                                     tokio::spawn(async move {
                                         if let Err(e) = ch.handle_event(&evt).await {
-                                            tracing::error!("Failed to handle feishu event: {}", e);
+                                            tracing::error!("Failed to handle feishu event {}: {}", event_id, e);
                                         }
                                     });
                                 }
+                            } else if text.contains("\"pong\"") {
+                                tracing::debug!("Received pong from server");
                             }
                         }
                         Some(Ok(WsMessage::Ping(data))) => {
@@ -230,14 +215,4 @@ impl WebSocketManager {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_auth_payload_serialization() {
-        let payload = AuthPayload {
-            app_id: "test_id".to_string(),
-            app_secret: "test_secret".to_string(),
-        };
-        let json = serde_json::to_string(&payload).unwrap();
-        assert!(json.contains("test_id"));
-        assert!(json.contains("test_secret"));
-    }
 }
