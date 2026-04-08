@@ -1,36 +1,29 @@
-use anyhow::Result;
-use futures_util::{SinkExt, StreamExt};
-use parking_lot::RwLock;
-use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
+use anyhow::Result;
+use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio::sync::mpsc;
+use open_lark::Config;
+use open_lark::ws_client::{EventDispatcherHandler, LarkWsClient};
 use tracing;
 
 use crate::channel::FeishuChannel;
-use crate::client::FeishuClient;
 use crate::config::FeishuConfig;
 use crate::message::FeishuEvent;
-
-
 
 pub struct WebSocketManager {
     config: FeishuConfig,
     channel: Arc<FeishuChannel>,
-    client: Arc<FeishuClient>,
     ws_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     is_connected: Arc<RwLock<bool>>,
 }
 
 impl WebSocketManager {
     pub fn new(config: FeishuConfig, channel: Arc<FeishuChannel>) -> Self {
-        let client = Arc::new(FeishuClient::new(config.clone()));
         Self {
             config,
             channel,
-            client,
             ws_handle: Arc::new(RwLock::new(None)),
             is_connected: Arc::new(RwLock::new(false)),
         }
@@ -42,22 +35,97 @@ impl WebSocketManager {
             return Ok(());
         }
 
-        self.client
-            .get_tenant_token()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get feishu token: {}", e))?;
-
-        let config = self.config.clone();
-        let channel = self.channel.clone();
-        let client = self.client.clone();
+        let app_id = self.config.app_id.clone();
+        let app_secret = self.config.app_secret.clone();
         let is_connected = self.is_connected.clone();
+        let channel = self.channel.clone();
 
         let handle = tokio::spawn(async move {
-            Self::run_connection_loop(config, channel, client, is_connected).await;
+            let lark_config = match Config::builder()
+                .app_id(app_id)
+                .app_secret(app_secret)
+                .base_url("https://open.feishu.cn")
+                .timeout(Duration::from_secs(30))
+                .build() {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::error!("Failed to build config: {:?}", e);
+                    return;
+                }
+            };
+
+            let (payload_tx, mut payload_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+            let event_handler = EventDispatcherHandler::builder()
+                .payload_sender(payload_tx)
+                .build();
+
+            tracing::info!("Feishu WebSocket: connecting to Feishu...");
+
+            match LarkWsClient::open(Arc::new(lark_config), event_handler).await {
+                Ok(_) => {
+                    tracing::info!("Feishu WebSocket connection established");
+                    *is_connected.write() = true;
+
+                    tokio::spawn(async move {
+                        while let Some(payload) = payload_rx.recv().await {
+                            let hex_str = payload.iter().take(100).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+                            let ascii_str: String = payload.iter().take(100).map(|&b| {
+                                if b >= 32 && b < 127 { b as char } else { '.' }
+                            }).collect();
+                            tracing::info!("=== Raw WebSocket payload ===");
+                            tracing::info!("Length: {} bytes", payload.len());
+                            tracing::info!("Hex: {}", hex_str);
+                            tracing::info!("ASCII: {}", ascii_str);
+                            
+                            let payload_str = String::from_utf8_lossy(&payload);
+                            tracing::debug!("Raw payload string: {}", payload_str.chars().take(500).collect::<String>());
+                            
+                            match serde_json::from_slice::<FeishuEvent>(&payload) {
+                                Ok(event) => {
+                                    tracing::info!("✓ Parsed as FeishuEvent: type={}, event_id={}", 
+                                        event.header.event_type, event.header.event_id);
+                                    
+                                    if event.header.event_type == "url_verification" {
+                                        tracing::info!("URL verification challenge, skipping");
+                                        continue;
+                                    }
+                                    
+                                    let ch = channel.clone();
+                                    let evt = event.clone();
+                                    let event_id = evt.header.event_id.clone();
+
+                                    tracing::debug!("Calling handle_event for event {}", event_id);
+
+                                    tokio::spawn(async move {
+                                        if let Err(e) = ch.handle_event(&evt).await {
+                                            tracing::error!("Failed to handle feishu event {}: {}", event_id, e);
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!("✗ JSON parse failed: {}", e);
+                                    tracing::info!("Trying binary protobuf decode...");
+                                }
+                            }
+                        }
+                    });
+
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Feishu WebSocket connection failed: {:?}", e);
+                    *is_connected.write() = false;
+                }
+            }
         });
 
         *self.ws_handle.write() = Some(handle);
         *self.is_connected.write() = true;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         tracing::info!("Feishu WebSocket connection started");
         Ok(())
@@ -75,144 +143,8 @@ impl WebSocketManager {
     pub fn is_connected(&self) -> bool {
         *self.is_connected.read()
     }
-
-    async fn run_connection_loop(
-        config: FeishuConfig,
-        channel: Arc<FeishuChannel>,
-        client: Arc<FeishuClient>,
-        is_connected: Arc<RwLock<bool>>,
-    ) {
-        let mut retry_count = 0u32;
-        let max_retries = 50;
-
-        loop {
-            match Self::connect_and_listen(&config, &channel, &client).await {
-                Ok(()) => {
-                    tracing::info!("Feishu WebSocket connection closed normally");
-                    retry_count = 0;
-                }
-                Err(e) => {
-                    retry_count += 1;
-                    if retry_count >= max_retries {
-                        tracing::error!(
-                            "Max retries reached, stopping WebSocket connection: {}",
-                            e
-                        );
-                        *is_connected.write() = false;
-                        break;
-                    }
-
-                    let delay = std::cmp::min(2u64.pow(retry_count.min(5)) * 1000, 30000);
-                    tracing::warn!(
-                        "WebSocket connection failed (retry {}/{}): {}. Reconnecting in {}ms...",
-                        retry_count,
-                        max_retries,
-                        e,
-                        delay
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-            }
-        }
-    }
-
-    async fn connect_and_listen(
-        config: &FeishuConfig,
-        channel: &Arc<FeishuChannel>,
-        client: &Arc<FeishuClient>,
-    ) -> Result<()> {
-        let ws_url = client.get_websocket_link().await?;
-        tracing::info!("WebSocket URL: {}", ws_url);
-
-        let (ws_stream, response) = connect_async(ws_url.as_str())
-            .await
-            .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
-
-        tracing::info!("WebSocket response status: {}", response.status());
-        tracing::info!("Feishu WebSocket connection established");
-
-        let (mut write, mut read) = ws_stream.split();
-
-        // No manual auth required for ws/v2/link
-        tracing::info!("Waiting for events...");
-
-        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
-        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                _ = heartbeat_interval.tick() => {
-                    let hb = serde_json::json!({
-                        "type": "ping",
-                        "timestamp": chrono::Utc::now().timestamp_millis()
-                    });
-                    if let Err(e) = write.send(WsMessage::Text(hb.to_string())).await {
-                        tracing::warn!("Failed to send heartbeat: {}", e);
-                        return Err(anyhow::anyhow!("Heartbeat failed: {}", e));
-                    }
-                    tracing::debug!("Heartbeat sent");
-                }
-
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(WsMessage::Text(text))) => {
-                            tracing::debug!("Event received: {}", text);
-                            if let Ok(event) = serde_json::from_str::<FeishuEvent>(&text) {
-                                if event.header.event_type != "url_verification" {
-                                    let ch = channel.clone();
-                                    let evt = event.clone();
-                                    let event_id = evt.header.event_id.clone();
-                                    
-                                    // Send ACK first to avoid timeout (3s limit)
-                                    let ack = crate::message::FeishuEventAck {
-                                        header: crate::message::FeishuEventAckHeader {
-                                            event_id: event_id.clone(),
-                                        },
-                                        response: crate::message::FeishuEventAckResponse {
-                                            code: 0,
-                                        },
-                                    };
-                                    if let Ok(ack_json) = serde_json::to_string(&ack) {
-                                        if let Err(e) = write.send(WsMessage::Text(ack_json)).await {
-                                            tracing::warn!("Failed to send ACK for {}: {}", event_id, e);
-                                        } else {
-                                            tracing::debug!("Sent ACK for {}", event_id);
-                                        }
-                                    }
-
-                                    tokio::spawn(async move {
-                                        if let Err(e) = ch.handle_event(&evt).await {
-                                            tracing::error!("Failed to handle feishu event {}: {}", event_id, e);
-                                        }
-                                    });
-                                }
-                            } else if text.contains("\"pong\"") {
-                                tracing::debug!("Received pong from server");
-                            }
-                        }
-                        Some(Ok(WsMessage::Ping(data))) => {
-                            let _ = write.send(WsMessage::Pong(data)).await;
-                        }
-                        Some(Ok(WsMessage::Close(frame))) => {
-                            tracing::info!("WebSocket closed: {:?}", frame);
-                            return Err(anyhow::anyhow!("WebSocket closed: {:?}", frame));
-                        }
-                        Some(Err(e)) => {
-                            return Err(anyhow::anyhow!("WebSocket error: {}", e));
-                        }
-                        None => {
-                            return Err(anyhow::anyhow!("WebSocket stream ended"));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
 }

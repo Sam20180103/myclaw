@@ -21,7 +21,7 @@ DEFAULT_WORKDIR="."
 DEFAULT_EXTRA_OPTS=""
 DEFAULT_LOG_FILE="/tmp/opencode-loop.log"
 DEFAULT_TIMEOUT="300"
-DEFAULT_FALLBACK_MODELS="opencode/gpt-5-nano,opencode/trinity-large-preview-free"
+DEFAULT_FALLBACK_MODELS="opencode/gpt-5-nano,opencode/trinity-large-preview-free,opencode/claude-3.5-sonnet-free"
 
 load_config
 
@@ -164,7 +164,7 @@ build_cmd() {
 check_error() {
     local output="$1"
     
-    if echo "$output" | grep -qiE "quota|token.*(limit|exceed|insufficient)|credits?|rate.*limit|api.*(error|key).*(invalid|expired)|authentication.*fail|unauthorized|401|429|403"; then
+    if echo "$output" | grep -qiE "quota|token.*(limit|exceed|insufficient)|credits?|rate.*limit|api.*(error|key).*(invalid|expired)|authentication.*fail|unauthorized|401|429|403|Request rate increased too quickly|upstream.*error.*alibaba|dashscope"; then
         return 0
     fi
     return 1
@@ -208,9 +208,16 @@ execute_prompt() {
     log_info "⏳ 执行中..."
     
     local exit_code=0
+    local output
     
-    $cmd
-    exit_code=$?
+    output=$($cmd 2>&1) || exit_code=$?
+    
+    echo "$output" | tee -a "$LOG_FILE"
+    
+    if check_error "$output"; then
+        log_error "❌ 检测到 API 错误 (rate limit/quota/invalid)"
+        return 2
+    fi
     
     if [[ $exit_code -eq 0 ]]; then
         log_info "✅ 执行成功"
@@ -226,6 +233,8 @@ run_with_fallback() {
     local model="$2"
     local attempt=1
     local model_count
+    local retry_attempt=0
+    local max_retries=3
     model_count=$(echo "$FALLBACK_MODELS" | awk -F',' '{print NF}')
     local max_attempts=$((model_count + 1))
     
@@ -241,6 +250,14 @@ run_with_fallback() {
         fi
         
         if [[ $result -eq 2 ]]; then
+            if [[ $retry_attempt -lt $max_retries ]]; then
+                local wait_time=$(( (2 ** retry_attempt) * 5 ))
+                log_warn "🔄 检测到限流，等待 ${wait_time}s 后重试 (${retry_attempt}/${max_retries})"
+                sleep $wait_time
+                retry_attempt=$((retry_attempt + 1))
+                continue
+            fi
+            
             local next_model
             next_model=$(get_next_model "$model")
             
@@ -248,6 +265,7 @@ run_with_fallback() {
                 log_warn "🔄 切换模型: $model -> $next_model"
                 model="$next_model"
                 CURRENT_MODEL="$model"
+                retry_attempt=0
             else
                 log_error "没有更多备用模型"
                 return 1
@@ -303,7 +321,8 @@ main() {
             echo -e "${BLUE}▶ 执行: $PROMPT${NC}"
             run_with_fallback "$PROMPT" "$CURRENT_MODEL"
             echo ""
-            sleep 2
+            log_info "⏳ 等待 30s 后继续 (防止限流)..."
+            sleep 30
         done
         log_info "👋 退出循环"
     elif [[ -n "$PROMPT" || "$FORCE_LOOP" == "true" ]]; then

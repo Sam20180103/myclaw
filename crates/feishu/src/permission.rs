@@ -1,6 +1,7 @@
 use crate::config::FeishuConfig;
 
 /// 飞书权限检查器 — 管理 DM/群聊访问控制
+#[derive(Clone)]
 pub struct FeishuPermission {
     config: FeishuConfig,
 }

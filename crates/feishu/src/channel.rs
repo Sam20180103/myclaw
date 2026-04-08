@@ -22,12 +22,13 @@ type DefaultRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
 /// 飞书通道 — 实现 Channel trait
 /// 通过飞书开放平台 API 实现与用户的消息交互
+#[derive(Clone)]
 pub struct FeishuChannel {
     #[allow(dead_code)]
     config: FeishuConfig,
     client: Arc<FeishuClient>,
     event_tx: Arc<RwLock<Option<mpsc::Sender<ChannelEvent>>>>,
-    event_rx: Arc<RwLock<Option<mpsc::Receiver<ChannelEvent>>>>,
+    event_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<ChannelEvent>>>,
     #[allow(dead_code)]
     rate_limiter: Arc<DefaultRateLimiter>,
     permission: FeishuPermission,
@@ -46,7 +47,7 @@ impl FeishuChannel {
             config,
             client,
             event_tx: Arc::new(RwLock::new(Some(tx))),
-            event_rx: Arc::new(RwLock::new(Some(rx))),
+            event_rx: Arc::new(tokio::sync::Mutex::new(rx)),
             rate_limiter,
             permission,
         }
@@ -62,6 +63,8 @@ impl FeishuChannel {
 
         // 解析消息
         let msg = self.parse_event_message(&event.event.message);
+        tracing::debug!("Parsed message: chat_type={}, chat_id={}, sender_id={}", 
+            msg.chat_type, msg.chat_id, msg.sender_id);
 
         // 检查权限
         if !self.permission.check_permission(&msg.chat_type, &msg.chat_id, &msg.sender_id) {
@@ -74,6 +77,7 @@ impl FeishuChannel {
 
         // 提取文本内容并进行安全扫描
         let text = self.extract_text(&msg).await;
+        tracing::debug!("Extracted text: {}", text);
         if let Err(e) = MemoryScanner::scan(&text) {
             tracing::warn!("Security scan failed for feishu message: {}", e);
             return Ok(());
@@ -94,16 +98,29 @@ impl FeishuChannel {
             text
         };
 
-        // 转换为 Envelope 并发送
+        tracing::debug!("Sending to agent: session_key=feishu_{}_{}", msg.chat_type, msg.chat_id);
+
         let message = Message {
             role: Role::User,
             content: Content::text(final_content),
         };
         let envelope = Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message);
 
-        let tx = self.event_tx.read().clone();
-        if let Some(tx) = tx.as_ref() {
-            tx.send(ChannelEvent::Message(envelope)).await?;
+        let sender = {
+            let tx = self.event_tx.read();
+            tx.clone()
+        };
+
+        tracing::debug!("event_tx sender: {:?}", sender.is_some());
+
+        if let Some(sender) = sender {
+            let env = envelope.clone();
+            match sender.send(ChannelEvent::Message(env)).await {
+                Ok(_) => tracing::info!("Message sent to channel: session_key={}", envelope.session_key),
+                Err(e) => tracing::error!("Failed to send message: {}", e),
+            }
+        } else {
+            tracing::error!("event_tx is None!");
         }
 
         Ok(())
@@ -120,7 +137,7 @@ impl FeishuChannel {
         let content = json!({"text": text}).to_string();
 
         self.client
-            .send_message(chat_id, "chat_id", "text", &content)
+            .send_message(chat_id, "open_id", "text", &content)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
 
@@ -143,7 +160,7 @@ impl FeishuChannel {
         // 发送文本响应
         let content = json!({"text": text}).to_string();
         self.client
-            .send_message(chat_id, "chat_id", "text", &content)
+            .send_message(chat_id, "open_id", "text", &content)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
 
@@ -337,9 +354,7 @@ impl Channel for FeishuChannel {
     }
 
     async fn disconnect(&self) -> Result<()> {
-        // 清空事件队列
-        *self.event_tx.write() = None;
-        *self.event_rx.write() = None;
+        self.event_tx.write().take();
         tracing::info!("Feishu channel disconnected");
         Ok(())
     }
@@ -356,7 +371,7 @@ impl Channel for FeishuChannel {
 
         let content = json!({"text": text}).to_string();
         self.client
-            .send_message(chat_id, "chat_id", "text", &content)
+            .send_message(chat_id, "open_id", "text", &content)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
 
@@ -364,8 +379,13 @@ impl Channel for FeishuChannel {
     }
 
     fn events(&self) -> EventStream {
-        // 创建一个空的事件流 (实际事件通过 handle_event 发送)
-        Box::pin(futures_util::stream::iter(vec![]))
+        let rx = self.event_rx.clone();
+        Box::pin(async_stream::stream! {
+            let mut rx = rx.lock().await;
+            while let Some(event) = rx.recv().await {
+                yield event;
+            }
+        })
     }
 }
 

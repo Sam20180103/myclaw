@@ -20,6 +20,7 @@ use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequ
 use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
 use rustclaw_feishu::{FeishuChannel, FeishuConfig, WebSocketManager};
+use rustclaw_channel::{Channel, ChannelEvent};
 
 const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
@@ -101,8 +102,8 @@ impl Gateway {
             session_ttl_seconds: 3600,
             max_concurrent_per_lane: config.agent.max_concurrent_sessions,
         };
-        let agent = AgentRuntime::new(agent_config)
-            .with_provider(provider_client);
+        let agent = Arc::new(AgentRuntime::new(agent_config)
+            .with_provider(provider_client));
 
         let gateway_config = GatewayConfig {
             host: config.gateway.host.clone(),
@@ -190,12 +191,14 @@ impl Gateway {
             Arc::new(ws)
         });
 
+        // Feishu channel is now handled via WebSocket, no need to set_agent
+
         Self {
             config: gateway_config,
             full_config: config,
             config_path,
             sessions: Arc::new(RwLock::new(HashMap::with_capacity(64))),
-            agent: Arc::new(agent),
+            agent,
             skill_manager,
             approval_broadcaster: approval_tx,
             channels: Arc::new(RwLock::new(channels)),
@@ -298,6 +301,29 @@ impl Gateway {
                 Err(e) => warn!("Failed to start Feishu WebSocket: {}", e),
             }
         }
+
+        // 启动飞书消息处理循环
+        if let Some(feishu_ch) = self.feishu_channel.as_ref() {
+            let feishu_ch = feishu_ch.clone();
+            let agent = self.agent.clone();
+            tokio::spawn(async move {
+                use futures_util::StreamExt;
+                let mut events = feishu_ch.events();
+                while let Some(event) = events.next().await {
+                    match event {
+                        ChannelEvent::Message(envelope) => {
+                            info!("Feishu message received: {}", envelope.session_key);
+                            if let Err(e) = agent.process(envelope).await {
+                                error!("Failed to process feishu message: {}", e);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+
+        // Note: Feishu event processor is now handled via WebSocket connection
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;

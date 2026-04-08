@@ -49,6 +49,7 @@ struct SendMessageData {
 }
 
 /// 飞书 API 客户端 — 封装飞书开放平台 API 调用
+#[derive(Clone)]
 pub struct FeishuClient {
     config: FeishuConfig,
     /// 租户访问令牌 (自动刷新)

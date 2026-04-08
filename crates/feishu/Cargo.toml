@@ -21,8 +21,13 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 futures-util = { workspace = true }
+async-stream = { workspace = true }
 governor = "0.6"
 rustclaw-memory = { path = "../memory" }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tungstenite = "0.24"
 prost = "0.13"
+
+# OpenLark - 飞书非官方 SDK
+openlark = { git = "https://github.com/foxzool/openlark", tag = "v0.15.0", features = ["websocket"] }
+lark-websocket-protobuf = "0.1"
