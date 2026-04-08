@@ -29,5 +29,5 @@ tungstenite = "0.24"
 prost = "0.13"
 
 # OpenLark - 飞书非官方 SDK
-openlark = { git = "https://github.com/foxzool/openlark", tag = "v0.15.0", features = ["websocket"] }
+open_lark = { package = "open-lark", git = "https://github.com/foxzool/openlark", tag = "v0.14.0", features = ["websocket", "im"] }
 lark-websocket-protobuf = "0.1"

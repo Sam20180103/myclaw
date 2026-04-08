@@ -316,6 +316,9 @@ impl AgentRuntime {
     }
 
     pub async fn process(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
+        tracing::debug!("Agent processing envelope: channel={}, session_key={}", 
+            envelope.channel, envelope.session_key);
+        
         let session_key = &envelope.session_key;
         let lane = self.lane_router.route(session_key);
         
@@ -348,12 +351,21 @@ impl AgentRuntime {
             }
         }
 
+        tracing::debug!("Agent about to call LLM with {} messages", messages.len());
+        
         let response_text = match self.provider_client.complete(messages).await {
-            Ok(text) => text,
-            Err(e) => return Err(AgentError::ProviderError(e.to_string())),
+            Ok(text) => {
+                tracing::debug!("LLM response received: {} chars", text.len());
+                text
+            },
+            Err(e) => {
+                tracing::error!("LLM call failed: {}", e);
+                return Err(AgentError::ProviderError(e.to_string()));
+            },
         };
 
         let tool_calls = self.parse_tool_calls(&response_text);
+        tracing::debug!("Parsed {} tool calls from response", tool_calls.len());
 
         Ok(AgentResponse {
             session_key: session_key.to_string(),

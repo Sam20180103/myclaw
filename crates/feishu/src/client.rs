@@ -125,12 +125,13 @@ impl FeishuClient {
             .await
             .map_err(|e| FeishuError::HttpError(e.to_string()))?;
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        tracing::info!("!!! [DEBUG] Raw WebSocket link response (Status {}): {} !!!", status, body);
 
-        tracing::debug!("WebSocket link response: {}", body);
+        if !status.is_success() {
+            return Err(FeishuError::ApiError(format!("HTTP {}: {}", status, body)));
+        }
 
         let json: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| FeishuError::ParseError(e.to_string()))?;

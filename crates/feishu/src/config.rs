@@ -36,7 +36,7 @@ impl Default for FeishuConfig {
             default_model: None,
             system_prompt: None,
             dm_enabled: true,
-            group_enabled: false,
+            group_enabled: true,
             allowed_groups: vec![],
             allowed_users: vec![],
             group_configs: vec![],

@@ -53,6 +53,16 @@ impl FeishuChannel {
         }
     }
 
+    /// 获取配置
+    pub fn config(&self) -> &FeishuConfig {
+        &self.config
+    }
+
+    /// 获取飞书 API 客户端
+    pub fn client(&self) -> Arc<FeishuClient> {
+        self.client.clone()
+    }
+
     /// 处理飞书事件
     pub async fn handle_event(&self, event: &FeishuEvent) -> Result<()> {
         // 频率限制检查
@@ -61,10 +71,18 @@ impl FeishuChannel {
             return Ok(());
         }
 
+        // 提取发送者 ID
+        let sender_open_id = event.event.sender.sender_id.open_id.as_deref().unwrap_or("unknown");
+
         // 解析消息
-        let msg = self.parse_event_message(&event.event.message);
-        tracing::debug!("Parsed message: chat_type={}, chat_id={}, sender_id={}", 
-            msg.chat_type, msg.chat_id, msg.sender_id);
+        let mut msg = self.parse_event_message(&event.event.message);
+        msg.sender_id = sender_open_id.to_string(); // 修正 sender_id
+
+        tracing::info!("Received Feishu Message: chat_id={}, sender_id={}, type={:?}, content_len={}", 
+            msg.chat_id, msg.sender_id, msg.msg_type, msg.content.len());
+        
+        // 调试打印原始内容
+        tracing::debug!("Raw message content: {}", msg.content);
 
         // 检查权限
         if !self.permission.check_permission(&msg.chat_type, &msg.chat_id, &msg.sender_id) {
@@ -77,13 +95,17 @@ impl FeishuChannel {
 
         // 提取文本内容并进行安全扫描
         let text = self.extract_text(&msg).await;
-        tracing::debug!("Extracted text: {}", text);
+        if text.is_empty() {
+            tracing::warn!("Extracted text is empty, skipping");
+            return Ok(());
+        }
+
         if let Err(e) = MemoryScanner::scan(&text) {
             tracing::warn!("Security scan failed for feishu message: {}", e);
             return Ok(());
         }
 
-        // 构建消息内容 (注入群聊自定义 System Prompt)
+        // 构建消息内容
         let final_content = if msg.chat_type == "group" {
             if let Some(group_config) = self.permission.get_group_config(&msg.chat_id) {
                 if let Some(ref prompt) = group_config.system_prompt {
@@ -98,73 +120,89 @@ impl FeishuChannel {
             text
         };
 
-        tracing::debug!("Sending to agent: session_key=feishu_{}_{}", msg.chat_type, msg.chat_id);
-
+        // 使用 chat_id 和 sender_id 构建 session_key
+        // 格式: {chat_type}:{chat_id}:{sender_id}
+        let session_key = format!("{}:{}:{}", msg.chat_type, msg.chat_id, msg.sender_id);
+        
         let message = Message {
             role: Role::User,
             content: Content::text(final_content),
         };
-        let envelope = Envelope::new("feishu", &format!("{}_{}", msg.chat_type, msg.chat_id), message);
+        let envelope = Envelope::new("feishu", &session_key, message);
 
         let sender = {
             let tx = self.event_tx.read();
             tx.clone()
         };
 
-        tracing::debug!("event_tx sender: {:?}", sender.is_some());
-
         if let Some(sender) = sender {
             let env = envelope.clone();
             match sender.send(ChannelEvent::Message(env)).await {
-                Ok(_) => tracing::info!("Message sent to channel: session_key={}", envelope.session_key),
-                Err(e) => tracing::error!("Failed to send message: {}", e),
+                Ok(_) => tracing::info!("Message queued for agent: session_key={}", envelope.session_key),
+                Err(e) => tracing::error!("Failed to queue message: {}", e),
             }
-        } else {
-            tracing::error!("event_tx is None!");
         }
 
         Ok(())
     }
 
     /// 发送 Agent 响应到飞书
-    pub async fn send_response(&self, response: &AgentResponse, chat_id: &str) -> Result<()> {
+    pub async fn send_response(&self, response: &AgentResponse, session_key: &str) -> Result<()> {
         let text = match &response.message.content {
             Content::Text(t) => t.clone(),
             Content::Structured { text, .. } => text.clone().unwrap_or_default(),
         };
 
-        // 飞书文本消息内容格式: {"text": "content"}
         let content = json!({"text": text}).to_string();
+        
+        // 解析 session_key 获取回复地址
+        let parts: Vec<&str> = session_key.split(':').collect();
+        if parts.len() == 3 {
+            let chat_type = parts[0];
+            let chat_id = parts[1];
+            let sender_id = parts[2];
 
-        self.client
-            .send_message(chat_id, "open_id", "text", &content)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
-
-        Ok(())
+            if chat_type == "p2p" {
+                // 私聊优先发给 open_id
+                self.send_raw(sender_id, "text", &content).await
+            } else {
+                // 群聊发给 chat_id
+                self.send_raw(chat_id, "text", &content).await
+            }
+        } else {
+            // 回退逻辑
+            self.send_raw(session_key, "text", &content).await
+        }
     }
 
-    /// 发送流式响应 (先发送思考中卡片, 然后发送文本消息)
+    /// 统一发送逻辑, 自动检测 ID 类型
+    async fn send_raw(&self, id: &str, msg_type: &str, content: &str) -> Result<()> {
+        let id_type = if id.starts_with("ou_") {
+            "open_id"
+        } else if id.starts_with("oc_") {
+            "chat_id"
+        } else {
+            "chat_id"
+        };
+
+        tracing::info!("Calling Feishu API to send: id={}, id_type={}", id, id_type);
+
+        match self.client.send_message(id, id_type, msg_type, content).await {
+            Ok(msg_id) => {
+                tracing::info!("Feishu message SENT successfully. MessageID: {}", msg_id);
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Feishu API delivery FAILED: {}", e);
+                Err(anyhow::anyhow!("Feishu delivery error: {}", e))
+            }
+        }
+    }
+
+    /// 发送流式响应
     pub async fn send_streaming_response(&self, text: &str, chat_id: &str) -> Result<()> {
-        // 先发送思考中卡片
-        let thinking_card = crate::card::FeishuCard::thinking_card();
-        let card_json: serde_json::Value = serde_json::from_str(&thinking_card.to_json()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize thinking card: {}", e))?)
-            .map_err(|e| anyhow::anyhow!("Failed to parse card JSON: {}", e))?;
-
-        self.client
-            .send_card(chat_id, "chat_id", card_json)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send thinking card: {}", e))?;
-
-        // 发送文本响应
         let content = json!({"text": text}).to_string();
-        self.client
-            .send_message(chat_id, "open_id", "text", &content)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
-
-        Ok(())
+        self.send_raw(chat_id, "text", &content).await
     }
 
     /// 发送交互卡片 (用于状态更新)
@@ -360,22 +398,21 @@ impl Channel for FeishuChannel {
     }
 
     async fn send(&self, envelope: Envelope) -> Result<()> {
-        // 从 session_key 提取 chat_id (格式: "{chat_type}_{chat_id}")
-        let parts: Vec<&str> = envelope.session_key.splitn(2, '_').collect();
-        let chat_id = if parts.len() == 2 { parts[1] } else { &envelope.session_key };
-
         let text = match envelope.message.content {
             Content::Text(t) => t,
             Content::Structured { text, .. } => text.unwrap_or_default(),
         };
 
-        let content = json!({"text": text}).to_string();
-        self.client
-            .send_message(chat_id, "open_id", "text", &content)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send feishu message: {}", e))?;
+        let response = AgentResponse {
+            session_key: envelope.session_key,
+            message: Message {
+                role: Role::Assistant,
+                content: Content::text(text),
+            },
+            tool_calls: vec![],
+        };
 
-        Ok(())
+        self.send_response(&response, &response.session_key).await
     }
 
     fn events(&self) -> EventStream {

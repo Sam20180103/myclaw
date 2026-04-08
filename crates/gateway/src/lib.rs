@@ -293,16 +293,7 @@ impl Gateway {
 
         info!("Starting Gateway on {}", addr);
 
-        // 启动飞书 WebSocket 连接 (如果配置了)
-        if let Some(ref ws) = self.feishu_ws {
-            info!("Starting Feishu WebSocket connection...");
-            match ws.start().await {
-                Ok(()) => info!("Feishu WebSocket connected"),
-                Err(e) => warn!("Failed to start Feishu WebSocket: {}", e),
-            }
-        }
-
-        // 启动飞书消息处理循环
+        // 启动飞书消息处理循环 (在启动连接之前, 确保消息能被处理)
         if let Some(feishu_ch) = self.feishu_channel.as_ref() {
             let feishu_ch = feishu_ch.clone();
             let agent = self.agent.clone();
@@ -312,15 +303,39 @@ impl Gateway {
                 while let Some(event) = events.next().await {
                     match event {
                         ChannelEvent::Message(envelope) => {
-                            info!("Feishu message received: {}", envelope.session_key);
-                            if let Err(e) = agent.process(envelope).await {
-                                error!("Failed to process feishu message: {}", e);
-                            }
+                            info!("Feishu message received: session_key={}", envelope.session_key);
+                            let ch = feishu_ch.clone();
+                            let ag = agent.clone();
+                            tokio::spawn(async move {
+                                match ag.process_with_loop(envelope).await {
+                                    Ok(response) => {
+                                        info!("Feishu message processed, sending response: session_key={}", response.session_key);
+                                        let response_env = Envelope::new(
+                                            "feishu",
+                                            &response.session_key,
+                                            response.message,
+                                        );
+                                        if let Err(e) = ch.send(response_env).await {
+                                            error!("Failed to send response to feishu: {}", e);
+                                        }
+                                    }
+                                    Err(e) => error!("Failed to process feishu message: {}", e),
+                                }
+                            });
                         }
                         _ => {}
                     }
                 }
             });
+        }
+
+        // 启动飞书 WebSocket 连接 (如果配置了)
+        if let Some(ref ws) = self.feishu_ws {
+            info!("Starting Feishu WebSocket connection...");
+            match ws.start().await {
+                Ok(()) => info!("Feishu WebSocket started (connecting in background)"),
+                Err(e) => warn!("Failed to start Feishu WebSocket: {}", e),
+            }
         }
 
         // Note: Feishu event processor is now handled via WebSocket connection
