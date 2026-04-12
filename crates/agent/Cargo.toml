@@ -16,6 +16,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }
+regex = "1.10"
+dashmap = "5.5"
 rustclaw-protocol = { path = "../protocol" }
 rustclaw-provider = { path = "../provider" }
 rustclaw-tool = { path = "../tool" }

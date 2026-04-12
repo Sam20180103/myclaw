@@ -155,6 +155,7 @@ struct OpenAiChoice {
 
 #[derive(Deserialize)]
 struct OpenAiMessageResponse {
+    #[serde(default)]
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCall>>,

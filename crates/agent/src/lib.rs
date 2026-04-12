@@ -32,6 +32,8 @@ pub enum AgentEvent {
 /// 事件回调类型 — 用于外部监听 Agent 运行事件
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
 
+use dashmap::DashMap;
+
 /// Agent 运行时 — 核心执行引擎
 /// 负责管理会话、执行 Agent 推理循环、调用工具和 LLM
 pub struct AgentRuntime {
@@ -44,6 +46,7 @@ pub struct AgentRuntime {
     context_compressor: Option<Arc<ContextCompressor>>, // 可选: 上下文压缩器
     event_callback: Option<Arc<EventCallback>>, // 可选: 事件回调
     iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
+    session_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>, // 会话锁
 }
 
 /// Agent 配置
@@ -130,13 +133,19 @@ impl SessionManager {
 
     /// 获取或创建会话 (原子操作,避免竞态条件)
     pub fn get_or_create(&self, key: &str, channel: &str, lane: &str) -> Session {
-        let mut sessions = self.sessions.write();
-        if let Some(session) = sessions.get(key) {
-            let mut session = session.clone();
-            session.last_accessed = Instant::now();
-            sessions.insert(key.to_string(), session.clone());
-            return session;
+        {
+            let sessions = self.sessions.read();
+            if let Some(session) = sessions.get(key) {
+                return session.clone();
+            }
         }
+
+        let mut sessions = self.sessions.write();
+        // Double check after acquiring write lock
+        if let Some(session) = sessions.get(key) {
+            return session.clone();
+        }
+
         let session = Session {
             key: key.to_string(),
             lane: lane.to_string(),
@@ -271,6 +280,7 @@ impl AgentRuntime {
             context_compressor: None,
             event_callback: None,
             iteration_budget: None,
+            session_locks: DashMap::new(),
         }
     }
 
@@ -376,7 +386,7 @@ impl AgentRuntime {
             },
         };
 
-        let tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
+        let mut tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
             ToolCall {
                 id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 name: tc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -384,20 +394,36 @@ impl AgentRuntime {
             }
         }).collect();
 
+        if tool_calls.is_empty() {
+            tool_calls = self.parse_tool_calls(&response_text);
+        }
+
         tracing::debug!("Parsed {} tool calls from response", tool_calls.len());
+
+        let assistant_message = Message {
+            role: Role::Assistant,
+            content: Content::text(response_text.clone()),
+        };
+        self.session_manager.add_message(session_key, assistant_message.clone());
 
         Ok(AgentResponse {
             session_key: session_key.to_string(),
-            message: Message {
-                role: Role::Assistant,
-                content: Content::text(response_text),
-            },
+            message: assistant_message,
             tool_calls,
         })
     }
 
     pub async fn process_with_loop(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
         let session_key = envelope.session_key.clone();
+
+        // 1. Acquire session lock
+        let lock = self.session_locks.entry(session_key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+        
+        let _guard = lock.lock().await;
+
         let lane = self.lane_router.route(&session_key);
         
         self.session_manager.get_or_create(&session_key, &envelope.channel, &lane);
@@ -451,13 +477,17 @@ impl AgentRuntime {
                 }
             };
 
-            let tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
+            let mut tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
                 ToolCall {
                     id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     name: tc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     arguments: tc.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
                 }
             }).collect();
+
+            if tool_calls.is_empty() {
+                tool_calls = self.parse_tool_calls(&response_text);
+            }
 
             if tool_calls.is_empty() {
                 if total_tool_calls >= 5 {
@@ -467,12 +497,16 @@ impl AgentRuntime {
                     });
                 }
                 self.emit_event(AgentEvent::Status { status: "completed".to_string() });
+                
+                let assistant_message = Message {
+                    role: Role::Assistant,
+                    content: Content::text(response_text.clone()),
+                };
+                self.session_manager.add_message(&session_key, assistant_message.clone());
+
                 return Ok(AgentResponse {
                     session_key,
-                    message: Message {
-                        role: Role::Assistant,
-                        content: Content::text(response_text),
-                    },
+                    message: assistant_message,
                     tool_calls: vec![],
                 });
             }
@@ -523,18 +557,174 @@ impl AgentRuntime {
     }
 
     fn parse_tool_calls(&self, response: &str) -> Vec<ToolCall> {
+        let mut tool_calls = Vec::new();
+
+        // 1. Try to parse the entire response as JSON (native tool calls format)
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(response) {
             if let Some(calls) = json.get("tool_calls").and_then(|v| v.as_array()) {
-                return calls.iter().filter_map(|c| {
-                    Some(ToolCall {
-                        id: c.get("id")?.as_str()?.to_string(),
-                        name: c.get("function")?.get("name")?.as_str()?.to_string(),
-                        arguments: c.get("function")?.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
-                    })
-                }).collect();
+                for c in calls {
+                    if let Some(func) = c.get("function") {
+                        if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                            tool_calls.push(ToolCall {
+                                id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                name: name.to_string(),
+                                arguments: func.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
+                            });
+                        }
+                    }
+                }
+                if !tool_calls.is_empty() {
+                    return tool_calls;
+                }
             }
         }
-        vec![]
+
+        // 2. Look for XML format <invoke name="tool_name">JSON_ARGS</invoke>
+        // Regex supports optional closing tag and captures content in between
+        let re = regex::Regex::new(r#"(?s)<invoke name="([^"]+)">\s*(.*?)\s*(?:</invoke>|$)"#).ok();
+        if let Some(re) = re {
+            for cap in re.captures_iter(response) {
+                let name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                let args_text = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                
+                let arguments = if args_text.is_empty() {
+                    serde_json::Value::Object(Default::default())
+                } else {
+                    serde_json::from_str(args_text).unwrap_or_else(|_| {
+                        // If it's not valid JSON, it might be inside a code block or just messy
+                        if let Some(start) = args_text.find('{') {
+                            if let Some(end) = args_text.rfind('}') {
+                                serde_json::from_str(&args_text[start..=end]).unwrap_or(serde_json::Value::Null)
+                            } else {
+                                serde_json::Value::Null
+                            }
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    })
+                };
+
+                tool_calls.push(ToolCall {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name,
+                    arguments,
+                });
+            }
+        }
+
+        // 3. Look for plain JSON tool_calls array anywhere in the text if no tools found yet
+        if tool_calls.is_empty() {
+            if let Some(start) = response.find(r#""tool_calls""#) {
+                if let Some(json_start) = response[start..].find('[') {
+                    let part = &response[start + json_start..];
+                    // Try to find matching closing bracket
+                    let mut balance = 0;
+                    let mut end_pos = 0;
+                    for (i, c) in part.char_indices() {
+                        if c == '[' { balance += 1; }
+                        else if c == ']' { 
+                            balance -= 1; 
+                            if balance == 0 {
+                                end_pos = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                    if end_pos > 0 {
+                        if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(&part[..end_pos]) {
+                            for c in calls {
+                                if let Some(func) = c.get("function") {
+                                    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                        tool_calls.push(ToolCall {
+                                            id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                            name: name.to_string(),
+                                            arguments: func.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Look for simple {"name": "...", "arguments": "..."} or {"name": "...", "parameters": "..."} anywhere in the text
+        if tool_calls.is_empty() {
+            let formats = [
+                (r#""name""#, r#""arguments""#),
+                (r#""name""#, r#""parameters""#),
+                (r#""tool_name""#, r#""arguments""#),
+            ];
+            for (name_key, arg_key) in formats {
+                if let Some(start) = response.find(name_key) {
+                    if response.find(arg_key).is_some() {
+                        // Try to find the surrounding object safely by looking for '{' backwards
+                        let mut object_start = start;
+                        let bytes = response.as_bytes();
+                        while object_start > 0 {
+                            if bytes[object_start] == b'{' {
+                                break;
+                            }
+                            object_start -= 1;
+                        }
+                        
+                        // Ensure we are at a valid UTF-8 boundary before slicing
+                        while object_start > 0 && !response.is_char_boundary(object_start) {
+                            object_start -= 1;
+                        }
+                        
+                        // We also need to skip leading text before '{'
+                        while object_start < start && bytes[object_start] != b'{' {
+                            object_start += 1;
+                        }
+                        
+                        if bytes[object_start] != b'{' {
+                            continue;
+                        }
+                        
+                        let part = &response[object_start..];
+                        let mut balance = 0;
+                        let mut end_pos = 0;
+                        for (i, c) in part.char_indices() {
+                            if c == '{' { balance += 1; }
+                            else if c == '}' { 
+                                balance -= 1; 
+                                if balance == 0 {
+                                    end_pos = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if end_pos > 0 {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&part[..end_pos]) {
+                                let name = json.get("name").or_else(|| json.get("tool_name"))
+                                    .and_then(|v| v.as_str());
+                                let args = json.get("arguments").or_else(|| json.get("parameters")).cloned();
+                                
+                                if let (Some(name), Some(args)) = (name, args) {
+                                    let arguments = if let Some(s) = args.as_str() {
+                                        serde_json::from_str(s).unwrap_or(args)
+                                    } else {
+                                        args
+                                    };
+                                    
+                                    tool_calls.push(ToolCall {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        name: name.to_string(),
+                                        arguments,
+                                    });
+                                    return tool_calls;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tool_calls
     }
 
     async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String, AgentError> {
