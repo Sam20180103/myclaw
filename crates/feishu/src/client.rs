@@ -387,7 +387,7 @@ mod tests {
     fn test_feishu_config_default() {
         let config = FeishuConfig::default();
         assert!(config.dm_enabled);
-        assert!(!config.group_enabled);
+        assert!(config.group_enabled);
         assert!(config.allowed_groups.is_empty());
         assert!(config.allowed_users.is_empty());
     }

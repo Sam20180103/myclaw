@@ -211,8 +211,16 @@ impl FeishuChannel {
             .map_err(|e| anyhow::anyhow!("Failed to serialize card: {}", e))?)
             .map_err(|e| anyhow::anyhow!("Failed to parse card JSON: {}", e))?;
 
+        let id_type = if chat_id.starts_with("ou_") {
+            "open_id"
+        } else if chat_id.starts_with("oc_") {
+            "chat_id"
+        } else {
+            "chat_id"
+        };
+
         self.client
-            .send_card(chat_id, "chat_id", card_json)
+            .send_card(chat_id, id_type, card_json)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send interactive card: {}", e))?;
 
