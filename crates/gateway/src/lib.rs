@@ -421,7 +421,7 @@ async fn message_handler(
                         },
                     );
 
-                    match state.agent.process(envelope).await {
+                    match state.agent.process_with_loop(envelope).await {
                         Ok(AgentResponse { session_key, message, tool_calls }) => {
                             let response_content = match message.content {
                                 Content::Text(s) => s,

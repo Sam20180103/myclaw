@@ -116,7 +116,7 @@ impl Default for Config {
                     "file_read".to_string(),
                     "file_write".to_string(),
                     "shell_exec".to_string(),
-                    "web_search".to_string(),
+                    "search_reach".to_string(),
                 ],
                 disabled_tools: vec![],
                 require_approval: vec!["shell_exec".to_string()],
