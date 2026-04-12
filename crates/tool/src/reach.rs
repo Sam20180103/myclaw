@@ -22,6 +22,7 @@ impl Default for RateLimitConfig {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub struct RateLimiterManager {
     limiters: RwLock<HashMap<String, Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, DefaultClock>>>>,
     default_config: RateLimitConfig,

@@ -153,7 +153,7 @@ mod tests {
     fn test_thinking_card() {
         let card = FeishuCard::thinking_card();
         assert_eq!(card.header.template, "blue");
-        assert!(!card.config.wide_screen_mode == false);
+        assert!(card.config.wide_screen_mode);
     }
 
     #[test]

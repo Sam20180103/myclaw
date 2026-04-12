@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OptionalExtension};
 use rustclaw_protocol::Message;
 use std::collections::HashMap;
@@ -63,7 +63,7 @@ impl Default for SessionStore {
 /// 使用 WAL 模式实现并发安全, 支持会话搜索和谱系追踪
 pub struct SQLiteSessionStore {
     #[allow(clippy::arc_with_non_send_sync)]
-    conn: Arc<RwLock<Connection>>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl SQLiteSessionStore {
@@ -91,13 +91,13 @@ impl SQLiteSessionStore {
              CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);",
         )?;
         Ok(Self {
-            conn: Arc::new(RwLock::new(conn)),
+            conn: Arc::new(Mutex::new(conn)),
         })
     }
 
     /// 获取会话 — 从 SQLite 查询并反序列化消息
     pub fn get(&self, key: &str) -> Option<Session> {
-        let conn = self.conn.read();
+        let conn = self.conn.lock();
         conn.query_row(
             "SELECT key, channel, parent_session_id, messages, created_at, updated_at FROM sessions WHERE key = ?",
             [key],
@@ -123,7 +123,7 @@ impl SQLiteSessionStore {
 
     pub fn insert(&self, session: &Session) -> Result<(), rusqlite::Error> {
         let messages_json = serde_json::to_string(&session.messages).unwrap_or_default();
-        let conn = self.conn.write();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO sessions (key, channel, parent_session_id, messages, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -140,7 +140,7 @@ impl SQLiteSessionStore {
     }
 
     pub fn add_message(&self, key: &str, message: &Message) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.write();
+        let conn = self.conn.lock();
         let messages_str: Option<String> = conn
             .query_row(
                 "SELECT messages FROM sessions WHERE key = ?",
@@ -165,13 +165,13 @@ impl SQLiteSessionStore {
     }
 
     pub fn remove(&self, key: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.write();
+        let conn = self.conn.lock();
         conn.execute("DELETE FROM sessions WHERE key = ?", [key])?;
         Ok(())
     }
 
     pub fn list(&self) -> Vec<Session> {
-        let conn = self.conn.read();
+        let conn = self.conn.lock();
         let mut stmt = match conn
             .prepare("SELECT key, channel, parent_session_id, messages, created_at, updated_at FROM sessions")
         {
@@ -198,7 +198,7 @@ impl SQLiteSessionStore {
     }
 
     pub fn count(&self) -> usize {
-        let conn = self.conn.read();
+        let conn = self.conn.lock();
         conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap_or(0)
     }
@@ -206,7 +206,7 @@ impl SQLiteSessionStore {
     pub fn cleanup_expired(&self, ttl_seconds: i64) -> Result<usize, rusqlite::Error> {
         let now = chrono::Utc::now().timestamp_millis();
         let cutoff = now - (ttl_seconds * 1000);
-        let conn = self.conn.write();
+        let conn = self.conn.lock();
         let deleted = conn.execute(
             "DELETE FROM sessions WHERE updated_at < ?",
             [cutoff.to_string()],
@@ -215,14 +215,14 @@ impl SQLiteSessionStore {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Session> {
-        let conn = self.conn.read();
+        let conn = self.conn.lock();
         let sql = "SELECT key, channel, parent_session_id, messages, created_at, updated_at
              FROM sessions
              WHERE messages LIKE ?
              ORDER BY updated_at DESC
              LIMIT ?";
         let pattern = format!("%{}%", query);
-        let mut stmt = match conn.prepare(&sql) {
+        let mut stmt = match conn.prepare(sql) {
             Ok(s) => s,
             Err(_) => return vec![],
         };

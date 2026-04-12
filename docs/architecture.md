@@ -167,12 +167,12 @@ struct OpenCodeGenerator {
 
 ### 3.2 MCP 策略
 
-**MVP阶段：不实现 MCP 兼容**
+**MVP阶段：已实现基础 MCP 兼容**
 
 理由：
-1. MCP 协议有安全风险 (AI 可动态调用任意 MCP 服务器)
-2. MVP 聚焦核心：Gateway + Agent + 基础工具
-3. 后续可通过 MCP 网关代理或手动实现高频 Skills
+1. 为了实现小红书、抖音等高级社交平台的接入，必须使用 MCP 桥接。
+2. MVP 聚焦核心后，通过 McpClient (JSON-RPC客户端) 实现了安全的本地 MCP 端点调用。
+3. 后续将继续扩展支持更多符合标准 MCP 协议的服务器。
 
 ### 3.3 Skill 语言支持
 

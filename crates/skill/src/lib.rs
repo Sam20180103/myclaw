@@ -262,6 +262,7 @@ async fn load_skills_from_dir(
         Ok(definition)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_skill_with_category(
         &self,
         name: &str,

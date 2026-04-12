@@ -301,29 +301,26 @@ impl Gateway {
                 use futures_util::StreamExt;
                 let mut events = feishu_ch.events();
                 while let Some(event) = events.next().await {
-                    match event {
-                        ChannelEvent::Message(envelope) => {
-                            info!("Feishu message received: session_key={}", envelope.session_key);
-                            let ch = feishu_ch.clone();
-                            let ag = agent.clone();
-                            tokio::spawn(async move {
-                                match ag.process_with_loop(envelope).await {
-                                    Ok(response) => {
-                                        info!("Feishu message processed, sending response: session_key={}", response.session_key);
-                                        let response_env = Envelope::new(
-                                            "feishu",
-                                            &response.session_key,
-                                            response.message,
-                                        );
-                                        if let Err(e) = ch.send(response_env).await {
-                                            error!("Failed to send response to feishu: {}", e);
-                                        }
+                    if let ChannelEvent::Message(envelope) = event {
+                        info!("Feishu message received: session_key={}", envelope.session_key);
+                        let ch = feishu_ch.clone();
+                        let ag = agent.clone();
+                        tokio::spawn(async move {
+                            match ag.process_with_loop(envelope).await {
+                                Ok(response) => {
+                                    info!("Feishu message processed, sending response: session_key={}", response.session_key);
+                                    let response_env = Envelope::new(
+                                        "feishu",
+                                        &response.session_key,
+                                        response.message,
+                                    );
+                                    if let Err(e) = ch.send(response_env).await {
+                                        error!("Failed to send response to feishu: {}", e);
                                     }
-                                    Err(e) => error!("Failed to process feishu message: {}", e),
                                 }
-                            });
-                        }
-                        _ => {}
+                                Err(e) => error!("Failed to process feishu message: {}", e),
+                            }
+                        });
                     }
                 }
             });

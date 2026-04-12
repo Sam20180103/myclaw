@@ -179,8 +179,6 @@ impl FeishuChannel {
     async fn send_raw(&self, id: &str, msg_type: &str, content: &str) -> Result<()> {
         let id_type = if id.starts_with("ou_") {
             "open_id"
-        } else if id.starts_with("oc_") {
-            "chat_id"
         } else {
             "chat_id"
         };
@@ -213,8 +211,6 @@ impl FeishuChannel {
 
         let id_type = if chat_id.starts_with("ou_") {
             "open_id"
-        } else if chat_id.starts_with("oc_") {
-            "chat_id"
         } else {
             "chat_id"
         };
