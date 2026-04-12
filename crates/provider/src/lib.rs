@@ -11,6 +11,7 @@ pub type TokenStream = Pin<Box<dyn Stream<Item = Result<String, ProviderError>> 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError>;
+    async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> { Err(ProviderError::ApiError("Not implemented".to_string())) }
     async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream;
     async fn list_models(&self) -> Result<Vec<String>, ProviderError>;
 }
@@ -138,6 +139,8 @@ struct OpenAiRequest {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -152,7 +155,40 @@ struct OpenAiChoice {
 
 #[derive(Deserialize)]
 struct OpenAiMessageResponse {
-    content: String,
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: OpenAiFunction,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiFunction {
+    name: String,
+    arguments: String,
+}
+
+fn extract_tool_calls(response: &OpenAiResponse) -> Vec<serde_json::Value> {
+    let mut result = Vec::new();
+    if let Some(choice) = response.choices.first() {
+        if let Some(ref tcs) = choice.message.tool_calls {
+            for tc in tcs {
+                let args: serde_json::Value = serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
+                result.push(serde_json::json!({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": args
+                }));
+            }
+        }
+    }
+    result
 }
 
 #[async_trait]
@@ -185,6 +221,7 @@ impl LlmProvider for OpenAiProvider {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             stream: false,
+            tools: None,
         };
 
         let base = self.base_url.trim_end_matches('/');
@@ -213,8 +250,73 @@ impl LlmProvider for OpenAiProvider {
         response
             .choices
             .first()
-            .map(|c| c.message.content.clone())
+            .and_then(|c| c.message.content.clone())
             .ok_or_else(|| ProviderError::ParseError("No choices in response".to_string()))
+    }
+
+
+    async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
+        let openai_messages: Vec<OpenAiMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                OpenAiMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = OpenAiRequest {
+            model: self.model.clone(),
+            messages: openai_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: false,
+            tools: Some(tools),
+        };
+
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/chat/completions", base);
+        
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError(format!("Status {}: {}", status, body)));
+        }
+
+        let response: OpenAiResponse = response
+            .json()
+            .await
+            .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        let content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        let tool_calls = extract_tool_calls(&response);
+        Ok((content, tool_calls))
     }
 
     async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
@@ -248,6 +350,7 @@ impl LlmProvider for OpenAiProvider {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             stream: true,
+            tools: None,
         };
 
         let base = self.base_url.trim_end_matches('/');
@@ -402,6 +505,8 @@ struct AnthropicStreamRequest {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -506,6 +611,7 @@ impl LlmProvider for AnthropicProvider {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             stream: true,
+            tools: None,
         };
 
         let url = format!("{}/v1/messages", self.base_url);
@@ -646,6 +752,7 @@ impl LlmProvider for NvProvider {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             stream: false,
+            tools: None,
         };
 
         let base = self.base_url.trim_end_matches('/');
@@ -684,8 +791,73 @@ impl LlmProvider for NvProvider {
         response
             .choices
             .first()
-            .map(|c| c.message.content.clone())
+            .and_then(|c| c.message.content.clone())
             .ok_or_else(|| ProviderError::ParseError("No choices in response".to_string()))
+    }
+
+
+    async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
+        let openai_messages: Vec<OpenAiMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                OpenAiMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        let request = OpenAiRequest {
+            model: self.model.clone(),
+            messages: openai_messages,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            stream: false,
+            tools: Some(tools),
+        };
+
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/v1/chat/completions", base);
+        
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError(format!("Status {}: {}", status, body)));
+        }
+
+        let response: OpenAiResponse = response
+            .json()
+            .await
+            .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        let content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        let tool_calls = extract_tool_calls(&response);
+        Ok((content, tool_calls))
     }
 
     async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
@@ -719,6 +891,7 @@ impl LlmProvider for NvProvider {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             stream: true,
+            tools: None,
         };
 
         let base = self.base_url.trim_end_matches('/');
@@ -820,6 +993,7 @@ impl ProviderClient {
         Self { provider }
     }
 
+
     pub async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
         if let Some(ref provider) = self.provider {
             provider.complete(messages).await
@@ -827,6 +1001,15 @@ impl ProviderClient {
             Ok("Provider not configured".to_string())
         }
     }
+
+    pub async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
+        if let Some(ref provider) = self.provider {
+            provider.complete_with_tools(messages, tools).await
+        } else {
+            Ok(("Provider not configured".to_string(), vec![]))
+        }
+    }
+
 
     pub async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
         if let Some(ref provider) = self.provider {

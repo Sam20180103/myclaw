@@ -1,5 +1,5 @@
 use rustclaw_protocol::{Message, Envelope, Role, Content};
-use rustclaw_tool::{ToolRegistry, ToolCall};
+use rustclaw_tool::{ToolRegistry, ToolCall, ToolSchema};
 use rustclaw_provider::ProviderClient;
 use rustclaw_memory::MemoryManager;
 use rustclaw_compression::ContextCompressor;
@@ -260,7 +260,7 @@ impl Clone for Lane {
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Self {
         let registry = Arc::new(ToolRegistry::new());
-        registry.register_builtin_tools();
+        registry.register_all_tools();
         Self {
             config: config.clone(),
             session_manager: SessionManager::new(100, config.session_ttl_seconds),
@@ -352,11 +352,23 @@ impl AgentRuntime {
         }
 
         tracing::debug!("Agent about to call LLM with {} messages", messages.len());
-        
-        let response_text = match self.provider_client.complete(messages).await {
-            Ok(text) => {
+
+        let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
+            .into_iter()
+            .map(|s| serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": s.name,
+                    "description": s.description,
+                    "parameters": s.parameters,
+                }
+            }))
+            .collect();
+
+        let (response_text, tool_call_results) = match self.provider_client.complete_with_tools(messages, tool_schemas).await {
+            Ok((text, calls)) => {
                 tracing::debug!("LLM response received: {} chars", text.len());
-                text
+                (text, calls)
             },
             Err(e) => {
                 tracing::error!("LLM call failed: {}", e);
@@ -364,7 +376,14 @@ impl AgentRuntime {
             },
         };
 
-        let tool_calls = self.parse_tool_calls(&response_text);
+        let tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
+            ToolCall {
+                id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                name: tc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                arguments: tc.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
+            }
+        }).collect();
+
         tracing::debug!("Parsed {} tool calls from response", tool_calls.len());
 
         Ok(AgentResponse {
@@ -412,15 +431,33 @@ impl AgentRuntime {
                 .map(|s| (*s.messages).clone())
                 .unwrap_or_default();
 
-            let response_text = match self.provider_client.complete(messages).await {
-                Ok(text) => text,
+            let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
+                .into_iter()
+                .map(|s| serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": s.name,
+                        "description": s.description,
+                        "parameters": s.parameters,
+                    }
+                }))
+                .collect();
+
+            let (response_text, tool_call_results) = match self.provider_client.complete_with_tools(messages, tool_schemas).await {
+                Ok((text, tool_calls)) => (text, tool_calls),
                 Err(e) => {
                     self.emit_event(AgentEvent::Status { status: "provider_error".to_string() });
                     return Err(AgentError::ProviderError(e.to_string()));
                 }
             };
 
-            let tool_calls = self.parse_tool_calls(&response_text);
+            let tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
+                ToolCall {
+                    id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    name: tc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    arguments: tc.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
+                }
+            }).collect();
 
             if tool_calls.is_empty() {
                 if total_tool_calls >= 5 {
