@@ -581,6 +581,104 @@ impl LlmProvider for AnthropicProvider {
             .ok_or_else(|| ProviderError::ParseError("No content in response".to_string()))
     }
 
+    async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
+        let anthropic_messages: Vec<AnthropicMessage> = messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    rustclaw_protocol::Role::User => "user",
+                    rustclaw_protocol::Role::Assistant => "assistant",
+                    rustclaw_protocol::Role::System => "system",
+                };
+                let content = match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.clone(),
+                    rustclaw_protocol::Content::Structured { text, .. } => {
+                        text.clone().unwrap_or_default()
+                    }
+                };
+                AnthropicMessage {
+                    role: role.to_string(),
+                    content,
+                }
+            })
+            .collect();
+
+        // Convert OpenAI-style tool schema to Anthropic-style tool schema
+        let anthropic_tools: Vec<serde_json::Value> = tools.into_iter().map(|t| {
+            if let Some(func) = t.get("function") {
+                serde_json::json!({
+                    "name": func.get("name"),
+                    "description": func.get("description"),
+                    "input_schema": func.get("parameters")
+                })
+            } else {
+                t
+            }
+        }).collect();
+
+        let request = serde_json::json!({
+            "model": self.model.clone(),
+            "messages": anthropic_messages,
+            "max_tokens": 4096,
+            "temperature": 0.7,
+            "tools": anthropic_tools
+        });
+
+        let url = format!("{}/v1/messages", self.base_url);
+        
+        let response = self.client
+            .post(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2024-06-01")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError(format!("Status {}: {}", status, body)));
+        }
+
+        let response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        let mut content_text = String::new();
+        let mut tool_calls = Vec::new();
+
+        if let Some(content_blocks) = response.get("content").and_then(|v| v.as_array()) {
+            for block in content_blocks {
+                match block.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                            content_text.push_str(text);
+                        }
+                    }
+                    Some("tool_use") => {
+                        if let (Some(id), Some(name), Some(input)) = (
+                            block.get("id").and_then(|v| v.as_str()),
+                            block.get("name").and_then(|v| v.as_str()),
+                            block.get("input")
+                        ) {
+                            tool_calls.push(serde_json::json!({
+                                "id": id,
+                                "name": name,
+                                "arguments": input
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok((content_text, tool_calls))
+    }
+
     async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
         use async_stream::stream;
         use futures_util::stream::StreamExt;
