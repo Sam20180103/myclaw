@@ -47,7 +47,34 @@ pub struct AgentRuntime {
     event_callback: Option<Arc<EventCallback>>, // 可选: 事件回调
     iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
     session_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>, // 会话锁
+    base_system_prompt: String,                 // 基础系统提示
 }
+
+const DEFAULT_BASE_SYSTEM_PROMPT: &str = r#"You are RustClaw, an autonomous AI agent.
+You have access to a set of tools to help you complete tasks.
+When you need to use a tool, you should use the native tool calling mechanism if available.
+If you cannot use the native mechanism, you MUST use one of the following formats:
+
+1. JSON format:
+```json
+{
+  "name": "tool_name",
+  "arguments": {
+    "param1": "value1"
+  }
+}
+```
+
+2. XML format:
+<invoke name="tool_name">
+{
+  "param1": "value1"
+}
+</invoke>
+
+Always prefer the native tool calling mechanism or the JSON format.
+Only use tools when necessary. If you have enough information, answer the user directly.
+Stay professional and concise."#;
 
 /// Agent 配置
 #[derive(Clone)]
@@ -398,7 +425,13 @@ impl AgentRuntime {
             event_callback: None,
             iteration_budget: None,
             session_locks: DashMap::new(),
+            base_system_prompt: DEFAULT_BASE_SYSTEM_PROMPT.to_string(),
         }
+    }
+
+    pub fn with_base_system_prompt(mut self, prompt: String) -> Self {
+        self.base_system_prompt = prompt;
+        self
     }
 
     pub fn with_provider(mut self, provider: ProviderClient) -> Self {
@@ -465,6 +498,12 @@ impl AgentRuntime {
         let mut messages = self.session_manager.get(session_key)
             .map(|s| (*s.messages).clone())
             .unwrap_or_default();
+
+        // Inject base system prompt
+        messages.insert(0, Message {
+            role: Role::System,
+            content: Content::text(self.base_system_prompt.clone()),
+        });
 
         if let Some(ref memory) = self.memory_manager {
             let memory_text = memory.get_memory_text();
@@ -578,6 +617,12 @@ impl AgentRuntime {
             let mut messages = self.session_manager.get(&session_key)
                 .map(|s| (*s.messages).clone())
                 .unwrap_or_default();
+
+            // Inject base system prompt
+            messages.insert(0, Message {
+                role: Role::System,
+                content: Content::text(self.base_system_prompt.clone()),
+            });
 
             if let Some(ref memory) = self.memory_manager {
                 let memory_text = memory.get_memory_text();
@@ -718,10 +763,54 @@ impl AgentRuntime {
             }
         }
 
-        // 2. Look for XML format <invoke name="tool_name">JSON_ARGS</invoke>
-        // Regex supports optional closing tag and captures content in between
-        let re = regex::Regex::new(r#"(?s)<invoke name="([^"]+)">\s*(.*?)\s*(?:</invoke>|$)"#).ok();
-        if let Some(re) = re {
+        // 2. Look for JSON in Markdown code blocks: ```json ... ```
+        let block_re = regex::Regex::new(r"(?s)```json\s*(.*?)\s*```").ok();
+        if let Some(re) = block_re {
+            for cap in re.captures_iter(response) {
+                let content = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
+                    // Could be a single tool call object or an array of tool calls
+                    if let Some(name) = json.get("name").or_else(|| json.get("tool_name")).and_then(|v| v.as_str()) {
+                        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::Value::Null);
+                        tool_calls.push(ToolCall {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            name: name.to_string(),
+                            arguments: args,
+                        });
+                    } else if let Some(arr) = json.as_array() {
+                        for item in arr {
+                            if let Some(name) = item.get("name").or_else(|| item.get("tool_name")).and_then(|v| v.as_str()) {
+                                let args = item.get("arguments").or_else(|| item.get("parameters")).cloned().unwrap_or(serde_json::Value::Null);
+                                tool_calls.push(ToolCall {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: name.to_string(),
+                                    arguments: args,
+                                });
+                            }
+                        }
+                    } else if let Some(calls) = json.get("tool_calls").and_then(|v| v.as_array()) {
+                         for c in calls {
+                            if let Some(func) = c.get("function") {
+                                if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                    tool_calls.push(ToolCall {
+                                        id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        name: name.to_string(),
+                                        arguments: func.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !tool_calls.is_empty() {
+                return tool_calls;
+            }
+        }
+
+        // 3. Look for XML format <invoke name="tool_name">JSON_ARGS</invoke>
+        let xml_re = regex::Regex::new(r#"(?s)<invoke\s+name=["']([^"']+)["']\s*>(.*?)(?:</invoke>|$)"#).ok();
+        if let Some(re) = xml_re {
             for cap in re.captures_iter(response) {
                 let name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
                 let args_text = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
@@ -749,37 +838,37 @@ impl AgentRuntime {
                     arguments,
                 });
             }
+            if !tool_calls.is_empty() {
+                return tool_calls;
+            }
         }
 
-        // 3. Look for plain JSON tool_calls array anywhere in the text if no tools found yet
-        if tool_calls.is_empty() {
-            if let Some(start) = response.find(r#""tool_calls""#) {
-                if let Some(json_start) = response[start..].find('[') {
-                    let part = &response[start + json_start..];
-                    // Try to find matching closing bracket
-                    let mut balance = 0;
-                    let mut end_pos = 0;
-                    for (i, c) in part.char_indices() {
-                        if c == '[' { balance += 1; }
-                        else if c == ']' { 
-                            balance -= 1; 
-                            if balance == 0 {
-                                end_pos = i + 1;
-                                break;
-                            }
+        // 4. Look for plain JSON tool_calls array anywhere in the text
+        if let Some(start) = response.find(r#""tool_calls""#) {
+            if let Some(json_start) = response[start..].find('[') {
+                let part = &response[start + json_start..];
+                let mut balance = 0;
+                let mut end_pos = 0;
+                for (i, c) in part.char_indices() {
+                    if c == '[' { balance += 1; }
+                    else if c == ']' { 
+                        balance -= 1; 
+                        if balance == 0 {
+                            end_pos = i + 1;
+                            break;
                         }
                     }
-                    if end_pos > 0 {
-                        if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(&part[..end_pos]) {
-                            for c in calls {
-                                if let Some(func) = c.get("function") {
-                                    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                                        tool_calls.push(ToolCall {
-                                            id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                            name: name.to_string(),
-                                            arguments: func.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
-                                        });
-                                    }
+                }
+                if end_pos > 0 {
+                    if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(&part[..end_pos]) {
+                        for c in calls {
+                            if let Some(func) = c.get("function") {
+                                if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                    tool_calls.push(ToolCall {
+                                        id: c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        name: name.to_string(),
+                                        arguments: func.get("arguments").cloned().unwrap_or(serde_json::Value::Null),
+                                    });
                                 }
                             }
                         }
@@ -788,7 +877,7 @@ impl AgentRuntime {
             }
         }
 
-        // 4. Look for simple {"name": "...", "arguments": "..."} or {"name": "...", "parameters": "..."} anywhere in the text
+        // 5. Look for simple {"name": "...", "arguments": "..."} or {"name": "...", "parameters": "..."} anywhere in the text
         if tool_calls.is_empty() {
             let formats = [
                 (r#""name""#, r#""arguments""#),
@@ -808,12 +897,10 @@ impl AgentRuntime {
                             object_start -= 1;
                         }
                         
-                        // Ensure we are at a valid UTF-8 boundary before slicing
                         while object_start > 0 && !response.is_char_boundary(object_start) {
                             object_start -= 1;
                         }
                         
-                        // We also need to skip leading text before '{'
                         while object_start < start && bytes[object_start] != b'{' {
                             object_start += 1;
                         }
@@ -854,7 +941,6 @@ impl AgentRuntime {
                                         name: name.to_string(),
                                         arguments,
                                     });
-                                    return tool_calls;
                                 }
                             }
                         }
@@ -911,9 +997,15 @@ impl AgentRuntime {
 
         self.session_manager.add_message(&session_key, envelope.message);
 
-        let messages = self.session_manager.get(&session_key)
+        let mut messages = self.session_manager.get(&session_key)
             .map(|s| (*s.messages).clone())
             .unwrap_or_default();
+
+        // Inject base system prompt
+        messages.insert(0, Message {
+            role: Role::System,
+            content: Content::text(self.base_system_prompt.clone()),
+        });
 
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         
