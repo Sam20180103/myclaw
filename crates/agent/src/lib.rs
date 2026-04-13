@@ -90,8 +90,11 @@ pub struct SessionMetadata {
 }
 
 /// 会话管理器 — 管理 Agent 会话的生命周期
+use rustclaw_storage::SQLiteSessionStore;
+
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, Session>>>, // 所有活跃会话
+    sessions: Arc<RwLock<HashMap<String, Session>>>, // 所有活跃会话 (内存缓存)
+    store: Option<Arc<SQLiteSessionStore>>,           // SQLite 持久化存储
     #[allow(dead_code)]
     max_sessions: usize,  // 最大会话数
     ttl_seconds: u64,     // 会话过期时间 (秒)
@@ -102,10 +105,17 @@ impl SessionManager {
     pub fn new(max_sessions: usize, ttl_seconds: u64) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::with_capacity(max_sessions))),
+            store: None,
             max_sessions,
             ttl_seconds,
         }
     }
+
+    pub fn with_store(mut self, store: Arc<SQLiteSessionStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
 
     /// 创建新会话 (生成 UUID 作为 key)
     pub fn create(&self, channel: &str, lane: &str) -> Session {
@@ -123,12 +133,45 @@ impl SessionManager {
             last_accessed: Instant::now(),
         };
         self.sessions.write().insert(session.key.clone(), session.clone());
+        if let Some(ref store) = self.store {
+            let db_session = rustclaw_storage::Session {
+                key: session.key.clone(),
+                channel: channel.to_string(),
+                parent_session_id: None,
+                messages: vec![],
+                created_at: session.metadata.created_at,
+                updated_at: session.metadata.updated_at,
+            };
+            let _ = store.insert(&db_session);
+        }
         session
     }
 
     /// 获取会话 (只读)
     pub fn get(&self, key: &str) -> Option<Session> {
-        self.sessions.read().get(key).cloned()
+        if let Some(session) = self.sessions.read().get(key) {
+            return Some(session.clone());
+        }
+        if let Some(ref store) = self.store {
+            if let Some(db_session) = store.get(key) {
+                let agent_session = Session {
+                    key: db_session.key.clone(),
+                    lane: "lane_0".to_string(), // fallback
+                    parent_session_id: db_session.parent_session_id.clone(),
+                    messages: Arc::new(db_session.messages),
+                    metadata: Arc::new(SessionMetadata {
+                        channel: db_session.channel.clone(),
+                        created_at: db_session.created_at,
+                        updated_at: chrono::Utc::now().timestamp_millis(),
+                        tool_calls_enabled: true,
+                    }),
+                    last_accessed: Instant::now(),
+                };
+                self.sessions.write().insert(key.to_string(), agent_session.clone());
+                return Some(agent_session);
+            }
+        }
+        None
     }
 
     /// 获取或创建会话 (原子操作,避免竞态条件)
@@ -146,6 +189,26 @@ impl SessionManager {
             return session.clone();
         }
 
+        if let Some(ref store) = self.store {
+            if let Some(db_session) = store.get(key) {
+                let agent_session = Session {
+                    key: db_session.key.clone(),
+                    lane: lane.to_string(),
+                    parent_session_id: db_session.parent_session_id.clone(),
+                    messages: Arc::new(db_session.messages),
+                    metadata: Arc::new(SessionMetadata {
+                        channel: db_session.channel.clone(),
+                        created_at: db_session.created_at,
+                        updated_at: chrono::Utc::now().timestamp_millis(),
+                        tool_calls_enabled: true,
+                    }),
+                    last_accessed: Instant::now(),
+                };
+                sessions.insert(key.to_string(), agent_session.clone());
+                return agent_session;
+            }
+        }
+
         let session = Session {
             key: key.to_string(),
             lane: lane.to_string(),
@@ -160,28 +223,75 @@ impl SessionManager {
             last_accessed: Instant::now(),
         };
         sessions.insert(key.to_string(), session.clone());
+        if let Some(ref store) = self.store {
+            let db_session = rustclaw_storage::Session {
+                key: session.key.clone(),
+                channel: channel.to_string(),
+                parent_session_id: None,
+                messages: vec![],
+                created_at: session.metadata.created_at,
+                updated_at: session.metadata.updated_at,
+            };
+            let _ = store.insert(&db_session);
+        }
         session
     }
 
     /// 添加消息到会话 (使用 Arc 优化减少克隆开销)
     pub fn add_message(&self, key: &str, message: Message) {
-        let mut sessions = self.sessions.write();
-        if let Some(session) = sessions.get_mut(key) {
-            // 克隆 messages Arc -> 新 Vec, 追加消息, 用新 Arc 替换
-            let mut messages = (*session.messages).clone();
-            messages.push(message);
-            session.messages = Arc::new(messages);
-            // 克隆 metadata Arc -> 新 Metadata, 更新时间, 用新 Arc 替换
-            let mut metadata = (*session.metadata).clone();
-            metadata.updated_at = chrono::Utc::now().timestamp_millis();
-            session.metadata = Arc::new(metadata);
-            session.last_accessed = Instant::now();
+        {
+            let mut sessions = self.sessions.write();
+            if let Some(session) = sessions.get_mut(key) {
+                // 克隆 messages Arc -> 新 Vec, 追加消息, 用新 Arc 替换
+                let mut messages = (*session.messages).clone();
+                messages.push(message.clone());
+                session.messages = Arc::new(messages);
+                // 克隆 metadata Arc -> 新 Metadata, 更新时间, 用新 Arc 替换
+                let mut metadata = (*session.metadata).clone();
+                metadata.updated_at = chrono::Utc::now().timestamp_millis();
+                session.metadata = Arc::new(metadata);
+                session.last_accessed = Instant::now();
+            }
+        }
+        if let Some(ref store) = self.store {
+            let _ = store.add_message(key, &message);
+        }
+    }
+
+    /// 替换整个会话历史 (主要用于上下文压缩)
+    pub fn replace_messages(&self, key: &str, messages: Vec<Message>, parent_session_id: Option<String>) {
+        let mut session_clone = None;
+        {
+            let mut sessions = self.sessions.write();
+            if let Some(session) = sessions.get_mut(key) {
+                session.messages = Arc::new(messages.clone());
+                if parent_session_id.is_some() {
+                    session.parent_session_id = parent_session_id.clone();
+                }
+                session.last_accessed = Instant::now();
+                session_clone = Some(session.clone());
+            }
+        }
+        
+        if let (Some(ref store), Some(session)) = (&self.store, session_clone) {
+            let db_session = rustclaw_storage::Session {
+                key: session.key.clone(),
+                channel: session.metadata.channel.clone(),
+                parent_session_id: session.parent_session_id.clone(),
+                messages: (*session.messages).clone(),
+                created_at: session.metadata.created_at,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            };
+            let _ = store.insert(&db_session);
         }
     }
 
     /// 删除会话
     pub fn delete(&self, key: &str) {
         self.sessions.write().remove(key);
+        if let Some(ref store) = self.store {
+            let _ = store.remove(key);
+        }
     }
 
     /// 清理过期会话 (两阶段: 先读锁收集, 再写锁删除)
@@ -204,6 +314,13 @@ impl SessionManager {
         for key in &to_remove {
             self.sessions.write().remove(key);
         }
+
+        // 不从持久化存储中删除过期会话, 但清理过老的
+        if let Some(ref store) = self.store {
+            // 过期时间例如90天，而不是内存的几小时
+            let _ = store.cleanup_expired(90 * 24 * 3600); 
+        }
+
         to_remove.len()
     }
 
@@ -302,6 +419,11 @@ impl AgentRuntime {
 
     pub fn with_compressor(mut self, compressor: Arc<ContextCompressor>) -> Self {
         self.context_compressor = Some(compressor);
+        self
+    }
+
+    pub fn with_session_store(mut self, store: Arc<rustclaw_storage::SQLiteSessionStore>) -> Self {
+        self.session_manager = self.session_manager.with_store(store);
         self
     }
 
@@ -453,9 +575,26 @@ impl AgentRuntime {
                     .unwrap_or(0),
             });
 
-            let messages = self.session_manager.get(&session_key)
+            let mut messages = self.session_manager.get(&session_key)
                 .map(|s| (*s.messages).clone())
                 .unwrap_or_default();
+
+            if let Some(ref memory) = self.memory_manager {
+                let memory_text = memory.get_memory_text();
+                if !memory_text.is_empty() {
+                    messages.insert(0, Message {
+                        role: Role::System,
+                        content: Content::text(format!("Memory:\n{}", memory_text)),
+                    });
+                }
+            }
+
+            if let Some(ref compressor) = self.context_compressor {
+                let result = compressor.compress(&messages, 100000);
+                if result.compressed {
+                    messages = result.messages;
+                }
+            }
 
             let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
                 .into_iter()
