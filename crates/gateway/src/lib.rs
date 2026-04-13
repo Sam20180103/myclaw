@@ -21,6 +21,9 @@ use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
 use rustclaw_feishu::{FeishuChannel, FeishuConfig, WebSocketManager};
 use rustclaw_channel::{Channel, ChannelEvent};
+use rustclaw_compression::ContextCompressor;
+use rustclaw_memory::MemoryManager;
+use rustclaw_storage::SQLiteSessionStore;
 
 const APPROVAL_CHANNEL_CAPACITY: usize = 64;
 
@@ -102,8 +105,32 @@ impl Gateway {
             session_ttl_seconds: 3600,
             max_concurrent_per_lane: config.agent.max_concurrent_sessions,
         };
-        let agent = Arc::new(AgentRuntime::new(agent_config)
-            .with_provider(provider_client));
+        
+        let mut agent_builder = AgentRuntime::new(agent_config)
+            .with_provider(provider_client);
+
+        let data_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".rustclaw");
+        std::fs::create_dir_all(&data_dir).ok();
+
+        // 1. ContextCompressor
+        let compressor = Arc::new(ContextCompressor::new(0.50, 128000));
+        agent_builder = agent_builder.with_compressor(compressor);
+
+        // 2. MemoryManager
+        let memory_path = data_dir.join("memories").join("MEMORY.md");
+        let memory_manager = Arc::new(MemoryManager::new(&memory_path, 2200, 1375));
+        agent_builder = agent_builder.with_memory(memory_manager);
+
+        // 3. SQLiteSessionStore
+        let db_path = data_dir.join("state.db");
+        if let Ok(store) = SQLiteSessionStore::new(&db_path) {
+            let store_arc = Arc::new(store);
+            agent_builder = agent_builder.with_session_store(store_arc);
+        }
+
+        let agent = Arc::new(agent_builder);
 
         let gateway_config = GatewayConfig {
             host: config.gateway.host.clone(),
