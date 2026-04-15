@@ -40,6 +40,19 @@
     - [ ] 飞书通道集成图片上传 (`im/v1/images`)。
     - [ ] Agent 链路自愈逻辑：检测到失效 -> 弹出二维码 -> 自动等待登录 -> 继续任务。
 
+### 5. 代码审查发现的问题 (Code Review Findings) - 2026-04-16
+
+| # | 问题描述 | 建议方案 | 严重程度 |
+|---|---------|---------|----------|
+| 1 | `BossZhipinReachTool::execute` 中 `mcp_params` 变量未使用 | 移除冗余代码，并确保所有分支逻辑一致性。 | 🟢 低 |
+| 2 | `rustclaw-config` 与 `rustclaw-tool` 中的 `ReachConfig` 结构体定义严重不一致 | 统一配置模型，避免序列化/反序列化时的字段丢失。 | 🔴 高 |
+| 3 | `mcp-bosszp/server.py` 为每个请求启动新浏览器实例 | 使用单例模式或连接池管理 Playwright 浏览器和上下文，提高性能。 | 🔴 高 |
+| 4 | 浏览器自动化中 `asyncio.sleep(3)` 等待逻辑不可靠 | 改用 Playwright 的 `wait_for_selector` 或 `wait_for_load_state`。 | 🟡 中 |
+| 5 | `boss.apply_job` 仅为占位符，未实现真实投递功能 | 尽快实现投递逻辑或在文档中明确标注其为 Mock。 | 🟡 中 |
+| 6 | 城市代码映射 (`city_codes`) 硬编码且覆盖不足 | 建立完整的城市代码数据库或通过 API 动态获取。 | 🟡 中 |
+| 7 | MCP 桥接层缺乏频率限制 (Rate Limiting) | 在 Python 端或 Rust 端的工具层引入速率控制器，防止账号被封。 | 🔴 高 |
+| 8 | Cookie 解析逻辑过于简陋 (`split(';')`) | 使用标准库或成熟的 cookie 解析库，增强鲁棒性。 | 🟢 低 |
+
 ### 4. 环境与配置快照 (Current Env)
 - **Gateway**: v0.1.0 (已打通依赖注入)
 - **BOSS MCP**: 127.0.0.1:8083 (Python + Playwright)
