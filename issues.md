@@ -82,16 +82,25 @@
 ### 1. 飞书通道集成 (Feishu Channel)
 - **令牌刷新 Bug**: `FeishuClient::get_tenant_token` 缓存了 `tenant_access_token` 但未记录过期时间，也未处理 Token 失效后的重新获取逻辑。这将导致长时间运行后 API 调用失败。
 - **富文本解析不全**: `extract_post_text` 仅提取了 `text` 类型元素，忽略了富文本消息中的链接、@提及和图片，导致 AI 丢失关键上下文。
-- **文件下载无效消耗**: `download_file` 仅将文件下载到内存后返回确认字符串，未进行持久化或传递给 AI 视觉模块，造成带宽和内存的无效消耗。
+- **文件下载无效消耗**: `download_file` 仅将文件下载 to 内存后返回确认字符串，未进行持久化或传递给 AI 视觉模块，造成带宽和内存的无效消耗。
 - **并发实现复杂**: `WebSocketManager` 使用 `std::thread::spawn` 嵌套 `tokio` 运行时的做法较为繁琐，建议直接使用 `tokio::spawn` 并复用主运行时。
+- **图片上传类型错误 (Phase 17.5)**: `FeishuClient::upload_image` 将文件后缀（如 "png"）作为 `image_type` 传递，但飞书 API 要求该字段固定为 "message" 或 "avatar"。这会导致图片上传失败。
 
 ### 2. BOSS直聘 MCP 桥接器 (Boss MCP Bridge)
+- **会话不连续导致登录失效 (Phase 17.5)**: `get_qrcode` 和 `wait_login` 在 MCP Server 中是独立的请求，分别创建了不同的浏览器上下文。用户扫描第一个请求展示的二维码，而第二个请求在监视另一个全新的页面，导致 `wait_login` 永远无法检测到登录成功。
 - **性能严重瓶颈**: 每次 MCP 请求（搜索、获取 JD、检查状态）都会启动并销毁一个新的 Playwright 浏览器实例。建议改为单例模式或浏览器池，以减少延迟和系统负载。
 - **安全性隐患**: MCP 接口接收明文 Cookie 且缺乏内部认证机制。若该服务暴露在公网或非受信网络中，可能导致用户凭据泄露。
 - **解析逻辑脆弱**: `search_jobs` 中通过 `href.split('/')` 提取 Job ID 的逻辑依赖于特定 URL 结构，若 BOSS 直聘前端变动则会失效。
 
-### 3. 自动化任务 (Auto Vibe)
+### 3. Agent 运行时与 Provider (Agent & Provider)
+- **缺乏图片消息自动触发 (Phase 17.5)**: Agent 循环逻辑目前仅处理文本输出。即使工具（如 `boss_zhipin_reach`）返回了二维码图片数据，Agent 也只是将其作为 JSON 文本存入历史，无法自动将其作为 `Content::Image` 消息推送到通道。
+- **LLM 视觉信息丢失 (Phase 17.5)**: 所有 LlmProvider 实现均将 `Content::Image` 简化为文本占位符 `[Image: desc]`。这意味着 AI 无法理解图片内容，仅知道“发送了一张图”。
+- **上下文压缩对图片的负面影响**: `ContextCompressor` 将图片 Base64 数据的字符长度计入压缩限制，这会导致一张图片就可能挤占掉大量的文本历史记录。
+
+### 4. 自动化任务 (Auto Vibe)
 - **代理硬编码**: `auto_vibe.py` 中硬编码了 `127.0.0.1:8118` 代理，缺乏环境变量或配置文件的灵活性支持。
+- **图片描述切片 Bug (Phase 17.5)**: `Gateway` 在处理图片消息响应时，若无描述则取 Base64 前 50 位，这在 API 返回中毫无意义且影响视觉。
+
 
 ---
 
