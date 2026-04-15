@@ -458,39 +458,43 @@ async fn message_handler(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    let envelope = Envelope::new(
-                        channel,
-                        &session_key,
-                        Message {
-                            role: Role::User,
-                            content: Content::text(content),
-                        },
-                    );
+let envelope = Envelope::new(
+    channel,
+    &session_key,
+    Message {
+        role: Role::User,
+        content: Content::text(content),
+    },
+);
 
-                    match state.agent.process_with_loop(envelope).await {
-                        Ok(AgentResponse { session_key, message, tool_calls }) => {
-                            let response_content = match message.content {
-                                Content::Text(s) => s,
-                                Content::Structured { text, .. } => text.unwrap_or_default(),
-                            };
-                            Json(serde_json::json!({
-                                "success": true,
-                                "sessionKey": session_key,
-                                "response": response_content,
-                                "toolCalls": tool_calls.len(),
-                            }))
-                        }
-                        Err(e) => {
-                            error!("Agent error: {}", e);
-                            Json(serde_json::json!({ 
-                                "success": false, 
-                                "error": e.to_string() 
-                            }))
-                        }
-                    }
+    match state.agent.process_with_loop(envelope).await {
+        Ok(AgentResponse { session_key, message, tool_calls }) => {
+            let response_content = match message.content {
+                Content::Text(s) => s,
+                Content::Structured { text, .. } => text.unwrap_or_default(),
+                Content::Image { image_data, description, .. } => {
+                    let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                    format!("[Image: {}]", desc)
                 }
-                "message.send_with_loop" => {
-                    let channel = req.params.get("channel")
+            };
+            Json(serde_json::json!({
+                "success": true,
+                "sessionKey": session_key,
+                "response": response_content,
+                "toolCalls": tool_calls.len(),
+            }))
+        }
+        Err(e) => {
+            error!("Agent error: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string()
+            }))
+        }
+    }
+}
+"message.send_with_loop" => {
+    let channel = req.params.get("channel")
                         .and_then(|v| v.as_str())
                         .unwrap_or("http");
                     
@@ -503,38 +507,42 @@ async fn message_handler(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    let envelope = Envelope::new(
-                        channel,
-                        &session_key,
-                        Message {
-                            role: Role::User,
-                            content: Content::text(content),
-                        },
-                    );
+let envelope = Envelope::new(
+    channel,
+    &session_key,
+    Message {
+        role: Role::User,
+        content: Content::text(content),
+    },
+);
 
-                    match state.agent.process_with_loop(envelope).await {
-                        Ok(AgentResponse { session_key, message, tool_calls }) => {
-                            let response_content = match message.content {
-                                Content::Text(s) => s,
-                                Content::Structured { text, .. } => text.unwrap_or_default(),
-                            };
-                            Json(serde_json::json!({
-                                "success": true,
-                                "sessionKey": session_key,
-                                "response": response_content,
-                                "toolCalls": tool_calls.len(),
-                            }))
-                        }
-                        Err(e) => {
-                            error!("Agent error: {}", e);
-                            Json(serde_json::json!({ 
-                                "success": false, 
-                                "error": e.to_string() 
-                            }))
-                        }
-                    }
+    match state.agent.process_with_loop(envelope).await {
+        Ok(AgentResponse { session_key, message, tool_calls }) => {
+            let response_content = match message.content {
+                Content::Text(s) => s,
+                Content::Structured { text, .. } => text.unwrap_or_default(),
+                Content::Image { image_data, description, .. } => {
+                    let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                    format!("[Image: {}]", desc)
                 }
-                "session.list" => {
+            };
+            Json(serde_json::json!({
+                "success": true,
+                "sessionKey": session_key,
+                "response": response_content,
+                "toolCalls": tool_calls.len(),
+            }))
+        }
+        Err(e) => {
+            error!("Agent error: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string()
+            }))
+        }
+    }
+}
+"session.list" => {
                     let sessions: Vec<_> = state.sessions.read().values()
                         .map(|s| serde_json::json!({
                             "id": s.id,
@@ -734,10 +742,14 @@ async fn agent_get_handler(
                         rustclaw_protocol::Role::Assistant => "assistant",
                         rustclaw_protocol::Role::System => "system",
                     },
-                    "content": match &m.content {
-                        rustclaw_protocol::Content::Text(s) => s,
-                        rustclaw_protocol::Content::Structured { text, .. } => text.as_deref().unwrap_or(""),
+"content": match &m.content {
+                    rustclaw_protocol::Content::Text(s) => s.to_string(),
+                    rustclaw_protocol::Content::Structured { text, .. } => text.as_deref().unwrap_or("").to_string(),
+                    rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                        let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                        format!("[Image: {}]", desc)
                     }
+                }
                 })).collect::<Vec<_>>()
             }
         })),

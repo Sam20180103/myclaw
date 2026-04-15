@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::Engine;
 use governor::{Quota, RateLimiter};
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
@@ -148,14 +149,24 @@ impl FeishuChannel {
 
     /// 发送 Agent 响应到飞书
     pub async fn send_response(&self, response: &AgentResponse, session_key: &str) -> Result<()> {
-        let text = match &response.message.content {
-            Content::Text(t) => t.clone(),
-            Content::Structured { text, .. } => text.clone().unwrap_or_default(),
-        };
+        // Phase 17.5: 支持图片消息
+        match &response.message.content {
+            Content::Image { image_data, image_type, description } => {
+                self.send_image_response(session_key, image_data, image_type, description.as_deref()).await
+            }
+            Content::Text(t) => {
+                self.send_text_response(session_key, t).await
+            }
+            Content::Structured { text, .. } => {
+                self.send_text_response(session_key, text.as_deref().unwrap_or("")).await
+            }
+        }
+    }
 
+    /// 发送文本响应 (内部方法)
+    async fn send_text_response(&self, session_key: &str, text: &str) -> Result<()> {
         let content = json!({"text": text}).to_string();
-        
-        // 解析 session_key 获取回复地址
+
         let parts: Vec<&str> = session_key.split(':').collect();
         if parts.len() == 3 {
             let chat_type = parts[0];
@@ -163,16 +174,58 @@ impl FeishuChannel {
             let sender_id = parts[2];
 
             if chat_type == "p2p" {
-                // 私聊优先发给 open_id
                 self.send_raw(sender_id, "text", &content).await
             } else {
-                // 群聊发给 chat_id
                 self.send_raw(chat_id, "text", &content).await
             }
         } else {
-            // 回退逻辑
             self.send_raw(session_key, "text", &content).await
         }
+    }
+
+    /// 发送图片响应 (Phase 17.5: 扫码登录支持)
+    async fn send_image_response(
+        &self,
+        session_key: &str,
+        image_data: &str,
+        image_type: &str,
+        description: Option<&str>,
+    ) -> Result<()> {
+        // 解码 Base64 图片数据
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(image_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode base64 image: {}", e))?;
+
+        // 上传图片到飞书
+        let image_key = self.client.upload_image(&image_bytes, image_type).await
+            .map_err(|e| anyhow::anyhow!("Failed to upload image: {}", e))?;
+
+        tracing::info!("Image uploaded to Feishu, key: {}", image_key);
+
+        // 发送图片消息
+        let parts: Vec<&str> = session_key.split(':').collect();
+        let receive_id = if parts.len() == 3 {
+            if parts[0] == "p2p" {
+                parts[2]
+            } else {
+                parts[1]
+            }
+        } else {
+            session_key
+        };
+
+        let id_type = if receive_id.starts_with("ou_") { "open_id" } else { "chat_id" };
+
+        self.client.send_image(receive_id, id_type, &image_key).await
+            .map_err(|e| anyhow::anyhow!("Failed to send image: {}", e))?;
+
+        // 如果有描述，发送额外的文本消息
+        if let Some(desc) = description {
+            let content = json!({"text": desc}).to_string();
+            let _ = self.send_raw(receive_id, "text", &content).await;
+        }
+
+        Ok(())
     }
 
     /// 统一发送逻辑, 自动检测 ID 类型
@@ -402,18 +455,42 @@ impl Channel for FeishuChannel {
     }
 
     async fn send(&self, envelope: Envelope) -> Result<()> {
-        let text = match envelope.message.content {
-            Content::Text(t) => t,
-            Content::Structured { text, .. } => text.unwrap_or_default(),
-        };
-
-        let response = AgentResponse {
-            session_key: envelope.session_key,
-            message: Message {
-                role: Role::Assistant,
-                content: Content::text(text),
-            },
-            tool_calls: vec![],
+        let response = match envelope.message.content {
+            Content::Text(t) => {
+                AgentResponse {
+                    session_key: envelope.session_key,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::text(t),
+                    },
+                    tool_calls: vec![],
+                }
+            }
+            Content::Structured { text, .. } => {
+                AgentResponse {
+                    session_key: envelope.session_key,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::text(text.unwrap_or_default()),
+                    },
+                    tool_calls: vec![],
+                }
+            }
+            Content::Image { image_data, image_type, description } => {
+                // Phase 17.5: 图片消息直接发送
+                AgentResponse {
+                    session_key: envelope.session_key,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::image_with_description(
+                            image_data,
+                            image_type,
+                            description.unwrap_or_default(),
+                        ),
+                    },
+                    tool_calls: vec![],
+                }
+            }
         };
 
         self.send_response(&response, &response.session_key).await

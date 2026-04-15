@@ -180,10 +180,13 @@ pub enum Role {
     System,
 }
 
+/// 内容类型枚举 — 支持多种消息格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Content {
+    /// 纯文本消息
     Text(String),
+    /// 结构化消息 (支持多部分内容)
     Structured {
         #[serde(rename = "type")]
         content_type: String,
@@ -191,6 +194,23 @@ pub enum Content {
         #[serde(default)]
         parts: Vec<ContentPart>,
     },
+    /// 图片消息 (Phase 17.5: 支持扫码登录)
+    Image {
+        /// 图片数据 (Base64编码)
+        #[serde(rename = "image_data")]
+        image_data: String,
+        /// 图片格式 (png, jpeg, gif等)
+        #[serde(rename = "image_type", default = "default_image_type")]
+        image_type: String,
+        /// 图片描述 (可选)
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+/// 默认图片类型
+fn default_image_type() -> String {
+    "png".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +224,28 @@ pub struct ContentPart {
 impl Content {
     pub fn text(s: impl Into<String>) -> Self {
         Content::Text(s.into())
+    }
+
+    /// 创建图片内容 (Phase 17.5)
+    pub fn image(data: impl Into<String>, image_type: impl Into<String>) -> Self {
+        Content::Image {
+            image_data: data.into(),
+            image_type: image_type.into(),
+            description: None,
+        }
+    }
+
+    /// 创建带描述的图片内容 (Phase 17.5)
+    pub fn image_with_description(
+        data: impl Into<String>,
+        image_type: impl Into<String>,
+        desc: impl Into<String>,
+    ) -> Self {
+        Content::Image {
+            image_data: data.into(),
+            image_type: image_type.into(),
+            description: Some(desc.into()),
+        }
     }
 }
 

@@ -85,6 +85,7 @@ impl SessionHygiene {
             let msg_chars = match &msg.content {
                 Content::Text(t) => t.len(),
                 Content::Structured { text, .. } => text.as_ref().map(|t| t.len()).unwrap_or(0),
+                Content::Image { image_data, .. } => image_data.len(),
             };
             if total_chars + msg_chars > limit {
                 break;
@@ -204,6 +205,7 @@ impl ContextCompressor {
             .map(|m| match &m.content {
                 Content::Text(t) => t.len(),
                 Content::Structured { text, .. } => text.as_ref().map(|t| t.len()).unwrap_or(0),
+                Content::Image { image_data, .. } => image_data.len(),
             })
             .sum()
     }

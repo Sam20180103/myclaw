@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import base64
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException
 from playwright.async_api import async_playwright
@@ -115,6 +116,89 @@ class BossScraper:
         await page.close()
         return is_login
 
+    async def get_qrcode_base64(self) -> Dict[str, str]:
+        """
+        Phase 17.5: 获取登录二维码截图并转为Base64
+        用于扫码登录全自动化
+        """
+        page = await self.context.new_page()
+        await stealth_async(page)
+
+        url = "https://www.zhipin.com/web/user/?ka=header-login"
+        logger.info(f"Navigating to login page: {url}")
+        await page.goto(url, wait_until="networkidle")
+        await asyncio.sleep(2)
+
+        if "login" not in page.url:
+            await page.close()
+            return {"is_login": True, "message": "Already logged in"}
+
+        await asyncio.sleep(2)
+
+        qrcode_selectors = [
+            ".qrcode-wrapper img",
+            ".login-scan-wrap img",
+            "img.qrcode",
+            "[class*='qrcode'] img",
+            ".scan-qrcode img"
+        ]
+
+        qrcode_element = None
+        for selector in qrcode_selectors:
+            try:
+                qrcode_element = await page.query_selector(selector)
+                if qrcode_element:
+                    logger.info(f"Found QR code with selector: {selector}")
+                    break
+            except:
+                continue
+
+        if not qrcode_element:
+            logger.warning("QR code element not found, capturing login area screenshot")
+            login_area = await page.query_selector(".login-scan-wrap, .qrcode-wrapper, .login-content")
+            if login_area:
+                screenshot_bytes = await login_area.screenshot()
+            else:
+                screenshot_bytes = await page.screenshot(full_page=False)
+        else:
+            screenshot_bytes = await qrcode_element.screenshot()
+
+        screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+        await page.close()
+
+        return {
+            "is_login": False,
+            "qrcode_base64": screenshot_base64,
+            "image_type": "png",
+            "description": "请使用Boss直聘APP扫描此二维码登录",
+            "message": "QR code captured successfully"
+        }
+
+    async def wait_for_login(self, timeout: int = 120) -> Dict[str, Any]:
+        """
+        Phase 17.5: 等待用户扫码登录
+        """
+        page = await self.context.new_page()
+        await stealth_async(page)
+
+        url = "https://www.zhipin.com/web/user/?ka=header-login"
+        await page.goto(url, wait_until="networkidle")
+
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                await page.close()
+                return {"success": False, "message": f"Login timeout after {timeout} seconds"}
+
+            if "login" not in page.url:
+                await page.close()
+                return {"success": True, "message": "Login successful"}
+
+            await asyncio.sleep(2)
+
 # --- MCP JSON-RPC 接口实现 ---
 @app.post("/")
 async def handle_mcp_request(request: Request):
@@ -124,14 +208,17 @@ async def handle_mcp_request(request: Request):
     rpc_id = req_data.get("id")
     
     cookie = params.get("cookie")
-    if not cookie:
+    # Phase 17.5: 允许二维码相关方法不需要cookie
+    if not cookie and method not in ["boss.get_qrcode", "boss.wait_login"]:
         logger.error("Request missing cookie")
         return {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing cookie"}, "id": rpc_id}
 
     scraper = BossScraper()
     try:
-        await scraper.init_browser(cookie)
-        
+        # 只在需要cookie的方法中初始化浏览器
+        if method not in ["boss.get_qrcode", "boss.wait_login"]:
+            await scraper.init_browser(cookie)
+
         result = None
         if method == "boss.search_jobs":
             result = await scraper.search_jobs(params.get("query", ""), params.get("city", ""), params.get("limit", 10))
@@ -141,6 +228,14 @@ async def handle_mcp_request(request: Request):
             result = {"is_login": await scraper.check_auth()}
         elif method == "boss.apply_job":
             result = {"success": True, "message": "模拟投递成功（已接收投递指令）"}
+        elif method == "boss.get_qrcode":
+            # Phase 17.5: 获取登录二维码
+            await scraper.init_browser("")
+            result = await scraper.get_qrcode_base64()
+        elif method == "boss.wait_login":
+            # Phase 17.5: 等待扫码登录
+            await scraper.init_browser("")
+            result = await scraper.wait_for_login(params.get("timeout", 120))
         else:
             return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method {method} not found"}, "id": rpc_id}
 

@@ -203,12 +203,15 @@ impl LlmProvider for OpenAiProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -265,12 +268,15 @@ impl LlmProvider for OpenAiProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -332,12 +338,15 @@ impl LlmProvider for OpenAiProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -531,12 +540,15 @@ impl LlmProvider for AnthropicProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -590,12 +602,15 @@ impl LlmProvider for AnthropicProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -691,12 +706,15 @@ impl LlmProvider for AnthropicProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -832,12 +850,15 @@ impl LlmProvider for NvProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -904,12 +925,15 @@ impl LlmProvider for NvProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -971,12 +995,15 @@ impl LlmProvider for NvProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-                let content = match &m.content {
-                    rustclaw_protocol::Content::Text(s) => s.clone(),
-                    rustclaw_protocol::Content::Structured { text, .. } => {
-                        text.clone().unwrap_or_default()
-                    }
-                };
+let content = match &m.content {
+            rustclaw_protocol::Content::Text(s) => s.clone(),
+            rustclaw_protocol::Content::Structured { text, .. } => {
+                text.clone().unwrap_or_default()
+            }
+            rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
+            }
+        };
                 OpenAiMessage {
                     role: role.to_string(),
                     content,

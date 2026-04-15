@@ -377,6 +377,105 @@ impl FeishuClient {
 
         Ok(file_key)
     }
+
+    /// 上传图片 (Phase 17.5: 支持扫码登录图片发送)
+    pub async fn upload_image(
+        &self,
+        image_data: &[u8],
+        image_type: &str,
+    ) -> Result<String, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = "https://open.feishu.cn/open-apis/im/v1/images";
+
+        let file_name = format!("qrcode.{}", image_type);
+        let form = reqwest::multipart::Form::new()
+            .text("image_type", image_type.to_string())
+            .part("image", reqwest::multipart::Part::bytes(image_data.to_vec()).file_name(file_name));
+
+        let response = self.client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        #[derive(serde::Deserialize)]
+        struct ImageUploadResponse {
+            code: i64,
+            msg: Option<String>,
+            data: Option<ImageData>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ImageData {
+            image_key: Option<String>,
+        }
+
+        let resp: ImageUploadResponse = response
+            .json()
+            .await
+            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+
+        if resp.code != 0 {
+            return Err(FeishuError::ApiError(
+                resp.msg.unwrap_or_else(|| "Unknown API error".to_string()),
+            ));
+        }
+
+        let image_key = resp.data
+            .and_then(|d| d.image_key)
+            .ok_or_else(|| FeishuError::ApiError("No image_key in response".to_string()))?;
+
+        Ok(image_key)
+    }
+
+    /// 发送图片消息 (Phase 17.5)
+    pub async fn send_image(
+        &self,
+        receive_id: &str,
+        receive_id_type: &str,
+        image_key: &str,
+    ) -> Result<String, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = format!(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={}",
+            receive_id_type
+        );
+
+        let body = json!({
+            "receive_id": receive_id,
+            "msg_type": "image",
+            "content": json!({
+                "image_key": image_key
+            }).to_string(),
+        });
+
+        let response = self.client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        let resp: SendMessageResponse = response
+            .json()
+            .await
+            .map_err(|e| FeishuError::ParseError(e.to_string()))?;
+
+        if resp.code != 0 {
+            return Err(FeishuError::ApiError(
+                resp.msg.unwrap_or_else(|| "Unknown API error".to_string()),
+            ));
+        }
+
+        let message_id = resp.data
+            .and_then(|d| d.message_id)
+            .ok_or_else(|| FeishuError::ApiError("No message_id in response".to_string()))?;
+
+        Ok(message_id)
+    }
 }
 
 #[cfg(test)]

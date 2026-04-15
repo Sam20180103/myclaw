@@ -1826,46 +1826,50 @@ fn description(&self) -> &str {
 }
 
 fn schema(&self) -> ToolSchema {
-    ToolSchema {
-        name: "boss_zhipin_reach".to_string(),
-        description: "Access Boss Zhipin job data and perform recruitment actions via MCP bridge".to_string(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["search", "job", "company", "apply", "check_auth"],
-                    "description": "Action: search (search jobs), job (job detail), company (company info), apply (apply for job), check_auth (check login status)"
+        ToolSchema {
+            name: "boss_zhipin_reach".to_string(),
+            description: "Access Boss Zhipin job data and perform recruitment actions via MCP bridge".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "job", "company", "apply", "check_auth", "get_qrcode", "wait_login"],
+                        "description": "Action: search (search jobs), job (job detail), company (company info), apply (apply for job), check_auth (check login status), get_qrcode (Phase 17.5: get QR code for login), wait_login (Phase 17.5: wait for scan login)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Job search query for 'search' action"
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Job ID for 'job' or 'apply' action"
+                    },
+                    "company_id": {
+                        "type": "string",
+                        "description": "Company ID for 'company' action"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "City filter for search (e.g., '北京', '上海')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results (default: 20)"
+                    },
+                    "resume_id": {
+                        "type": "string",
+                        "description": "Optional Resume ID for 'apply' action"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds for 'wait_login' action (default: 120)"
+                    }
                 },
-                "query": {
-                    "type": "string",
-                    "description": "Job search query for 'search' action"
-                },
-                "job_id": {
-                    "type": "string",
-                    "description": "Job ID for 'job' or 'apply' action"
-                },
-                "company_id": {
-                    "type": "string",
-                    "description": "Company ID for 'company' action"
-                },
-                "city": {
-                    "type": "string",
-                    "description": "City filter for search (e.g., '北京', '上海')"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of results (default: 20)"
-                },
-                "resume_id": {
-                    "type": "string",
-                    "description": "Optional Resume ID for 'apply' action"
-                }
-            },
-            "required": ["action"]
-        }),
+                "required": ["action"]
+            }),
+        }
     }
-}
 
 async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
     let action = params
@@ -1977,6 +1981,70 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                 "action": action,
                 "data": result
             }))
+        }
+        "get_qrcode" => {
+            // Phase 17.5: 获取登录二维码 (Base64图片)
+            let result = self.mcp_client.call("boss.get_qrcode", serde_json::json!({})).await?;
+
+            // 检查是否已登录
+            if let Some(is_login) = result.get("is_login").and_then(|v| v.as_bool()) {
+                if is_login {
+                    return Ok(serde_json::json!({
+                        "success": true,
+                        "action": action,
+                        "status": "already_logged_in",
+                        "message": "已登录，无需扫码"
+                    }));
+                }
+            }
+
+            // 返回二维码图片数据
+            let qrcode_base64 = result.get("qrcode_base64").and_then(|v| v.as_str()).unwrap_or("");
+            let image_type = result.get("image_type").and_then(|v| v.as_str()).unwrap_or("png");
+            let description = result.get("description").and_then(|v| v.as_str()).unwrap_or("请使用Boss直聘APP扫描此二维码登录");
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "status": "qrcode_ready",
+                "qrcode_image": {
+                    "image_data": qrcode_base64,
+                    "image_type": image_type,
+                    "description": description
+                },
+                "note": "请使用 rustclaw-protocol Content::Image 发送此二维码到飞书"
+            }))
+        }
+        "wait_login" => {
+            // Phase 17.5: 等待扫码登录
+            let timeout = params
+                .get("timeout")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(120) as i64;
+
+            let result = self.mcp_client.call("boss.wait_login", serde_json::json!({
+                "timeout": timeout
+            })).await?;
+
+            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+            let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
+
+            if success {
+                Ok(serde_json::json!({
+                    "success": true,
+                    "action": action,
+                    "status": "login_success",
+                    "message": message,
+                    "note": "登录成功，请更新 boss_cookie 配置"
+                }))
+            } else {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "action": action,
+                    "status": "login_timeout",
+                    "message": message
+                }))
+            }
         }
         _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
     }
