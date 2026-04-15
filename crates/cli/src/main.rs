@@ -355,6 +355,17 @@ enum ToolsSubcommands {
         #[arg(long)]
         name: String,
     },
+    /// Configure a tool
+    Config {
+        #[arg(index = 1)]
+        name: String,
+        
+        #[arg(long)]
+        set: Option<String>,
+        
+        #[arg(long)]
+        get: Option<String>,
+    },
     /// Register a new tool
     Register {
         #[arg(long)]
@@ -1459,7 +1470,44 @@ Commands::System { subcommand } => {
                 println!("Tool not found in built-in tools");
             }
         }
-                Some(ToolsSubcommands::Register { name, path }) => {
+        Some(ToolsSubcommands::Config { name, set, get }) => {
+            if name == "boss_zhipin_reach" {
+                if let Some(s) = set {
+                    if let Some(cookie_val) = s.strip_prefix("cookie=") {
+                        let config_path = get_config_path();
+                        if let Some(mut config) = load_config_file() {
+                            config.tools.reach.boss_cookie = Some(cookie_val.to_string());
+                            if let Ok(content) = toml::to_string_pretty(&config) {
+                                if let Ok(mut file) = std::fs::File::create(&config_path) {
+                                    use std::io::Write;
+                                    let _ = file.write_all(content.as_bytes());
+                                    println!("Tool {} configuration updated: cookie set", name);
+                                }
+                            }
+                        } else {
+                            println!("Could not load config file at {}", config_path.display());
+                        }
+                    } else {
+                        println!("Unsupported config key for {}. Use --set cookie=...", name);
+                    }
+                } else if let Some(g) = get {
+                    if g == "cookie" {
+                        if let Some(config) = load_config_file() {
+                            if let Some(cookie) = config.tools.reach.boss_cookie {
+                                println!("{}.cookie = {}", name, cookie);
+                            } else {
+                                println!("{}.cookie is not set", name);
+                            }
+                        }
+                    } else {
+                        println!("Unsupported config key for {}. Use --get cookie", name);
+                    }
+                }
+            } else {
+                println!("Tool {} does not support CLI configuration", name);
+            }
+        }
+        Some(ToolsSubcommands::Register { name, path }) => {
                     println!("Registering tool: {} from {}", name, path);
                     println!("  (Dynamic tool registration not implemented)");
                 }

@@ -409,17 +409,105 @@ impl Tool for OpenCodeTool {
     }
 }
 
+pub struct ResumeReadTool {
+    allowed_dirs: Vec<String>,
+}
+
+impl ResumeReadTool {
+    pub fn new(allowed_dirs: Vec<String>) -> Self {
+        Self { allowed_dirs }
+    }
+
+    fn validate_path(&self, path: &str) -> Result<(), ToolError> {
+        if path.contains("..") {
+            return Err(ToolError::SandboxViolation(
+                "Path traversal not allowed".to_string(),
+            ));
+        }
+        if !self.allowed_dirs.is_empty() {
+            let canonical = std::path::Path::new(path)
+                .canonicalize()
+                .map_err(|e| ToolError::InvalidParams(format!("Invalid path: {}", e)))?;
+            let path_str = canonical.to_string_lossy();
+            let allowed = self.allowed_dirs.iter().any(|dir| path_str.starts_with(dir));
+            if !allowed {
+                return Err(ToolError::SandboxViolation(format!(
+                    "Path '{}' is not within allowed directories",
+                    path
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Tool for ResumeReadTool {
+    fn name(&self) -> &str {
+        "resume_read"
+    }
+
+    fn description(&self) -> &str {
+        "Read and structure a resume from a markdown file for LLM analysis."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "resume_read".to_string(),
+            description: "Read and structure a resume file (Markdown supported)".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the resume markdown file"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let path = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'path' parameter".to_string()))?;
+
+        self.validate_path(path)?;
+
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        // In a real implementation, we might do some regex or structural parsing here.
+        // For now, we return the content as "resume_content" which the LLM can then process.
+        Ok(serde_json::json!({
+            "success": true,
+            "path": path,
+            "resume_content": content,
+            "format": "markdown"
+        }))
+    }
+}
+
 impl ToolRegistry {
     pub fn register_builtin_tools(&self) {
         self.register(Arc::new(FileReadTool::new(vec![])));
         self.register(Arc::new(FileWriteTool::new(vec![])));
         self.register(Arc::new(ShellExecTool::default()));
         self.register(Arc::new(OpenCodeTool::default()));
+        self.register(Arc::new(ResumeReadTool::new(vec![])));
     }
 
     pub fn register_all_tools(&self) {
         self.register_builtin_tools();
         crate::reach::register_reach_tools(self, None);
+    }
+
+    pub fn register_all_tools_with_config(&self, reach_config: Option<ReachConfig>) {
+        self.register_builtin_tools();
+        crate::reach::register_reach_tools(self, reach_config);
     }
 
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {

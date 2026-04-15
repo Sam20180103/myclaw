@@ -148,4 +148,30 @@ mod tests {
         assert!(policy.is_allowed("file_read"));
         assert!(!policy.is_allowed("shell_exec"));
     }
+
+    #[test]
+    fn test_resume_read_tool_schema() {
+        let tool = ResumeReadTool::new(vec![]);
+        assert_eq!(tool.name(), "resume_read");
+        let schema = tool.schema();
+        assert_eq!(schema.name, "resume_read");
+        assert!(schema.parameters.get("properties").unwrap().get("path").is_some());
+    }
+
+    #[test]
+    fn test_boss_zhipin_reach_tool_extended_schema() {
+        let config = ReachConfig::default();
+        let tool = BossZhipinReachTool::new(config);
+        assert_eq!(tool.name(), "boss_zhipin_reach");
+        let schema = tool.schema();
+        let actions = schema.parameters
+            .get("properties").unwrap()
+            .get("action").unwrap()
+            .get("enum").unwrap()
+            .as_array().unwrap();
+        
+        let actions_str: Vec<&str> = actions.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(actions_str.contains(&"apply"));
+        assert!(actions_str.contains(&"check_auth"));
+    }
 }

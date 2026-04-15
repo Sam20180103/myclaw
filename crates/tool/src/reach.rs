@@ -115,6 +115,7 @@ pub linkedin_mcp_endpoint: String,
 pub wechat_mcp_endpoint: String,
 pub boss_mcp_endpoint: String,
 pub podcast_mcp_endpoint: String,
+pub boss_cookie: Option<String>,
 pub exa_api_key: Option<String>,
 }
 
@@ -133,6 +134,7 @@ linkedin_mcp_endpoint: "http://127.0.0.1:8081".to_string(),
 wechat_mcp_endpoint: "http://127.0.0.1:8082".to_string(),
 boss_mcp_endpoint: "http://127.0.0.1:8083".to_string(),
 podcast_mcp_endpoint: "http://127.0.0.1:8084".to_string(),
+boss_cookie: None,
 exa_api_key: None,
 }
 }
@@ -1820,120 +1822,166 @@ fn name(&self) -> &str {
 }
 
 fn description(&self) -> &str {
-"Search and retrieve job listings from Boss Zhipin (BOSS直聘) via MCP bridge."
+    "Search and retrieve job listings from Boss Zhipin (BOSS直聘) via MCP bridge, and perform recruitment actions like apply."
 }
 
 fn schema(&self) -> ToolSchema {
-ToolSchema {
-name: "boss_zhipin_reach".to_string(),
-description: "Access Boss Zhipin job data via MCP bridge".to_string(),
-parameters: serde_json::json!({
-"type": "object",
-"properties": {
-"action": {
-"type": "string",
-"enum": ["search", "job", "company"],
-"description": "Action: search (search jobs), job (job detail), company (company info)"
-},
-"query": {
-"type": "string",
-"description": "Job search query for 'search' action"
-},
-"job_id": {
-"type": "string",
-"description": "Job ID for 'job' action"
-},
-"company_id": {
-"type": "string",
-"description": "Company ID for 'company' action"
-},
-"city": {
-"type": "string",
-"description": "City filter for search (e.g., '北京', '上海')"
-},
-"limit": {
-"type": "integer",
-"description": "Number of results (default: 20)"
-}
-},
-"required": ["action"]
-}),
-}
+    ToolSchema {
+        name: "boss_zhipin_reach".to_string(),
+        description: "Access Boss Zhipin job data and perform recruitment actions via MCP bridge".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["search", "job", "company", "apply", "check_auth"],
+                    "description": "Action: search (search jobs), job (job detail), company (company info), apply (apply for job), check_auth (check login status)"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Job search query for 'search' action"
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "Job ID for 'job' or 'apply' action"
+                },
+                "company_id": {
+                    "type": "string",
+                    "description": "Company ID for 'company' action"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "City filter for search (e.g., '北京', '上海')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results (default: 20)"
+                },
+                "resume_id": {
+                    "type": "string",
+                    "description": "Optional Resume ID for 'apply' action"
+                }
+            },
+            "required": ["action"]
+        }),
+    }
 }
 
 async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-let action = params
-.get("action")
-.and_then(|v| v.as_str())
-.ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidParams("Missing 'action' parameter".to_string()))?;
 
-let limit = params
-.get("limit")
-.and_then(|v| v.as_u64())
-.unwrap_or(20);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20);
 
-match action {
-"search" => {
-let query = params
-.get("query")
-.and_then(|v| v.as_str())
-.ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+    // Include cookie in all calls if provided
+    let mut mcp_params = params.clone();
+    if let Some(ref cookie) = self.config.boss_cookie {
+        if let Some(obj) = mcp_params.as_object_mut() {
+            obj.insert("cookie".to_string(), serde_json::json!(cookie));
+        }
+    }
 
-let city = params
-.get("city")
-.and_then(|v| v.as_str())
-.unwrap_or("");
+    match action {
+        "search" => {
+            let query = params
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
 
-let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
-"query": query,
-"city": city,
-"limit": limit
-})).await?;
+            let city = params
+                .get("city")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
-Ok(serde_json::json!({
-"success": true,
-"action": action,
-"query": query,
-"data": result
-}))
+            let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
+                "query": query,
+                "city": city,
+                "limit": limit,
+                "cookie": self.config.boss_cookie
+            })).await?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "query": query,
+                "data": result
+            }))
+        }
+        "job" => {
+            let job_id = params
+                .get("job_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
+
+            let result = self.mcp_client.call("boss.get_job", serde_json::json!({
+                "job_id": job_id,
+                "cookie": self.config.boss_cookie
+            })).await?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "data": result
+            }))
+        }
+        "company" => {
+            let company_id = params
+                .get("company_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
+
+            let result = self.mcp_client.call("boss.get_company", serde_json::json!({
+                "company_id": company_id,
+                "cookie": self.config.boss_cookie
+            })).await?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "data": result
+            }))
+        }
+        "apply" => {
+            let job_id = params
+                .get("job_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for apply action".to_string()))?;
+
+            let resume_id = params.get("resume_id").and_then(|v| v.as_str());
+
+            let result = self.mcp_client.call("boss.apply_job", serde_json::json!({
+                "job_id": job_id,
+                "resume_id": resume_id,
+                "cookie": self.config.boss_cookie
+            })).await?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "job_id": job_id,
+                "data": result
+            }))
+        }
+        "check_auth" => {
+            let result = self.mcp_client.call("boss.check_auth", serde_json::json!({
+                "cookie": self.config.boss_cookie
+            })).await?;
+
+            Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "data": result
+            }))
+        }
+        _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
+    }
 }
-"job" => {
-let job_id = params
-.get("job_id")
-.and_then(|v| v.as_str())
-.ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
-
-let result = self.mcp_client.call("boss.get_job", serde_json::json!({
-"job_id": job_id
-})).await?;
-
-Ok(serde_json::json!({
-"success": true,
-"action": action,
-"data": result
-}))
 }
-"company" => {
-let company_id = params
-.get("company_id")
-.and_then(|v| v.as_str())
-.ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
-
-let result = self.mcp_client.call("boss.get_company", serde_json::json!({
-"company_id": company_id
-})).await?;
-
-Ok(serde_json::json!({
-"success": true,
-"action": action,
-"data": result
-}))
-}
-_ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
-}
-}
-}
-
 pub struct PodcastReachTool {
 mcp_client: McpClient,
 #[allow(dead_code)]

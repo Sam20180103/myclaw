@@ -16,6 +16,7 @@ use tracing::{info, error, warn};
 
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
 use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
+use rustclaw_tool;
 use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequest};
 use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
@@ -106,7 +107,14 @@ impl Gateway {
             max_concurrent_per_lane: config.agent.max_concurrent_sessions,
         };
         
-        let mut agent_builder = AgentRuntime::new(agent_config)
+        let reach_config = rustclaw_tool::ReachConfig {
+            boss_cookie: config.tools.reach.boss_cookie.clone(),
+            boss_mcp_endpoint: config.tools.reach.boss_mcp_endpoint.clone(),
+            // other fields will use defaults as they are not in the gateway config yet
+            ..rustclaw_tool::ReachConfig::default()
+        };
+
+        let mut agent_builder = AgentRuntime::new_with_reach_config(agent_config, Some(reach_config))
             .with_provider(provider_client);
 
         let data_dir = dirs::home_dir()
@@ -333,6 +341,8 @@ impl Gateway {
                         let ch = feishu_ch.clone();
                         let ag = agent.clone();
                         tokio::spawn(async move {
+                            let session_key = envelope.session_key.clone();
+                            info!("Processing feishu message in loop: session_key={}", session_key);
                             match ag.process_with_loop(envelope).await {
                                 Ok(response) => {
                                     info!("Feishu message processed, sending response: session_key={}", response.session_key);
@@ -345,7 +355,16 @@ impl Gateway {
                                         error!("Failed to send response to feishu: {}", e);
                                     }
                                 }
-                                Err(e) => error!("Failed to process feishu message: {}", e),
+                                Err(e) => {
+                                    error!("Failed to process feishu message: {}", e);
+                                    // 给用户一个错误反馈，防止“没反应”
+                                    let error_msg = Message {
+                                        role: Role::Assistant,
+                                        content: Content::Text(format!("抱歉，处理您的请求时发生了错误：{}", e)),
+                                    };
+                                    let error_env = Envelope::new("feishu", &session_key, error_msg);
+                                    let _ = ch.send(error_env).await;
+                                }
                             }
                         });
                     }

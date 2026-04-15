@@ -10,3 +10,5 @@ Cargo.lock
 .idea/
 .vscode/
 *.iml
+node_modules/
+*.log

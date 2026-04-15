@@ -268,7 +268,7 @@ execute_prompt() {
             fi
         fi
     }
-    CURRENT_CMD_PID="$COPROC_PID"
+    CURRENT_CMD_PID="$GEMINI_PROC_PID"
 
     while IFS= read -r line <&"${GEMINI_PROC[0]}" || [[ -n "$line" ]]; do
         printf '%s\n' "$line"
@@ -279,10 +279,17 @@ execute_prompt() {
         fi
     done
 
-    if wait "$CURRENT_CMD_PID"; then
-        exit_code=0
+    exec {GEMINI_PROC[0]}<&- 2>/dev/null || true
+
+    if [[ -n "$CURRENT_CMD_PID" ]]; then
+        if wait "$CURRENT_CMD_PID"; then
+            exit_code=0
+        else
+            exit_code=$?
+        fi
     else
-        exit_code=$?
+        log_error "❌ 内部错误: 未获取到执行进程 PID"
+        exit_code=1
     fi
 
     output=$(cat "$output_file" 2>/dev/null || true)

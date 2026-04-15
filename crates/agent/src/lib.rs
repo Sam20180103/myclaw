@@ -412,8 +412,12 @@ impl Clone for Lane {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Self {
+        Self::new_with_reach_config(config, None)
+    }
+
+    pub fn new_with_reach_config(config: AgentConfig, reach_config: Option<rustclaw_tool::ReachConfig>) -> Self {
         let registry = Arc::new(ToolRegistry::new());
-        registry.register_all_tools();
+        registry.register_all_tools_with_config(reach_config);
         Self {
             config: config.clone(),
             session_manager: SessionManager::new(100, config.session_ttl_seconds),

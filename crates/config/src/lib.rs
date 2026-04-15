@@ -81,6 +81,24 @@ pub struct ToolConfig {
     pub sandbox_enabled: bool,         // 是否启用沙箱
     pub max_memory_mb: u64,            // 最大内存 (MB)
     pub max_timeout_ms: u64,           // 最大超时 (毫秒)
+    #[serde(default)]
+    pub reach: ReachConfig,            // Agent-Reach 配置
+}
+
+/// Agent-Reach 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachConfig {
+    pub boss_cookie: Option<String>,
+    pub boss_mcp_endpoint: String,
+}
+
+impl Default for ReachConfig {
+    fn default() -> Self {
+        Self {
+            boss_cookie: None,
+            boss_mcp_endpoint: "http://127.0.0.1:8083".to_string(),
+        }
+    }
 }
 
 /// LLM 提供商配置
@@ -123,6 +141,7 @@ impl Default for Config {
                 sandbox_enabled: true,
                 max_memory_mb: 512,
                 max_timeout_ms: 30000,
+                reach: ReachConfig::default(),
             },
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),

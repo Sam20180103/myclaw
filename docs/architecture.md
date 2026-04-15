@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.42.0
-> 日期: 2026-04-01
-> 状态: Phase 16 全部完成 (architecture.md 任务清单全勾选)
+> 版本: v0.43.0
+> 日期: 2026-04-13
+> 状态: Phase 15.6 修复持久化记忆与系统脱节问题 (全部完成)
 
 ---
 
@@ -16,13 +16,16 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 
 | 特性 | 描述 | 优先级 |
 |------|------|--------|
-| 多通道接入 | WebSocket、HTTP、Webhook 等消息入口 | P0 |
+| 多通道接入 | WebSocket、HTTP、Webhook、飞书 等消息入口 | P0 |
 | 智能体运行时 | 多会话并发、Agent循环、流式响应 | P0 |
-| 工具系统 | 原生Rust工具注册 | P0 |
+| 工具系统 | 原生Rust工具注册 (38+) | P0 |
+| 记忆与持久化 | MEMORY.md 持久化记忆 + SQLite 会话存储 | P0 (v0.43.0 激活) |
+| 上下文压缩 | 双级压缩策略 (Gateway/Agent) | P0 (v0.43.0 激活) |
 | 动态Skill | Agent可以自己编写并注册新Skill | P0 |
 | 审批流程 | 用户审批后Skill才可使用 | P0 |
-| Provider抽象 | 支持多种LLM提供商 | P1 |
+| Provider抽象 | 支持 OpenAI、Anthropic、NVIDIA NIM | P1 |
 | 安全沙箱 | 进程隔离、权限控制、工具策略 | P1 |
+
 
 ---
 
@@ -1914,7 +1917,48 @@ rusqlite = { version = "0.31", features = ["bundled", "fts5"] }
 
 ---
 
-## 十七、代码质量分析与优化建议
+## 十八、Phase 15.6 依赖注入与模块激活
+
+> 解决 Phase 15 各模块（Memory, Storage, Compression）虽然实现但未在主流程生效的问题。
+
+### 18.1 Gateway 依赖注入 (DI)
+
+在 `crates/gateway/src/lib.rs` 的 `Gateway::new` 中，显式初始化三大核心组件并注入 `AgentRuntime`：
+
+```rust
+// 1. 上下文压缩器 (50% 阈值)
+let compressor = Arc::new(ContextCompressor::new(0.50, 128000));
+agent_builder = agent_builder.with_compressor(compressor);
+
+// 2. 记忆管理器 (MEMORY.md / USER.md)
+let memory_path = data_dir.join("memories").join("MEMORY.md");
+let memory_manager = Arc::new(MemoryManager::new(&memory_path, 2200, 1375));
+agent_builder = agent_builder.with_memory(memory_manager);
+
+// 3. SQLite 持久化存储 (state.db)
+let db_path = data_dir.join("state.db");
+if let Ok(store) = SQLiteSessionStore::new(&db_path) {
+    agent_builder = agent_builder.with_session_store(Arc::new(store));
+}
+```
+
+### 18.2 SessionManager 桥接实现
+
+`SessionManager` (`crates/agent/src/lib.rs`) 现在采用 **内存缓存 + SQLite 持久化** 的双层结构：
+
+- **读取策略**: 先查内存 `HashMap`，若缺失则从 `SQLiteSessionStore` 加载并回填缓存。
+- **写入策略**: 所有 `create`、`add_message` 和 `replace_messages` 操作均同步写入 SQLite。
+- **数据迁移**: 将 `rustclaw_agent::Session` 映射为 `rustclaw_storage::Session` 存储格式。
+
+### 18.3 运行时逻辑修复
+
+- **Memory 注入**: 在 `process_with_loop` 循环的每一轮，都会根据 `MemoryManager` 提取最新的 `MEMORY.md` 内容注入 System Prompt。
+- **压缩触发**: 在调用 LLM 前，`ContextCompressor` 会根据当前 Token 消耗情况决定是否触发摘要压缩。
+- **建议触发**: 迭代次数或工具调用次数达标后，通过事件系统触发 `SkillSuggestion`。
+
+---
+
+## 十九、版本历史
 
 > 基于对全部 10 个 crate 的深度代码审查
 > 分析日期: 2026-04-01
@@ -2259,4 +2303,91 @@ system_prompt = ""
 
 ---
 
-*文档版本: v0.36.0*
+## 十九、智能招聘 Agent 设计 (BOSS直聘)
+
+### 19.1 业务流程
+
+```
+[Agent Runtime]
+    │
+    ├── 1. 获取职位 (BossZhipinReachTool)
+    │   └── action: "search" -> 获取职位列表
+    │   └── action: "job" -> 获取详细 JD
+    │
+    ├── 2. 读取简历 (FileReadTool)
+    │   └── 读取本地 resume.md (/usr/local/project/lab/myclaw/张传奇简历及职业信息总结.md)
+    │
+    ├── 3. 语义匹配 (LLM Provider)
+    │   └── Prompt: "分析简历与JD的匹配度，给出0-100的分数和理由"
+    │
+    └── 4. 自动投递决策
+        └── IF score >= 90:
+            └── action: "apply" (BossZhipinReachTool)
+        └── ELSE:
+            └── log: "不匹配，跳过"
+```
+
+### 19.2 关键工具扩展
+
+| 工具 | 新增能力 | 实现细节 |
+|------|----------|----------|
+| `BossZhipinReachTool` | `apply` action | 通过 MCP 桥接调用 `boss.apply_job` |
+| `ResumeReadTool` | 结构化解析 | 基于 Markdown 提取技能、经验、教育背景 |
+| `MatchScoreTool` | 阈值判断 | 封装 LLM 评分与布尔判断逻辑 |
+
+### 19.3 核心设计原则
+
+- **安全性**: 投递动作必须在配置中显式开启 `auto_apply`，否则仅输出建议。
+- **隐私**: 本地简历数据仅在单次 Agent 运行上下文中处理，不进行外部持久化。
+- **重试机制**: 针对网络抖动或平台限制 (Rate Limit) 实施指数退避重试。
+
+### 19.4 认证与凭证管理 (Manual Inject)
+
+由于 BOSS 直聘严厉的反爬策略，本项目采用 **“手动注入凭证”** 的 MVP 方案：
+
+1.  **凭证获取**: 用户通过浏览器登录并提取关键 Cookie (如 `wt2`, `__zp_stoken__`)。
+2.  **凭证注入**: 通过 CLI 进行安全配置：`rustclaw tools config boss_zhipin_reach --set cookie="..."`。
+3.  **主动探测**: 每次执行搜索或投递操作前，Agent 调用 `check_auth` 动作：
+    - 若探测成功 (200 OK): 继续任务。
+    - 若探测失败 (403/Login required): 触发 **“凭证过期告警”** 并挂起自动化任务，防止无效请求堆积。
+4.  **安全隔离**: 凭证信息严格存储在本地 `~/.rustclaw/security/` 路径，仅在调用 MCP 时透传，严禁写入业务日志。
+
+### 19.5 全自动化扫码登录设计 (Phase 17.5)
+
+为了解决 Cookie 频繁过期的问题，RustClaw 实现了一套自愈式的扫码登录闭环架构，支持通过飞书直接完成扫码认证。
+
+#### 19.5.1 架构数据流
+```
+[Agent] --(auth failed)--> [MCP Server] --(Playwright)--> BOSS Login Page
+                               │                                │
+                               │<--(Base64 QR Code)-------------│
+                               v
+[Gateway] --(Image Msg)--> [Feishu Channel] --(Upload)--> Feishu Server
+                               │
+                               v (User scans QR on phone)
+[MCP Server] <--(Wait Loop)-- Browser Context (Cookie generated)
+      │
+      v (Save to local `cookies.json`)
+[Agent] --(Resume)--> [MCP Server] --(Search/Apply)--> BOSS API
+```
+
+#### 19.5.2 核心模块交互
+1. **MCP Server 端 (Python)**:
+   - 提供 `boss.get_login_qr` 方法：控制 Playwright 导航至登录页，定位 `.login-qr-content` 元素并截图转码为 Base64 返回。
+   - 提供 `boss.wait_for_login` 方法：开启异步轮询检测 `context.cookies()`，一旦检测到核心 Cookie (如 `wt2`) 生成，立即存入本地持久化存储并返回成功信号。
+2. **协议层扩展 (Rust)**:
+   - 扩展 `rustclaw_protocol::Content` 支持 `Image { data: String, format: String }`，以支持跨进程传递媒体数据。
+3. **飞书通道集成 (Rust)**:
+   - 拦截包含 `Image` 类型的 `Envelope`。
+   - 调用飞书 OpenAPI `im/v1/images` 接口将 Base64 数据换取飞书的 `image_key`。
+   - 构造飞书图片消息或富文本卡片发送给用户。
+4. **Agent 自愈逻辑 (Rust)**:
+   - 当 `check_auth` 返回 `false` 且遇到 401/403 异常时，触发异常处理流 (Recovery Flow)。
+   - Agent 自动调用 `boss.get_login_qr` 并将结果以图片消息发给用户。
+   - Agent 随后阻塞调用 `boss.wait_for_login` (设置合理的 60-120s 超时)。
+   - 登录成功后，Agent 自动重试刚才失败的业务逻辑（搜索或投递）。
+
+---
+
+*文档版本: v0.44.0*
+

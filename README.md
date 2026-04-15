@@ -1,6 +1,6 @@
 # RustClaw
 
-[![Version](https://img.shields.io/badge/version-v0.40.0-blue.svg)](https://github.com/Sam20180103/myclaw)
+[![Version](https://img.shields.io/badge/version-v0.43.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-161%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -10,30 +10,31 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 ## 核心特性
 
 ### 基础架构
-- **多通道接入**: 支持 WebSocket、HTTP、Webhook 等消息入口
+- **多通道接入**: 支持 WebSocket、HTTP、Webhook、飞书 等消息入口
 - **智能体运行时**: 多会话并发、Agent 循环、流式响应
 - **工具系统**: 38+ 原生 Rust 工具，含路径安全防护
 - **动态 Skill**: Agent 可以自己编写并注册新 Skill
 - **审批流程**: 用户审批后 Skill 才可使用
 - **Provider 抽象**: 支持 OpenAI、Anthropic、NVIDIA NIM 等多种 LLM
 
-### 记忆系统 (Phase 15)
-- **三层记忆架构**: 即时记忆 + 持久记忆 + 会话搜索
+### 记忆系统 (Active v0.43.0)
+- **三层 memory 架构**: 即时记忆 + 持久记忆 + 会话搜索
 - **MEMORY.md / USER.md**: Agent 笔记 + 用户偏好档案 (2200/1375 chars)
 - **Memory 工具**: Agent 自主管理记忆 (add/replace/remove)
 - **安全扫描**: Prompt 注入检测、数据泄露防护、不可见字符检测
-- **SQLite 持久化**: WAL 模式，支持会话搜索和谱系追踪
+- **SQLite 持久化**: WAL 模式，支持会话全量持久化、搜索和谱系追踪 (v0.43.0 激活)
 
 ### 自我进化 (Learning Loop)
-- **Skill 自动创建**: 复杂任务 (5+ tool calls) 后自动建议创建 Skill
+- **Skill 自动创建**: 复杂任务 (5+ tool calls) 后自动建议创建 Skill (已激活回调)
 - **SkillManage 工具**: create/patch/edit/delete/write_file/remove_file 全操作
 - **用户纠正记录**: 记录用户纠正行为，持续改进
 - **迭代预算**: 父子 Agent 共享预算，防止资源耗尽
 
-### 上下文管理
-- **双级压缩**: Gateway 层 85% 安全网 + Agent 层 50% 精确压缩
+### 上下文管理 (Active v0.43.0)
+- **双级压缩**: Gateway 层 85% 安全网 + Agent 层 50% 精确压缩 (v0.43.0 激活)
 - **Prompt 缓存**: Anthropic cache_control 策略，降低 75% 输入成本
 - **回调系统**: tool_progress/step/status/thinking/SkillSuggestion 全事件回调
+
 
 ### Agent-Reach 工具集成
 - **Web/视频**: WebReach (Jina Reader), VideoReach (yt-dlp)
