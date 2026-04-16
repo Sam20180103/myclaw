@@ -1882,14 +1882,6 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
         .and_then(|v| v.as_u64())
         .unwrap_or(20);
 
-    // Include cookie in all calls if provided
-    let mut mcp_params = params.clone();
-    if let Some(ref cookie) = self.config.boss_cookie {
-        if let Some(obj) = mcp_params.as_object_mut() {
-            obj.insert("cookie".to_string(), serde_json::json!(cookie));
-        }
-    }
-
     match action {
         "search" => {
             let query = params

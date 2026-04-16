@@ -107,12 +107,22 @@ impl Gateway {
             max_concurrent_per_lane: config.agent.max_concurrent_sessions,
         };
         
-        let reach_config = rustclaw_tool::ReachConfig {
-            boss_cookie: config.tools.reach.boss_cookie.clone(),
-            boss_mcp_endpoint: config.tools.reach.boss_mcp_endpoint.clone(),
-            // other fields will use defaults as they are not in the gateway config yet
-            ..rustclaw_tool::ReachConfig::default()
-        };
+let reach_config = rustclaw_tool::ReachConfig {
+        web_endpoint: config.tools.reach.web_endpoint.clone(),
+        web_timeout_ms: config.tools.reach.web_timeout_ms,
+        video_timeout_ms: config.tools.reach.video_timeout_ms,
+        github_timeout_ms: config.tools.reach.github_timeout_ms,
+        social_timeout_ms: config.tools.reach.social_timeout_ms,
+        reddit_user_agent: config.tools.reach.reddit_user_agent.clone(),
+        weibo_api_base: config.tools.reach.weibo_api_base.clone(),
+        mcp_endpoint: config.tools.reach.mcp_endpoint.clone(),
+        linkedin_mcp_endpoint: config.tools.reach.linkedin_mcp_endpoint.clone(),
+        wechat_mcp_endpoint: config.tools.reach.wechat_mcp_endpoint.clone(),
+        boss_mcp_endpoint: config.tools.reach.boss_mcp_endpoint.clone(),
+        podcast_mcp_endpoint: config.tools.reach.podcast_mcp_endpoint.clone(),
+        boss_cookie: config.tools.reach.boss_cookie.clone(),
+        exa_api_key: config.tools.reach.exa_api_key.clone(),
+    };
 
         let mut agent_builder = AgentRuntime::new_with_reach_config(agent_config, Some(reach_config))
             .with_provider(provider_client);

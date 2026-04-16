@@ -82,21 +82,96 @@ pub struct ToolConfig {
     pub max_memory_mb: u64,            // 最大内存 (MB)
     pub max_timeout_ms: u64,           // 最大超时 (毫秒)
     #[serde(default)]
-    pub reach: ReachConfig,            // Agent-Reach 配置
+    pub reach: ReachConfig, // Agent-Reach 配置
 }
 
 /// Agent-Reach 配置
+/// 注意：此结构体与 crates/tool/src/reach.rs 中的 ReachConfig 保持一致
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReachConfig {
-    pub boss_cookie: Option<String>,
+    #[serde(default = "default_web_endpoint")]
+    pub web_endpoint: String,
+    #[serde(default = "default_web_timeout")]
+    pub web_timeout_ms: u64,
+    #[serde(default = "default_video_timeout")]
+    pub video_timeout_ms: u64,
+    #[serde(default = "default_github_timeout")]
+    pub github_timeout_ms: u64,
+    #[serde(default = "default_social_timeout")]
+    pub social_timeout_ms: u64,
+    #[serde(default = "default_reddit_user_agent")]
+    pub reddit_user_agent: String,
+    #[serde(default = "default_weibo_api_base")]
+    pub weibo_api_base: String,
+    #[serde(default = "default_mcp_endpoint")]
+    pub mcp_endpoint: String,
+    #[serde(default = "default_linkedin_mcp_endpoint")]
+    pub linkedin_mcp_endpoint: String,
+    #[serde(default = "default_wechat_mcp_endpoint")]
+    pub wechat_mcp_endpoint: String,
+    #[serde(default = "default_boss_mcp_endpoint")]
     pub boss_mcp_endpoint: String,
+    #[serde(default = "default_podcast_mcp_endpoint")]
+    pub podcast_mcp_endpoint: String,
+    pub boss_cookie: Option<String>,
+    #[serde(default)]
+    pub exa_api_key: Option<String>,
+}
+
+fn default_web_endpoint() -> String {
+    "https://r.jina.ai".to_string()
+}
+fn default_web_timeout() -> u64 {
+    30000
+}
+fn default_video_timeout() -> u64 {
+    60000
+}
+fn default_github_timeout() -> u64 {
+    30000
+}
+fn default_social_timeout() -> u64 {
+    30000
+}
+fn default_reddit_user_agent() -> String {
+    "RustClaw/0.4.0".to_string()
+}
+fn default_weibo_api_base() -> String {
+    "https://weibo.com/ajax".to_string()
+}
+fn default_mcp_endpoint() -> String {
+    "http://127.0.0.1:8080".to_string()
+}
+fn default_linkedin_mcp_endpoint() -> String {
+    "http://127.0.0.1:8081".to_string()
+}
+fn default_wechat_mcp_endpoint() -> String {
+    "http://127.0.0.1:8082".to_string()
+}
+fn default_boss_mcp_endpoint() -> String {
+    "http://127.0.0.1:8083".to_string()
+}
+fn default_podcast_mcp_endpoint() -> String {
+    "http://127.0.0.1:8084".to_string()
 }
 
 impl Default for ReachConfig {
     fn default() -> Self {
         Self {
+            web_endpoint: default_web_endpoint(),
+            web_timeout_ms: default_web_timeout(),
+            video_timeout_ms: default_video_timeout(),
+            github_timeout_ms: default_github_timeout(),
+            social_timeout_ms: default_social_timeout(),
+            reddit_user_agent: default_reddit_user_agent(),
+            weibo_api_base: default_weibo_api_base(),
+            mcp_endpoint: default_mcp_endpoint(),
+            linkedin_mcp_endpoint: default_linkedin_mcp_endpoint(),
+            wechat_mcp_endpoint: default_wechat_mcp_endpoint(),
+            boss_mcp_endpoint: default_boss_mcp_endpoint(),
+            podcast_mcp_endpoint: default_podcast_mcp_endpoint(),
             boss_cookie: None,
-            boss_mcp_endpoint: "http://127.0.0.1:8083".to_string(),
+            exa_api_key: None,
         }
     }
 }
