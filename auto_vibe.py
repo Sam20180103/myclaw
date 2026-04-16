@@ -8,12 +8,12 @@ from datetime import datetime
 # --- 配置区域 ---
 # 在这里定义你的任务.  根据 issues.md 、 roadmap.md以及architecture.md 继续编写代码
 TASKS = [
-    {
-        "name": "📝 代码编写 (Coder)",
-        "command": "vibe run \"根据roadmap.md以及architecture.md 继续编写代码完善功能\" --agent gemini",
-        "interval": 0,  # 任务完成后等待0秒，立即进入下一个任务
-        "log_file": "coder.log"
-    },
+    # {
+    #     "name": "📝 代码编写 (Coder)",
+    #     "command": "vibe run \"根据roadmap.md以及architecture.md 继续编写代码完善功能\" --agent gemini",
+    #     "interval": 0,  # 任务完成后等待0秒，立即进入下一个任务
+    #     "log_file": "coder.log"
+    # },
     # {
     #     "name": "🧪 测试编写 (Tester)",
     #     "command": "vibe run \"为当前的代码实现编写和运行单元测试\" --agent gemini",
@@ -22,7 +22,7 @@ TASKS = [
     # },
     {
         "name": "🔍 代码审核 (Reviewer)",
-        "command": "vibe run \"审查最近新增功能的代码，查找潜在的bug和安全问题\" --agent gemini",
+        "command": "vibe run \"审查最近新增功能的代码，查找潜在的bug和安全问题,并写入issues.md中，并合并分支提交github主线上\" --agent gemini",
         "interval": 1800,  # 审核任务完成后等待30分钟 (1800秒)，然后进入下一轮循环
         "log_file": "reviewer.log"
     }
@@ -44,10 +44,12 @@ def run_vibe_task(task_name, command, log_file):
     with open(log_file, 'a') as f:
         f.write(log_entry)
 
-    # 构建代理环境变量
+    # 构建代理环境变量（从环境变量读取，如未设置则不使用代理）
     env = os.environ.copy()
-    env['http_proxy'] = 'http://127.0.0.1:8118'
-    env['https_proxy'] = 'http://127.0.0.1:8118'
+    proxy = os.environ.get('RUSTCLAW_PROXY', '')
+    if proxy:
+        env['http_proxy'] = proxy
+        env['https_proxy'] = proxy
     # 如果需要 no_proxy，也可以添加
     # env['no_proxy'] = 'localhost,127.0.0.1'   
  

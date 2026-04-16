@@ -164,12 +164,18 @@ impl McpClient {
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let request_id = uuid::Uuid::new_v4().to_string();
+
+        // 凭据保护: 过滤敏感参数用于日志
+        let safe_params = Self::filter_sensitive_params(&params);
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
             "id": request_id
         });
+
+        tracing::debug!("MCP request: method={}, params={:?}", method, safe_params);
 
         let response = self
             .client
@@ -199,6 +205,21 @@ impl McpClient {
 
         Ok(result.get("result").cloned().unwrap_or(result))
     }
+
+    fn filter_sensitive_params(params: &serde_json::Value) -> serde_json::Value {
+        let sensitive_keys = ["cookie", "password", "token", "api_key", "secret", "credential"];
+        let mut filtered = params.clone();
+
+        if let Some(obj) = filtered.as_object_mut() {
+            for key in sensitive_keys {
+                if obj.contains_key(key) {
+                    obj.insert(key.to_string(), serde_json::Value::String("***REDACTED***".to_string()));
+                }
+            }
+        }
+
+        filtered
+    }
 }
 
 pub struct WebReachTool {
@@ -219,6 +240,36 @@ impl WebReachTool {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { client, config }
+    }
+
+    fn validate_url_against_ssrf(&self, url: &str) -> Result<(), ToolError> {
+        let parsed = url::Url::parse(url)
+            .map_err(|e| ToolError::InvalidParams(format!("Invalid URL: {}", e)))?;
+
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(ToolError::InvalidParams("Only http/https URLs allowed".to_string()));
+        }
+
+        if let Some(host) = parsed.host_str() {
+            let blocked_hosts = [
+                "localhost", "127.0.0.1", "0.0.0.0", "::1",
+                "169.254.169.254",
+                "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                "::", "0:0:0:0:0:0:0:1",
+            ];
+
+            for blocked in &blocked_hosts {
+                if host == *blocked || host.starts_with(blocked) {
+                    return Err(ToolError::InvalidParams(
+                        format!("Access to internal network resources is blocked: {}", host)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -254,6 +305,9 @@ impl Tool for WebReachTool {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'url' parameter".to_string()))?;
+
+        // SSRF防护: 验证URL不指向内网资源
+        self.validate_url_against_ssrf(url)?;
 
         let jina_url = format!("{}/{}", self.config.web_endpoint, url);
 
