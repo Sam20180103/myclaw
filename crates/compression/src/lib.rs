@@ -198,14 +198,17 @@ impl ContextCompressor {
         }
     }
 
-    /// 估算消息总字符数
+    /// 估算消息总字符数 (图片Base64不计入，避免压缩失真)
     pub fn estimate_chars(messages: &[Message]) -> usize {
         messages
             .iter()
             .map(|m| match &m.content {
                 Content::Text(t) => t.len(),
                 Content::Structured { text, .. } => text.as_ref().map(|t| t.len()).unwrap_or(0),
-                Content::Image { image_data, .. } => image_data.len(),
+                Content::Image { description, .. } => {
+                    // 图片不计算Base64长度，只计算描述长度（如果描述有意义）
+                    description.as_ref().map(|d| d.len().min(100)).unwrap_or(10)
+                }
             })
             .sum()
     }

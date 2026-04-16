@@ -40,6 +40,8 @@ impl WebSocketManager {
         let is_connected = self.is_connected.clone();
         let channel = self.channel.clone();
 
+        // Note: Using std::thread with embedded tokio runtime because open_lark's
+        // LarkWsClient contains non-Send types that cannot be used with tokio::spawn
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -62,12 +64,11 @@ impl WebSocketManager {
                 let event_handler = match builder.register_p2_im_message_receive_v1(move |event: P2ImMessageReceiveV1| {
                     let event_id = event.header.event_id.clone().unwrap_or_default();
                     tracing::info!("!!! [WS EVENT] Received im.message.receive_v1 (event_id={}) !!!", event_id);
-                    
-                    // 打印内容以确认是否为二进制
+
                     tracing::info!("Message content preview: {}", event.event.message.content.chars().take(100).collect::<String>());
-                    
+
                     let ch = ch_inner.clone();
-                    
+
                     let fe_event = FeishuEvent {
                         schema_version: event.schema.clone(),
                         header: FeishuEventHeader {
@@ -97,7 +98,7 @@ impl WebSocketManager {
                                 chat_type: event.event.message.chat_type.clone(),
                                 message_type: event.event.message.message_type.clone(),
                                 content: event.event.message.content.clone(),
-                                mentions: None, 
+                                mentions: None,
                             },
                         },
                     };
