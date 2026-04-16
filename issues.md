@@ -51,13 +51,13 @@
 
 ### 3. 当前剩余/新规划任务 (Pending & New Plans) ⏳
 
-#### **Phase 17.5: 扫码登录全自动化 (极高优先级)**
+#### **Phase 17.5: 扫码登录全自动化 (已完成) ✅**
 - **目标**: 彻底解决 Cookie 过期需要手动更新的痛点。
-- **计划**:
-    - [ ] MCP Server 支持捕获二维码截图并转为 Base64。
-    - [ ] `rustclaw-protocol` 扩展 `Image` 消息类型支持。
-    - [ ] 飞书通道集成图片上传 (`im/v1/images`)。
-    - [ ] Agent 链路自愈逻辑：检测到失效 -> 弹出二维码 -> 自动等待登录 -> 继续任务。
+- **已完成**:
+  - [x] MCP Server 支持捕获二维码截图并转为 Base64 (`boss.get_qrcode` 方法)。
+  - [x] `rustclaw-protocol` 扩展 `Image` 消息类型支持 (`Content::Image` 枚举)。
+  - [x] 飞书通道集成图片上传 (`im/v1/images` API)。
+  - [x] Agent 链路自愈逻辑 (`get_qrcode` + `wait_login` 动作)。
 
 ### 5. 代码审查发现的问题 (Code Review Findings) - 2026-04-16
 
