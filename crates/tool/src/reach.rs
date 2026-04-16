@@ -333,6 +333,8 @@ impl Tool for VideoReachTool {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'url' parameter".to_string()))?;
+        
+        validate_url(url)?;
 
         let extract_subtitles = params
             .get("extract_subtitles")
@@ -445,6 +447,8 @@ impl Tool for GitHubReachTool {
             .get("repo")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'repo' parameter".to_string()))?;
+        
+        validate_repo(repo)?;
 
         let timeout = std::time::Duration::from_millis(self.config.github_timeout_ms);
 
@@ -454,6 +458,8 @@ impl Tool for GitHubReachTool {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidParams("Missing 'path' for view action".to_string()))?;
+                
+                validate_path(path)?;
 
                 let output = tokio::time::timeout(
                     timeout,
@@ -693,6 +699,45 @@ fn base64_decode(input: &str) -> String {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_default()
+}
+
+fn validate_url(url: &str) -> Result<(), ToolError> {
+    let blocked_schemes = ["file://", "ftp://", "data:"];
+    for scheme in blocked_schemes {
+        if url.to_lowercase().starts_with(scheme) {
+            return Err(ToolError::InvalidParams(format!("URL scheme '{}' is not allowed", scheme)));
+        }
+    }
+    if url.contains('\0') {
+        return Err(ToolError::InvalidParams("URL contains null byte".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_repo(repo: &str) -> Result<(), ToolError> {
+    if repo.is_empty() {
+        return Err(ToolError::InvalidParams("Repository cannot be empty".to_string()));
+    }
+    let parts: Vec<&str> = repo.split('/').collect();
+    if parts.len() != 2 {
+        return Err(ToolError::InvalidParams("Repository must be in format 'owner/repo'".to_string()));
+    }
+    for part in parts {
+        if part.is_empty() || part.contains('\0') || part.contains(' ') {
+            return Err(ToolError::InvalidParams("Invalid repository name".to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_path(path: &str) -> Result<(), ToolError> {
+    if path.contains('\0') {
+        return Err(ToolError::InvalidParams("Path contains null byte".to_string()));
+    }
+    if path.contains("..") {
+        return Err(ToolError::InvalidParams("Path traversal not allowed".to_string()));
+    }
+    Ok(())
 }
 
 pub fn register_reach_tools(registry: &crate::ToolRegistry, config: Option<ReachConfig>) {

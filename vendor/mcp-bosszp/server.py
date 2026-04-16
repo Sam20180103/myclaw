@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import base64
+import time
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException
 from playwright.async_api import async_playwright, Browser, BrowserContext
@@ -13,6 +14,38 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("boss-mcp")
 
 app = FastAPI(title="BossZhipin MCP Bridge")
+
+
+class RateLimiter:
+    def __init__(self, requests_per_minute: int = 30, burst: int = 10):
+        self.requests_per_minute = requests_per_minute
+        self.burst = burst
+        self._timestamps: List[float] = []
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> bool:
+        async with self._lock:
+            now = time.time()
+            window_start = now - 60.0
+            self._timestamps = [t for t in self._timestamps if t > window_start]
+            
+            if len(self._timestamps) >= self.burst:
+                return False
+            
+            self._timestamps.append(now)
+            return True
+
+    async def wait_and_acquire(self, timeout: float = 30.0) -> bool:
+        start = time.time()
+        while True:
+            if await self.acquire():
+                return True
+            if time.time() - start > timeout:
+                return False
+            await asyncio.sleep(1.0)
+
+
+rate_limiter = RateLimiter(requests_per_minute=30, burst=10)
 
 
 class BrowserManager:
@@ -276,6 +309,11 @@ async def handle_mcp_request(request: Request):
     method = req_data.get("method")
     params = req_data.get("params", {})
     rpc_id = req_data.get("id")
+
+    if method in ["boss.search_jobs", "boss.get_job", "boss.check_auth", "boss.apply_job"]:
+        if not await rate_limiter.wait_and_acquire(timeout=30.0):
+            logger.warning(f"Rate limit exceeded for method: {method}")
+            return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "Rate limit exceeded. Please try again later."}, "id": rpc_id}
 
     cookie = params.get("cookie")
 
