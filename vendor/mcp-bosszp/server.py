@@ -156,7 +156,38 @@ class BossScraper:
         page = await self.context.new_page()
         await stealth_async(page)
 
-        city_codes = {"广州": "101280100", "北京": "101010100", "上海": "101020100", "深圳": "101280600"}
+        city_codes = {
+            "广州": "101280100",
+            "北京": "101010100",
+            "上海": "101020100",
+            "深圳": "101280600",
+            "杭州": "101210100",
+            "成都": "101270100",
+            "武汉": "101200100",
+            "南京": "101190100",
+            "西安": "101110100",
+            "重庆": "101040100",
+            "天津": "101030100",
+            "苏州": "101190400",
+            "郑州": "101180100",
+            "长沙": "101250100",
+            "东莞": "101281600",
+            "沈阳": "101070100",
+            "青岛": "101120200",
+            "合肥": "101220100",
+            "佛山": "101280800",
+            "济南": "101120100",
+            "昆明": "101290100",
+            "福州": "101230100",
+            "哈尔滨": "101050100",
+            "大连": "101070200",
+            "长春": "101060100",
+            "石家庄": "101090100",
+            "厦门": "101230200",
+            "无锡": "101190200",
+            "宁波": "101210400",
+            "南昌": "101240100",
+        }
         code = city_codes.get(city, "101280100")
 
         url = f"https://www.zhipin.com/web/geek/job?query={query}&city={code}"
@@ -218,6 +249,51 @@ class BossScraper:
         is_login = "login" not in page.url
         await page.close()
         return is_login
+
+    async def apply_job(self, job_id: str) -> Dict[str, Any]:
+        page = await self.context.new_page()
+        await stealth_async(page)
+        
+        url = f"https://www.zhipin.com/job_detail/{job_id}.html"
+        logger.info(f"Applying to job: {url}")
+        
+        try:
+            await page.goto(url, wait_until="networkidle")
+            await page.wait_for_selector(".job-sec-text", timeout=10000)
+            
+            # Try multiple possible selectors for the apply button
+            apply_selectors = [
+                ".btn-apply",
+                ".btn-chat",
+                "a.btn-startchat",
+                ".op-btn.apply-btn",
+                ".job-btn.btn-apply"
+            ]
+            
+            applied = False
+            for selector in apply_selectors:
+                try:
+                    button = await page.query_selector(selector)
+                    if button:
+                        await button.click()
+                        await asyncio.sleep(2)
+                        applied = True
+                        logger.info(f"Clicked apply button: {selector}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Selector {selector} not found: {e}")
+            
+            if not applied:
+                await page.close()
+                return {"success": False, "message": "未找到投递按钮，可能已投递或职位已下线"}
+            
+            await page.close()
+            return {"success": True, "message": "投递成功"}
+            
+        except Exception as e:
+            logger.error(f"Apply job error: {e}")
+            await page.close()
+            return {"success": False, "message": f"投递失败: {str(e)}"}
 
 
 async def get_qrcode_base64(context: BrowserContext) -> Dict[str, Any]:
@@ -339,7 +415,9 @@ async def handle_mcp_request(request: Request):
             scraper = BossScraper(context)
             result = {"is_login": await scraper.check_auth()}
         elif method == "boss.apply_job":
-            result = {"success": True, "message": "模拟投递成功（已接收投递指令）"}
+            context = await bm.get_cookie_context(cookie)
+            scraper = BossScraper(context)
+            result = await scraper.apply_job(params.get("job_id", ""))
         elif method == "boss.get_qrcode":
             context = await bm.get_login_context()
             result = await get_qrcode_base64(context)

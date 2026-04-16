@@ -412,21 +412,43 @@ impl FeishuChannel {
         }
     }
 
-    /// 从富文本消息中提取纯文本
+/// 从富文本消息中提取纯文本
     fn extract_post_text(&self, json: &serde_json::Value) -> String {
         let mut texts = Vec::new();
         if let Some(content) = json.get("content").and_then(|v| v.as_array()) {
             for row in content {
                 if let Some(cells) = row.as_array() {
                     for cell in cells {
+                        // 处理纯文本
                         if let Some(text) = cell.get("text").and_then(|v| v.as_str()) {
-                            texts.push(text);
+                            if !text.is_empty() {
+                                texts.push(text.to_string());
+                            }
+                        }
+                        // 处理链接 (Phase 17.5: 支持链接提取)
+                        if let Some(link) = cell.get("link") {
+                            if let Some(href) = link.get("href").and_then(|h| h.as_str()) {
+                                let text = cell.get("text").and_then(|t| t.as_str()).unwrap_or(href);
+                                texts.push(format!("[{}]({})", text, href));
+                            }
+                        }
+                        // 处理@提及 (Phase 17.5: 支持@提及提取)
+                        if let Some(mention) = cell.get("mention") {
+                            if let Some(name) = mention.get("name").and_then(|n| n.as_str()) {
+                                texts.push(format!("@{}", name));
+                            }
+                        }
+                        // 处理图片 (Phase 17.5: 支持图片提取)
+                        if let Some(img) = cell.get("image") {
+                            if let Some(key) = img.get("image_key").and_then(|k| k.as_str()) {
+                                texts.push(format!("[Image: {}]", key));
+                            }
                         }
                     }
                 }
             }
         }
-        texts.join("\n")
+        texts.join("\\n")
     }
 }
 

@@ -3,6 +3,7 @@ use axum::{
     routing::get,
     Json, Router,
     response::sse::{Event, Sse},
+    http::{StatusCode, HeaderValue},
 };
 use futures::stream::Stream;
 use parking_lot::RwLock;
@@ -11,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::convert::Infallible;
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, error, warn};
 
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
@@ -297,15 +298,27 @@ let reach_config = rustclaw_tool::ReachConfig {
 
     pub async fn start(&self) -> anyhow::Result<()> {
         self.skill_manager.init().await?;
-        
+
         let host = self.config.host.parse()
             .map_err(|e| anyhow::anyhow!("Invalid host '{}': {}", self.config.host, e))?;
         let addr = SocketAddr::new(host, self.config.port);
 
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
+        // CORS 配置收紧: 仅允许配置的来源
+        let cors = if self.full_config.gateway.auth.allowed_origins.is_empty() {
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::exact(HeaderValue::from_static("http://localhost:18789")))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::DELETE])
+                .allow_headers([axum::http::header::AUTHORIZATION, axum::http::header::CONTENT_TYPE])
+        } else {
+            let origins: Vec<HeaderValue> = self.full_config.gateway.auth.allowed_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::DELETE])
+                .allow_headers([axum::http::header::AUTHORIZATION, axum::http::header::CONTENT_TYPE])
+        };
 
         let app = Router::new()
             .route("/health", get(health_handler))
@@ -334,6 +347,7 @@ let reach_config = rustclaw_tool::ReachConfig {
             .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
             .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
             .layer(cors)
+            .layer(axum::middleware::from_fn_with_state(Arc::new(self.clone()), api_key_auth))
             .with_state(Arc::new(self.clone()));
 
         info!("Starting Gateway on {}", addr);
@@ -1216,15 +1230,49 @@ mod tests {
         assert!(body.contains("current_version"));
     }
 
-    #[test]
-    fn test_envelope_creation() {
-        let message = Message {
-            role: Role::User,
-            content: Content::text("hello"),
-        };
-        let envelope = Envelope::new("http", "session-123", message);
-        assert_eq!(envelope.channel, "http");
-        assert_eq!(envelope.session_key, "session-123");
-        assert!(!envelope.id.is_empty());
+#[test]
+fn test_envelope_creation() {
+let message = Message {
+role: Role::User,
+content: Content::text("hello"),
+};
+let envelope = Envelope::new("http", "session-123", message);
+assert_eq!(envelope.channel, "http");
+assert_eq!(envelope.session_key, "session-123");
+assert!(!envelope.id.is_empty());
+}
+}
+
+async fn api_key_auth(
+    State(gateway): State<Arc<Gateway>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    // Skip auth for health endpoint
+    if request.uri().path() == "/health" {
+        return Ok(next.run(request).await);
     }
+
+    // If API key is configured, validate it
+    if let Some(ref expected_key) = gateway.full_config.gateway.auth.api_key {
+        let auth_header = request.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+
+        match auth_header {
+            Some(header) if header.starts_with("Bearer ") => {
+                let token = &header[7..];
+                if token != expected_key {
+                    warn!("Invalid API key attempt");
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+            }
+            _ => {
+                warn!("Missing or invalid Authorization header");
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+    }
+
+    Ok(next.run(request).await)
 }

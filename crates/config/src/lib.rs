@@ -61,6 +61,10 @@ pub struct GatewayConfig {
 pub struct AuthConfig {
     pub require_pairing: bool,        // 是否需要设备配对
     pub allowed_devices: Vec<String>, // 允许的设备列表
+    #[serde(default)]
+    pub api_key: Option<String>, // API Key 认证 (Phase 17.5: 安全加固)
+    #[serde(default = "default_allowed_origins")]
+    pub allowed_origins: Vec<String>, // CORS 允许的来源 (Phase 17.5: 收紧CORS)
 }
 
 /// Agent 配置 — 运行时参数
@@ -155,6 +159,13 @@ fn default_podcast_mcp_endpoint() -> String {
     "http://127.0.0.1:8084".to_string()
 }
 
+fn default_allowed_origins() -> Vec<String> {
+    vec![
+        "http://localhost:*".to_string(),
+        "http://127.0.0.1:*".to_string(),
+    ]
+}
+
 impl Default for ReachConfig {
     fn default() -> Self {
         Self {
@@ -196,6 +207,8 @@ impl Default for Config {
                 auth: AuthConfig {
                     require_pairing: true,
                     allowed_devices: vec![],
+                    api_key: None,
+                    allowed_origins: default_allowed_origins(),
                 },
             },
             agent: AgentConfig {
