@@ -373,36 +373,36 @@ impl FeishuChannel {
                     msg.content.clone()
                 }
             }
-            FeishuMsgType::Image => {
-                // 图片消息, 尝试下载并生成描述
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
-                    if let Some(file_key) = json.get("image_key").and_then(|v| v.as_str()) {
-                        match self.client.download_file(file_key).await {
-                            Ok(_) => format!("[图片已下载: {}]", file_key),
-                            Err(e) => format!("[图片下载失败: {}]", e),
+                FeishuMsgType::Image => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        if let Some(file_key) = json.get("image_key").and_then(|v| v.as_str()) {
+                            let download_dir = std::path::Path::new("/tmp/rustclaw/feishu_downloads");
+                            match self.client.download_file_to_path(file_key, download_dir).await {
+                                Ok(path) => format!("[图片已保存: {}]", path.display()),
+                                Err(e) => format!("[图片下载失败: {}]", e),
+                            }
+                        } else {
+                            "[图片消息]".to_string()
                         }
                     } else {
                         "[图片消息]".to_string()
                     }
-                } else {
-                    "[图片消息]".to_string()
                 }
-            }
-            FeishuMsgType::File => {
-                // 文件消息, 尝试下载
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
-                    if let Some(file_key) = json.get("file_key").and_then(|v| v.as_str()) {
-                        match self.client.download_file(file_key).await {
-                            Ok(_) => format!("[文件已下载: {}]", file_key),
-                            Err(e) => format!("[文件下载失败: {}]", e),
+                FeishuMsgType::File => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                        if let Some(file_key) = json.get("file_key").and_then(|v| v.as_str()) {
+                            let download_dir = std::path::Path::new("/tmp/rustclaw/feishu_downloads");
+                            match self.client.download_file_to_path(file_key, download_dir).await {
+                                Ok(path) => format!("[文件已保存: {}]", path.display()),
+                                Err(e) => format!("[文件下载失败: {}]", e),
+                            }
+                        } else {
+                            "[文件消息]".to_string()
                         }
                     } else {
                         "[文件消息]".to_string()
                     }
-                } else {
-                    "[文件消息]".to_string()
                 }
-            }
             FeishuMsgType::Audio => "[语音消息]".to_string(),
             FeishuMsgType::Media => "[视频消息]".to_string(),
             FeishuMsgType::Sticker => "[表情消息]".to_string(),

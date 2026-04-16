@@ -189,7 +189,12 @@ impl McpClient {
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse MCP response: {}", e)))?;
 
         if let Some(error) = result.get("error") {
-            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", error)));
+            let error_msg = if let Some(msg) = error.get("message").and_then(|m| m.as_str()) {
+                msg.to_string()
+            } else {
+                error.to_string()
+            };
+            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", error_msg)));
         }
 
         Ok(result.get("result").cloned().unwrap_or(result))
@@ -1930,21 +1935,26 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
     match action {
         "search" => {
             let query = params
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'query' for search action".to_string()))?;
 
-            let city = params
-                .get("city")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+        let city = params
+            .get("city")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-            let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
-                "query": query,
-                "city": city,
-                "limit": limit,
-                "cookie": self.config.boss_cookie
-            })).await?;
+        let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
+        if cookie.is_empty() {
+            return Err(ToolError::ExecutionFailed("boss_cookie not configured. Please set it in config or use get_qrcode/wait_login to login first.".to_string()));
+        }
+
+        let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
+            "query": query,
+            "city": city,
+            "limit": limit,
+            "cookie": cookie
+        })).await?;
 
             Ok(serde_json::json!({
                 "success": true,
@@ -1953,72 +1963,92 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                 "data": result
             }))
         }
-        "job" => {
-            let job_id = params
-                .get("job_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
+                "job" => {
+                    let job_id = params
+                        .get("job_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
 
-            let result = self.mcp_client.call("boss.get_job", serde_json::json!({
-                "job_id": job_id,
-                "cookie": self.config.boss_cookie
-            })).await?;
+                    let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
+                    if cookie.is_empty() {
+                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                    }
 
-            Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "data": result
-            }))
-        }
-        "company" => {
-            let company_id = params
-                .get("company_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
+                    let result = self.mcp_client.call("boss.get_job", serde_json::json!({
+                        "job_id": job_id,
+                        "cookie": cookie
+                    })).await?;
 
-            let result = self.mcp_client.call("boss.get_company", serde_json::json!({
-                "company_id": company_id,
-                "cookie": self.config.boss_cookie
-            })).await?;
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "action": action,
+                        "data": result
+                    }))
+                }
+                "company" => {
+                    let company_id = params
+                        .get("company_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
 
-            Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "data": result
-            }))
-        }
-        "apply" => {
-            let job_id = params
-                .get("job_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for apply action".to_string()))?;
+                    let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
+                    if cookie.is_empty() {
+                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                    }
 
-            let resume_id = params.get("resume_id").and_then(|v| v.as_str());
+                    let result = self.mcp_client.call("boss.get_company", serde_json::json!({
+                        "company_id": company_id,
+                        "cookie": cookie
+                    })).await?;
 
-            let result = self.mcp_client.call("boss.apply_job", serde_json::json!({
-                "job_id": job_id,
-                "resume_id": resume_id,
-                "cookie": self.config.boss_cookie
-            })).await?;
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "action": action,
+                        "data": result
+                    }))
+                }
+                "apply" => {
+                    let job_id = params
+                        .get("job_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for apply action".to_string()))?;
 
-            Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "job_id": job_id,
-                "data": result
-            }))
-        }
-        "check_auth" => {
-            let result = self.mcp_client.call("boss.check_auth", serde_json::json!({
-                "cookie": self.config.boss_cookie
-            })).await?;
+                    let resume_id = params.get("resume_id").and_then(|v| v.as_str());
 
-            Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "data": result
-            }))
-        }
+                    let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
+                    if cookie.is_empty() {
+                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                    }
+
+                    let result = self.mcp_client.call("boss.apply_job", serde_json::json!({
+                        "job_id": job_id,
+                        "resume_id": resume_id,
+                        "cookie": cookie
+                    })).await?;
+
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "action": action,
+                        "job_id": job_id,
+                        "data": result
+                    }))
+                }
+                "check_auth" => {
+                    let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
+                    if cookie.is_empty() {
+                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                    }
+
+                    let result = self.mcp_client.call("boss.check_auth", serde_json::json!({
+                        "cookie": cookie
+                    })).await?;
+
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "action": action,
+                        "data": result
+                    }))
+                }
         "get_qrcode" => {
             // Phase 17.5: 获取登录二维码 (Base64图片)
             let result = self.mcp_client.call("boss.get_qrcode", serde_json::json!({})).await?;

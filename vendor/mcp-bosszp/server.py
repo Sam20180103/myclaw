@@ -86,8 +86,13 @@ class BrowserManager:
         async with self._lock:
             cookies = []
             for item in cookie_str.split(';'):
-                if '=' in item:
-                    name, value = item.strip().split('=', 1)
+                item = item.strip()
+                if not item or '=' not in item:
+                    continue
+                idx = item.index('=')
+                name = item[:idx].strip()
+                value = item[idx+1:].strip()
+                if name and value:
                     cookies.append({
                         "name": name,
                         "value": value,
@@ -244,9 +249,12 @@ class BossScraper:
 
     async def check_auth(self) -> bool:
         page = await self.context.new_page()
-        await page.goto("https://www.zhipin.com/web/geek/user/center")
-        await asyncio.sleep(2)
-        is_login = "login" not in page.url
+        await page.goto("https://www.zhipin.com/web/geek/user/center", wait_until="networkidle")
+        try:
+            await page.wait_for_selector(".user-info, .nav-figure, .geek-name", timeout=5000)
+            is_login = True
+        except:
+            is_login = "login" not in page.url
         await page.close()
         return is_login
 
@@ -269,20 +277,23 @@ class BossScraper:
                 ".op-btn.apply-btn",
                 ".job-btn.btn-apply"
             ]
-            
+
             applied = False
             for selector in apply_selectors:
                 try:
                     button = await page.query_selector(selector)
                     if button:
                         await button.click()
-                        await asyncio.sleep(2)
+                        try:
+                            await page.wait_for_selector(".dialog-content, .success-tip, .apply-success", timeout=3000)
+                        except:
+                            pass
                         applied = True
                         logger.info(f"Clicked apply button: {selector}")
                         break
                 except Exception as e:
                     logger.debug(f"Selector {selector} not found: {e}")
-            
+
             if not applied:
                 await page.close()
                 return {"success": False, "message": "未找到投递按钮，可能已投递或职位已下线"}
@@ -376,7 +387,10 @@ async def wait_for_login(context: BrowserContext, timeout: int = 120) -> Dict[st
                 "cookie": cookie_str
             }
 
-        await asyncio.sleep(2)
+        try:
+            await page.wait_for_url("**/web/geek/**", timeout=2000)
+        except:
+            pass
 
 
 @app.post("/")

@@ -2,10 +2,10 @@ use anyhow::Result;
 use parking_lot::RwLock;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::config::FeishuConfig;
 
-/// 飞书 API 错误
 #[derive(Debug, thiserror::Error)]
 pub enum FeishuError {
     #[error("Token error: {0}")]
@@ -18,24 +18,20 @@ pub enum FeishuError {
     ParseError(String),
 }
 
-/// 租户令牌响应
 #[derive(Debug, serde::Deserialize)]
 struct TenantTokenResponse {
     code: i64,
     msg: Option<String>,
     tenant_access_token: Option<String>,
-    #[allow(dead_code)]
     expire: Option<i64>,
 }
 
-/// 飞书 API 响应
 #[derive(Debug, serde::Deserialize)]
 struct ApiResponse {
     code: i64,
     msg: Option<String>,
 }
 
-/// 飞书发送消息响应
 #[derive(Debug, serde::Deserialize)]
 struct SendMessageResponse {
     code: i64,
@@ -48,18 +44,19 @@ struct SendMessageData {
     message_id: Option<String>,
 }
 
-/// 飞书 API 客户端 — 封装飞书开放平台 API 调用
+struct CachedToken {
+    token: String,
+    expires_at: Instant,
+}
+
 #[derive(Clone)]
 pub struct FeishuClient {
     config: FeishuConfig,
-    /// 租户访问令牌 (自动刷新)
-    tenant_token: Arc<RwLock<Option<String>>>,
-    /// HTTP 客户端
+    tenant_token: Arc<RwLock<Option<CachedToken>>>,
     client: reqwest::Client,
 }
 
 impl FeishuClient {
-    /// 创建新的飞书 API 客户端
     pub fn new(config: FeishuConfig) -> Self {
         Self {
             config,
@@ -68,18 +65,16 @@ impl FeishuClient {
         }
     }
 
-    /// 获取租户访问令牌
-    /// 如果缓存中没有或已过期, 自动获取新令牌
     pub async fn get_tenant_token(&self) -> Result<String, FeishuError> {
-        // 先检查缓存
         {
             let token = self.tenant_token.read();
-            if let Some(t) = token.as_ref() {
-                return Ok(t.clone());
+            if let Some(cached) = token.as_ref() {
+                if cached.expires_at > Instant::now() {
+                    return Ok(cached.token.clone());
+                }
             }
         }
 
-        // 获取新令牌
         let url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
         let body = json!({
             "app_id": &self.config.app_id,
@@ -106,10 +101,20 @@ impl FeishuClient {
 
         let token = token_resp.tenant_access_token
             .ok_or_else(|| FeishuError::TokenError("No token in response".to_string()))?;
+        
+        let expire_seconds = token_resp.expire.unwrap_or(7200);
+        let buffer_seconds = 300i64;
+        let effective_expire = Duration::from_secs((expire_seconds - buffer_seconds).max(60) as u64);
 
-        // 缓存令牌
-        let mut cached = self.tenant_token.write();
-        *cached = Some(token.clone());
+        let cached = CachedToken {
+            token: token.clone(),
+            expires_at: Instant::now() + effective_expire,
+        };
+
+        {
+            let mut cached_token = self.tenant_token.write();
+            *cached_token = Some(cached);
+        }
 
         Ok(token)
     }
@@ -296,7 +301,7 @@ impl FeishuClient {
         self.send_message(receive_id, receive_id_type, "interactive", &content_str).await
     }
 
-    /// 下载文件/图片
+    /// 下载文件/图片到指定目录
     pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>, FeishuError> {
         let token = self.get_tenant_token().await?;
         let url = format!(
@@ -323,6 +328,24 @@ impl FeishuClient {
             .map_err(|e| FeishuError::HttpError(e.to_string()))?;
 
         Ok(bytes.to_vec())
+    }
+
+    /// 下载文件并保存到本地
+    pub async fn download_file_to_path(
+        &self,
+        file_key: &str,
+        save_dir: &std::path::Path,
+    ) -> Result<std::path::PathBuf, FeishuError> {
+        let bytes = self.download_file(file_key).await?;
+
+        std::fs::create_dir_all(save_dir)
+            .map_err(|e| FeishuError::ApiError(format!("Failed to create directory: {}", e)))?;
+
+        let file_path = save_dir.join(file_key);
+        std::fs::write(&file_path, &bytes)
+            .map_err(|e| FeishuError::ApiError(format!("Failed to write file: {}", e)))?;
+
+        Ok(file_path)
     }
 
     /// 上传文件
