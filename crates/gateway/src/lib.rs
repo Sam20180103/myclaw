@@ -497,7 +497,7 @@ let envelope = Envelope::new(
                 Content::Text(s) => s,
                 Content::Structured { text, .. } => text.unwrap_or_default(),
                 Content::Image { image_data, description, .. } => {
-                    let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                    let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                     format!("[Image: {}]", desc)
                 }
             };
@@ -546,7 +546,7 @@ let envelope = Envelope::new(
                 Content::Text(s) => s,
                 Content::Structured { text, .. } => text.unwrap_or_default(),
                 Content::Image { image_data, description, .. } => {
-                    let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                    let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                     format!("[Image: {}]", desc)
                 }
             };
@@ -770,7 +770,7 @@ async fn agent_get_handler(
                     rustclaw_protocol::Content::Text(s) => s.to_string(),
                     rustclaw_protocol::Content::Structured { text, .. } => text.as_deref().unwrap_or("").to_string(),
                     rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                        let desc = description.as_deref().unwrap_or(&image_data[..image_data.len().min(50)]);
+                        let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                         format!("[Image: {}]", desc)
                     }
                 }
