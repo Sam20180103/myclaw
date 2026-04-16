@@ -4,76 +4,146 @@ import logging
 import base64
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext
 from playwright_stealth import stealth_async
 from bs4 import BeautifulSoup
 import uvicorn
 
-# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("boss-mcp")
 
 app = FastAPI(title="BossZhipin MCP Bridge")
 
-# --- 核心逻辑：BOSS 爬虫类 ---
-class BossScraper:
-    def __init__(self):
-        self.browser = None
-        self.context = None
 
-    async def init_browser(self, cookie_str: str):
-        self.pw = await async_playwright().start()
-        self.browser = await self.pw.chromium.launch(headless=True)
-        
-        # 转换 Cookie 格式
-        cookies = []
-        for item in cookie_str.split(';'):
-            if '=' in item:
-                name, value = item.strip().split('=', 1)
-                cookies.append({
-                    "name": name,
-                    "value": value,
-                    "domain": ".zhipin.com",
-                    "path": "/"
-                })
-        
-        self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
-        )
-        await self.context.add_cookies(cookies)
+class BrowserManager:
+    _instance: Optional['BrowserManager'] = None
+    _lock = asyncio.Lock()
+
+    def __init__(self):
+        self.pw = None
+        self.browser: Optional[Browser] = None
+        self.login_context: Optional[BrowserContext] = None
+        self.cookie_context: Optional[BrowserContext] = None
+
+    @classmethod
+    async def get_instance(cls) -> 'BrowserManager':
+        async with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    async def get_login_context(self) -> BrowserContext:
+        async with self._lock:
+            if self.login_context is None:
+                if self.browser is None:
+                    if self.pw is None:
+                        self.pw = await async_playwright().start()
+                    self.browser = await self.pw.chromium.launch(headless=True)
+                self.login_context = await self.browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                    viewport={'width': 1920, 'height': 1080}
+                )
+                page = await self.login_context.new_page()
+                await stealth_async(page)
+                await page.goto("https://www.zhipin.com", wait_until="networkidle")
+                await page.close()
+            return self.login_context
+
+    async def get_cookie_context(self, cookie_str: str) -> BrowserContext:
+        async with self._lock:
+            cookies = []
+            for item in cookie_str.split(';'):
+                if '=' in item:
+                    name, value = item.strip().split('=', 1)
+                    cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": ".zhipin.com",
+                        "path": "/"
+                    })
+
+            if self.cookie_context:
+                await self.cookie_context.close()
+
+            if self.browser is None:
+                if self.pw is None:
+                    self.pw = await async_playwright().start()
+                self.browser = await self.pw.chromium.launch(headless=True)
+
+            self.cookie_context = await self.browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                viewport={'width': 1920, 'height': 1080}
+            )
+            await self.cookie_context.add_cookies(cookies)
+            return self.cookie_context
+
+    async def transfer_login_cookies(self) -> Optional[str]:
+        async with self._lock:
+            if self.login_context is None:
+                return None
+            try:
+                cookies = await self.login_context.cookies()
+                cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies if 'zhipin' in c.get('domain', '')])
+                return cookie_str if cookie_str else None
+            except Exception as e:
+                logger.error(f"Failed to transfer cookies: {e}")
+                return None
 
     async def close(self):
-        if self.context: await self.context.close()
-        if self.browser: await self.browser.close()
-        if hasattr(self, 'pw'): await self.pw.stop()
+        async with self._lock:
+            if self.login_context:
+                await self.login_context.close()
+                self.login_context = None
+            if self.cookie_context:
+                await self.cookie_context.close()
+                self.cookie_context = None
+            if self.browser:
+                await self.browser.close()
+                self.browser = None
+            if self.pw:
+                await self.pw.stop()
+                self.pw = None
+
+
+browser_manager: Optional[BrowserManager] = None
+
+
+async def get_browser_manager() -> BrowserManager:
+    global browser_manager
+    if browser_manager is None:
+        browser_manager = await BrowserManager.get_instance()
+    return browser_manager
+
+
+class BossScraper:
+    def __init__(self, context: BrowserContext):
+        self.context = context
 
     async def search_jobs(self, query: str, city: str = "", limit: int = 10) -> List[Dict]:
         page = await self.context.new_page()
         await stealth_async(page)
-        
-        # 城市代码映射 (示例)
+
         city_codes = {"广州": "101280100", "北京": "101010100", "上海": "101020100", "深圳": "101280600"}
-        code = city_codes.get(city, "101280100") # 默认广州
-        
+        code = city_codes.get(city, "101280100")
+
         url = f"https://www.zhipin.com/web/geek/job?query={query}&city={code}"
-        
+
         logger.info(f"Searching: {url}")
         await page.goto(url, wait_until="networkidle")
-        await asyncio.sleep(3) # 等待渲染
-        
+        await page.wait_for_selector(".job-card-wrapper", timeout=10000)
+
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
         job_list = []
-        
+
         items = soup.select(".job-card-wrapper")
         for item in items[:limit]:
             try:
-                # 修复 Job ID 提取逻辑
                 link = item.select_one("a.job-card-left")
-                if not link: continue
+                if not link:
+                    continue
                 job_id = link['href'].split('/')[-1].split('.')[0]
-                
+
                 job_list.append({
                     "job_id": job_id,
                     "job_title": item.select_one(".job-name").text.strip(),
@@ -84,7 +154,7 @@ class BossScraper:
                 })
             except Exception as e:
                 logger.error(f"Error parsing job item: {e}")
-                
+
         await page.close()
         return job_list
 
@@ -92,14 +162,14 @@ class BossScraper:
         page = await self.context.new_page()
         await stealth_async(page)
         url = f"https://www.zhipin.com/job_detail/{job_id}.html"
-        
+
         logger.info(f"Fetching JD: {url}")
         await page.goto(url, wait_until="networkidle")
-        await asyncio.sleep(2)
-        
+        await page.wait_for_selector(".job-sec-text", timeout=10000)
+
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
-        
+
         detail = {
             "job_id": job_id,
             "description": soup.select_one(".job-sec-text").text.strip() if soup.select_one(".job-sec-text") else "N/A",
@@ -111,141 +181,148 @@ class BossScraper:
     async def check_auth(self) -> bool:
         page = await self.context.new_page()
         await page.goto("https://www.zhipin.com/web/geek/user/center")
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
         is_login = "login" not in page.url
         await page.close()
         return is_login
 
-    async def get_qrcode_base64(self) -> Dict[str, str]:
-        """
-        Phase 17.5: 获取登录二维码截图并转为Base64
-        用于扫码登录全自动化
-        """
-        page = await self.context.new_page()
-        await stealth_async(page)
 
-        url = "https://www.zhipin.com/web/user/?ka=header-login"
-        logger.info(f"Navigating to login page: {url}")
-        await page.goto(url, wait_until="networkidle")
-        await asyncio.sleep(2)
+async def get_qrcode_base64(context: BrowserContext) -> Dict[str, Any]:
+    page = await context.new_page()
+    await stealth_async(page)
+
+    url = "https://www.zhipin.com/web/user/?ka=header-login"
+    logger.info(f"Navigating to login page: {url}")
+    await page.goto(url, wait_until="networkidle")
+
+    if "login" not in page.url:
+        await page.close()
+        return {"is_login": True, "message": "Already logged in"}
+
+    await page.wait_for_selector(".qrcode-wrapper img, .login-scan-wrap img, img.qrcode", timeout=10000)
+
+    qrcode_selectors = [
+        ".qrcode-wrapper img",
+        ".login-scan-wrap img",
+        "img.qrcode",
+        "[class*='qrcode'] img",
+        ".scan-qrcode img"
+    ]
+
+    qrcode_element = None
+    for selector in qrcode_selectors:
+        try:
+            qrcode_element = await page.query_selector(selector)
+            if qrcode_element:
+                logger.info(f"Found QR code with selector: {selector}")
+                break
+        except:
+            continue
+
+    if not qrcode_element:
+        logger.warning("QR code element not found, capturing login area screenshot")
+        login_area = await page.query_selector(".login-scan-wrap, .qrcode-wrapper, .login-content")
+        if login_area:
+            screenshot_bytes = await login_area.screenshot()
+        else:
+            screenshot_bytes = await page.screenshot(full_page=False)
+    else:
+        screenshot_bytes = await qrcode_element.screenshot()
+
+    screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+    await page.close()
+
+    return {
+        "is_login": False,
+        "qrcode_base64": screenshot_base64,
+        "image_type": "png",
+        "description": "请使用Boss直聘APP扫描此二维码登录",
+        "message": "QR code captured successfully"
+    }
+
+
+async def wait_for_login(context: BrowserContext, timeout: int = 120) -> Dict[str, Any]:
+    page = await context.new_page()
+    await stealth_async(page)
+
+    url = "https://www.zhipin.com/web/user/?ka=header-login"
+    await page.goto(url, wait_until="networkidle")
+
+    start_time = asyncio.get_event_loop().time()
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed > timeout:
+            await page.close()
+            return {"success": False, "message": f"Login timeout after {timeout} seconds"}
 
         if "login" not in page.url:
+            bm = await get_browser_manager()
+            cookie_str = await bm.transfer_login_cookies()
             await page.close()
-            return {"is_login": True, "message": "Already logged in"}
+            return {
+                "success": True,
+                "message": "Login successful",
+                "cookie": cookie_str
+            }
 
         await asyncio.sleep(2)
 
-        qrcode_selectors = [
-            ".qrcode-wrapper img",
-            ".login-scan-wrap img",
-            "img.qrcode",
-            "[class*='qrcode'] img",
-            ".scan-qrcode img"
-        ]
 
-        qrcode_element = None
-        for selector in qrcode_selectors:
-            try:
-                qrcode_element = await page.query_selector(selector)
-                if qrcode_element:
-                    logger.info(f"Found QR code with selector: {selector}")
-                    break
-            except:
-                continue
-
-        if not qrcode_element:
-            logger.warning("QR code element not found, capturing login area screenshot")
-            login_area = await page.query_selector(".login-scan-wrap, .qrcode-wrapper, .login-content")
-            if login_area:
-                screenshot_bytes = await login_area.screenshot()
-            else:
-                screenshot_bytes = await page.screenshot(full_page=False)
-        else:
-            screenshot_bytes = await qrcode_element.screenshot()
-
-        screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-
-        await page.close()
-
-        return {
-            "is_login": False,
-            "qrcode_base64": screenshot_base64,
-            "image_type": "png",
-            "description": "请使用Boss直聘APP扫描此二维码登录",
-            "message": "QR code captured successfully"
-        }
-
-    async def wait_for_login(self, timeout: int = 120) -> Dict[str, Any]:
-        """
-        Phase 17.5: 等待用户扫码登录
-        """
-        page = await self.context.new_page()
-        await stealth_async(page)
-
-        url = "https://www.zhipin.com/web/user/?ka=header-login"
-        await page.goto(url, wait_until="networkidle")
-
-        start_time = asyncio.get_event_loop().time()
-
-        while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > timeout:
-                await page.close()
-                return {"success": False, "message": f"Login timeout after {timeout} seconds"}
-
-            if "login" not in page.url:
-                await page.close()
-                return {"success": True, "message": "Login successful"}
-
-            await asyncio.sleep(2)
-
-# --- MCP JSON-RPC 接口实现 ---
 @app.post("/")
 async def handle_mcp_request(request: Request):
     req_data = await request.json()
     method = req_data.get("method")
     params = req_data.get("params", {})
     rpc_id = req_data.get("id")
-    
+
     cookie = params.get("cookie")
-    # Phase 17.5: 允许二维码相关方法不需要cookie
+
     if not cookie and method not in ["boss.get_qrcode", "boss.wait_login"]:
         logger.error("Request missing cookie")
         return {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing cookie"}, "id": rpc_id}
 
-    scraper = BossScraper()
-    try:
-        # 只在需要cookie的方法中初始化浏览器
-        if method not in ["boss.get_qrcode", "boss.wait_login"]:
-            await scraper.init_browser(cookie)
+    bm = await get_browser_manager()
 
+    try:
         result = None
+
         if method == "boss.search_jobs":
+            context = await bm.get_cookie_context(cookie)
+            scraper = BossScraper(context)
             result = await scraper.search_jobs(params.get("query", ""), params.get("city", ""), params.get("limit", 10))
         elif method == "boss.get_job":
+            context = await bm.get_cookie_context(cookie)
+            scraper = BossScraper(context)
             result = await scraper.get_job_detail(params.get("job_id", ""))
         elif method == "boss.check_auth":
+            context = await bm.get_cookie_context(cookie)
+            scraper = BossScraper(context)
             result = {"is_login": await scraper.check_auth()}
         elif method == "boss.apply_job":
             result = {"success": True, "message": "模拟投递成功（已接收投递指令）"}
         elif method == "boss.get_qrcode":
-            # Phase 17.5: 获取登录二维码
-            await scraper.init_browser("")
-            result = await scraper.get_qrcode_base64()
+            context = await bm.get_login_context()
+            result = await get_qrcode_base64(context)
         elif method == "boss.wait_login":
-            # Phase 17.5: 等待扫码登录
-            await scraper.init_browser("")
-            result = await scraper.wait_for_login(params.get("timeout", 120))
+            context = await bm.get_login_context()
+            result = await wait_for_login(context, params.get("timeout", 120))
         else:
             return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method {method} not found"}, "id": rpc_id}
 
         return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
-    
+
     except Exception as e:
         logger.error(f"MCP Error: {e}")
         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}, "id": rpc_id}
-    finally:
-        await scraper.close()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    bm = await get_browser_manager()
+    await bm.close()
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8083)

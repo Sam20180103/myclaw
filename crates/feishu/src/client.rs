@@ -379,17 +379,18 @@ impl FeishuClient {
     }
 
     /// 上传图片 (Phase 17.5: 支持扫码登录图片发送)
+    /// image_type 参数应为 "message" 或 "avatar"，此处固定使用 "message"
     pub async fn upload_image(
         &self,
         image_data: &[u8],
-        image_type: &str,
+        file_format: &str,
     ) -> Result<String, FeishuError> {
         let token = self.get_tenant_token().await?;
         let url = "https://open.feishu.cn/open-apis/im/v1/images";
 
-        let file_name = format!("qrcode.{}", image_type);
+        let file_name = format!("qrcode.{}", file_format);
         let form = reqwest::multipart::Form::new()
-            .text("image_type", image_type.to_string())
+            .text("image_type", "message")
             .part("image", reqwest::multipart::Part::bytes(image_data.to_vec()).file_name(file_name));
 
         let response = self.client

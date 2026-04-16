@@ -147,9 +147,7 @@ impl FeishuChannel {
         Ok(())
     }
 
-    /// 发送 Agent 响应到飞书
     pub async fn send_response(&self, response: &AgentResponse, session_key: &str) -> Result<()> {
-        // Phase 17.5: 支持图片消息
         match &response.message.content {
             Content::Image { image_data, image_type, description } => {
                 self.send_image_response(session_key, image_data, image_type, description.as_deref()).await
@@ -188,16 +186,14 @@ impl FeishuChannel {
         &self,
         session_key: &str,
         image_data: &str,
-        image_type: &str,
+        file_format: &str,
         description: Option<&str>,
     ) -> Result<()> {
-        // 解码 Base64 图片数据
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(image_data)
             .map_err(|e| anyhow::anyhow!("Failed to decode base64 image: {}", e))?;
 
-        // 上传图片到飞书
-        let image_key = self.client.upload_image(&image_bytes, image_type).await
+        let image_key = self.client.upload_image(&image_bytes, file_format).await
             .map_err(|e| anyhow::anyhow!("Failed to upload image: {}", e))?;
 
         tracing::info!("Image uploaded to Feishu, key: {}", image_key);
