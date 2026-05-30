@@ -12,3 +12,4 @@ Cargo.lock
 *.iml
 node_modules/
 *.log
+vendor/

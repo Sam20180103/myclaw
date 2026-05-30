@@ -1,5 +1,8 @@
+pub mod builtin_tools;
+
 use rustclaw_protocol::{Message, Envelope, Role, Content};
-use rustclaw_tool::{ToolRegistry, ToolCall, ToolSchema};
+use rustclaw_tool::{ToolRegistry, ToolCall};
+use builtin_tools::{MemoryTool, SkillManageTool};
 use rustclaw_provider::ProviderClient;
 use rustclaw_memory::MemoryManager;
 use rustclaw_compression::ContextCompressor;
@@ -450,7 +453,15 @@ impl AgentRuntime {
 
     pub fn with_memory(mut self, memory: Arc<MemoryManager>) -> Self {
         memory.load_memory().ok();
+        // 把记忆管理暴露为 Agent 可调用工具,实现自主记忆管理
+        self.tool_registry.register(Arc::new(MemoryTool::new(memory.clone())));
         self.memory_manager = Some(memory);
+        self
+    }
+
+    /// 注入 SkillManager 并把 Skill 管理暴露为 Agent 可调用工具,实现自我进化闭环。
+    pub fn with_skill_manager(self, skills: Arc<rustclaw_skill::SkillManager>) -> Self {
+        self.tool_registry.register(Arc::new(SkillManageTool::new(skills)));
         self
     }
 
@@ -706,8 +717,70 @@ impl AgentRuntime {
                     args: tool_call.arguments.to_string(),
                 });
 
+                tracing::info!(
+                    tool = %tool_call.name,
+                    args = %tool_call.arguments,
+                    "Executing tool call"
+                );
+
                 match self.execute_tool(tool_call).await {
                     Ok(result) => {
+                        // If a tool returns QR payload, convert it to an image response immediately.
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&result) {
+                            let qr_obj = v
+                                .get("qrcode_image")
+                                .or_else(|| v.get("data").and_then(|d| d.get("qrcode_image")));
+
+                            if let Some(qr) = qr_obj {
+                                let image_data = qr.get("image_data").and_then(|x| x.as_str()).unwrap_or("");
+                                if !image_data.is_empty() {
+                                    let image_type = qr.get("image_type").and_then(|x| x.as_str()).unwrap_or("png");
+                                    let mut description = qr
+                                        .get("description")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("请使用Boss直聘APP扫描二维码登录")
+                                        .to_string();
+
+                                    let msg = v
+                                        .get("message")
+                                        .and_then(|x| x.as_str())
+                                        .or_else(|| v.get("data").and_then(|d| d.get("message")).and_then(|x| x.as_str()));
+                                    if let Some(msg) = msg {
+                                        description = format!("{}\n{}", description, msg);
+                                    }
+
+                                    let next_step = v
+                                        .get("next_step")
+                                        .and_then(|x| x.as_str())
+                                        .or_else(|| v.get("data").and_then(|d| d.get("next_step")).and_then(|x| x.as_str()));
+                                    if let Some(next) = next_step {
+                                        description = format!("{}\n{}", description, next);
+                                    }
+
+                                    let assistant_message = Message {
+                                        role: Role::Assistant,
+                                        content: Content::image_with_description(
+                                            image_data,
+                                            image_type,
+                                            description,
+                                        ),
+                                    };
+                                    self.session_manager.add_message(&session_key, assistant_message.clone());
+
+                                    return Ok(AgentResponse {
+                                        session_key,
+                                        message: assistant_message,
+                                        tool_calls: vec![],
+                                    });
+                                }
+                            }
+                        }
+
+                        tracing::info!(
+                            tool = %tool_call.name,
+                            result_len = result.len(),
+                            "Tool execution succeeded"
+                        );
                         self.emit_event(AgentEvent::ToolEnd {
                             tool_name: tool_call.name.clone(),
                             success: true,
@@ -723,6 +796,12 @@ impl AgentRuntime {
                         self.session_manager.add_message(&session_key, result_message);
                     }
                     Err(e) => {
+                        tracing::error!(
+                            tool = %tool_call.name,
+                            args = %tool_call.arguments,
+                            error = %e,
+                            "Tool execution failed"
+                        );
                         self.emit_event(AgentEvent::ToolEnd {
                             tool_name: tool_call.name.clone(),
                             success: false,
@@ -1063,6 +1142,42 @@ pub enum AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_memory_tool_add_and_list() {
+        use rustclaw_memory::MemoryManager;
+        use rustclaw_tool::Tool;
+        let dir = std::env::temp_dir().join(format!("rustclaw_test_{}", Uuid::new_v4()));
+        let mem = Arc::new(MemoryManager::new(dir.join("MEMORY.md"), 2200, 1375));
+        let tool = MemoryTool::new(mem);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let add = rt
+            .block_on(tool.execute(serde_json::json!({ "action": "add", "content": "用户偏好深色主题" })))
+            .unwrap();
+        assert_eq!(add["success"], true);
+
+        let list = rt
+            .block_on(tool.execute(serde_json::json!({ "action": "list" })))
+            .unwrap();
+        let entries = list["entries"].as_array().unwrap();
+        assert!(entries.iter().any(|e| e.as_str().unwrap().contains("深色主题")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_memory_tool_rejects_unknown_action() {
+        use rustclaw_memory::MemoryManager;
+        use rustclaw_tool::Tool;
+        let dir = std::env::temp_dir().join(format!("rustclaw_test_{}", Uuid::new_v4()));
+        let mem = Arc::new(MemoryManager::new(dir.join("MEMORY.md"), 2200, 1375));
+        let tool = MemoryTool::new(mem);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let res = rt.block_on(tool.execute(serde_json::json!({ "action": "frobnicate" })));
+        assert!(res.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn test_session_manager_create_and_get() {

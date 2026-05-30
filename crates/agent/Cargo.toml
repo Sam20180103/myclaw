@@ -21,6 +21,7 @@ dashmap = "5.5"
 rustclaw-protocol = { path = "../protocol" }
 rustclaw-provider = { path = "../provider" }
 rustclaw-tool = { path = "../tool" }
+rustclaw-skill = { path = "../skill" }
 rustclaw-memory = { path = "../memory" }
 rustclaw-compression = { path = "../compression" }
 rustclaw-storage = { path = "../storage" }

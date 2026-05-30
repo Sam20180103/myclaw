@@ -16,9 +16,9 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 
 | 特性 | 描述 | 优先级 |
 |------|------|--------|
-| 多通道接入 | WebSocket、HTTP、Webhook、飞书 等消息入口 | P0 |
+| 多通道接入 | HTTP REST、WebSocket 通用入站、飞书长连接 (Webhook 规划中) | P0 |
 | 智能体运行时 | 多会话并发、Agent循环、流式响应 | P0 |
-| 工具系统 | 原生Rust工具注册 (38+) | P0 |
+| 工具系统 | 原生Rust工具注册 (21: 5内置 + 14 Reach + memory/skill_manage) | P0 |
 | 记忆与持久化 | MEMORY.md 持久化记忆 + SQLite 会话存储 | P0 (v0.43.0 激活) |
 | 上下文压缩 | 双级压缩策略 (Gateway/Agent) | P0 (v0.43.0 激活) |
 | 动态Skill | Agent可以自己编写并注册新Skill | P0 |

@@ -330,6 +330,43 @@ impl FeishuClient {
         Ok(bytes.to_vec())
     }
 
+    /// 下载消息中的资源 (图片/文件)。
+    /// 收到的消息图片需通过 messages/{message_id}/resources/{file_key} 端点下载,
+    /// 与通过 files API 上传的文件 (download_file) 不同。
+    /// `res_type` 为 "image" 或 "file"。
+    pub async fn download_message_resource(
+        &self,
+        message_id: &str,
+        file_key: &str,
+        res_type: &str,
+    ) -> Result<Vec<u8>, FeishuError> {
+        let token = self.get_tenant_token().await?;
+        let url = format!(
+            "https://open.feishu.cn/open-apis/im/v1/messages/{}/resources/{}?type={}",
+            message_id, file_key, res_type
+        );
+
+        let response = self.client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(FeishuError::ApiError(format!(
+                "Resource download failed: {}", response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| FeishuError::HttpError(e.to_string()))?;
+
+        Ok(bytes.to_vec())
+    }
+
     /// 下载文件并保存到本地
     pub async fn download_file_to_path(
         &self,

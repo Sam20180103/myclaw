@@ -155,8 +155,15 @@ impl Default for McpClient {
 
 impl McpClient {
     pub fn new(endpoint: String, timeout_ms: u64) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(timeout_ms))
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms));
+
+        // Local MCP bridge should not be routed via http_proxy/https_proxy.
+        if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
+            builder = builder.no_proxy();
+        }
+
+        let client = builder
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { client, endpoint, timeout_ms }
@@ -185,14 +192,25 @@ impl McpClient {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("MCP request failed: {}", e)))?;
 
-        if !response.status().is_success() {
-            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", response.status())));
+        let status = response.status();
+        let raw_body = response
+            .text()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read MCP response body: {}", e)))?;
+
+        if !status.is_success() {
+            return Err(ToolError::ExecutionFailed(format!(
+                "MCP error: status={}, body={}",
+                status,
+                raw_body
+            )));
         }
 
-        let result: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse MCP response: {}", e)))?;
+        let result: serde_json::Value = serde_json::from_str(&raw_body)
+            .map_err(|e| ToolError::ExecutionFailed(format!(
+                "Failed to parse MCP response: {}, raw_body={} ",
+                e, raw_body
+            )))?;
 
         if let Some(error) = result.get("error") {
             let error_msg = if let Some(msg) = error.get("message").and_then(|m| m.as_str()) {
@@ -200,7 +218,11 @@ impl McpClient {
             } else {
                 error.to_string()
             };
-            return Err(ToolError::ExecutionFailed(format!("MCP error: {}", error_msg)));
+            return Err(ToolError::ExecutionFailed(format!(
+                "MCP error: {} (full={})",
+                error_msg,
+                error
+            )));
         }
 
         Ok(result.get("result").cloned().unwrap_or(result))
@@ -1914,8 +1936,73 @@ Self::new(ReachConfig::default())
 
 impl BossZhipinReachTool {
 pub fn new(config: ReachConfig) -> Self {
-let mcp_client = McpClient::new(config.boss_mcp_endpoint.clone(), config.social_timeout_ms);
+// Boss MCP often needs longer latency budget due to anti-bot challenge pages.
+let boss_timeout_ms = config.social_timeout_ms.max(120_000);
+let mcp_client = McpClient::new(config.boss_mcp_endpoint.clone(), boss_timeout_ms);
 Self { mcp_client, config }
+}
+
+async fn get_login_qrcode_payload(&self, action: &str, reason: &str) -> Result<serde_json::Value, ToolError> {
+    let result = self.mcp_client.call("boss.get_qrcode", serde_json::json!({})).await?;
+
+    if let Some(is_login) = result.get("is_login").and_then(|v| v.as_bool()) {
+        if is_login {
+            return Ok(serde_json::json!({
+                "success": true,
+                "action": action,
+                "status": "already_logged_in",
+                "message": "已登录，无需扫码"
+            }));
+        }
+    }
+
+    let qrcode_base64 = result.get("qrcode_base64").and_then(|v| v.as_str()).unwrap_or("");
+    let image_type = result.get("image_type").and_then(|v| v.as_str()).unwrap_or("png");
+    let description = result.get("description").and_then(|v| v.as_str()).unwrap_or("请使用Boss直聘APP扫描此二维码登录");
+
+    Ok(serde_json::json!({
+        "success": false,
+        "action": action,
+        "status": "auth_required",
+        "message": reason,
+        "qrcode_image": {
+            "image_data": qrcode_base64,
+            "image_type": image_type,
+            "description": description
+        },
+        "next_step": "请先扫码登录，然后调用 boss_zhipin_reach(action=\"wait_login\") 获取新cookie"
+    }))
+}
+
+async fn ensure_cookie_valid_or_qrcode(
+    &self,
+    action: &str,
+    cookie: &str,
+) -> Result<Option<serde_json::Value>, ToolError> {
+    let auth_result = self.mcp_client.call("boss.check_auth", serde_json::json!({
+        "cookie": cookie
+    })).await;
+
+    match auth_result {
+        Ok(v) => {
+            let is_login = v.get("is_login").and_then(|x| x.as_bool()).unwrap_or(false);
+            if is_login {
+                Ok(None)
+            } else {
+                let payload = self
+                    .get_login_qrcode_payload(action, "Boss cookie 已失效，请扫码重新登录")
+                    .await?;
+                Ok(Some(payload))
+            }
+        }
+        Err(e) => {
+            // 对鉴权检查异常也触发二维码登录流程，提升可恢复性。
+            let payload = self
+                .get_login_qrcode_payload(action, &format!("鉴权检查失败，需扫码登录：{}", e))
+                .await?;
+            Ok(Some(payload))
+        }
+    }
 }
 }
 
@@ -1926,9 +2013,8 @@ fn name(&self) -> &str {
 }
 
 fn description(&self) -> &str {
-    "Search and retrieve job listings from Boss Zhipin (BOSS直聘) via MCP bridge, and perform recruitment actions like apply."
+    "Access Boss Zhipin (BOSS直聘) for job searching, retrieving job/company details, and applying for jobs. This tool handles authentication, including initiating a QR code login flow and waiting for user scan if credentials are not provided or are invalid."
 }
-
 fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "boss_zhipin_reach".to_string(),
@@ -2000,7 +2086,11 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
 
         let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
         if cookie.is_empty() {
-            return Err(ToolError::ExecutionFailed("boss_cookie not configured. Please set it in config or use get_qrcode/wait_login to login first.".to_string()));
+            return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
+        }
+
+        if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
+            return Ok(payload);
         }
 
         let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
@@ -2025,7 +2115,11 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
 
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
                     if cookie.is_empty() {
-                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
+                    }
+
+                    if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
+                        return Ok(payload);
                     }
 
                     let result = self.mcp_client.call("boss.get_job", serde_json::json!({
@@ -2071,7 +2165,11 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
 
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
                     if cookie.is_empty() {
-                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
+                    }
+
+                    if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
+                        return Ok(payload);
                     }
 
                     let result = self.mcp_client.call("boss.apply_job", serde_json::json!({
@@ -2090,7 +2188,7 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                 "check_auth" => {
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
                     if cookie.is_empty() {
-                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
+                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
                     }
 
                     let result = self.mcp_client.call("boss.check_auth", serde_json::json!({
@@ -2149,6 +2247,7 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
 
             let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
             let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let cookie = result.get("cookie").and_then(|v| v.as_str()).unwrap_or("");
 
             if success {
                 Ok(serde_json::json!({
@@ -2156,7 +2255,8 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                     "action": action,
                     "status": "login_success",
                     "message": message,
-                    "note": "登录成功，请更新 boss_cookie 配置"
+                    "cookie": cookie,
+                    "note": "登录成功，返回了新 cookie，请更新 boss_cookie 配置"
                 }))
             } else {
                 Ok(serde_json::json!({

@@ -10,9 +10,10 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 ## 核心特性
 
 ### 基础架构
-- **多通道接入**: 支持 WebSocket、HTTP、Webhook、飞书 等消息入口
+- **多通道接入**: HTTP REST、WebSocket (通用入站) 与飞书长连接 (Webhook 规划中)
 - **智能体运行时**: 多会话并发、Agent 循环、流式响应
-- **工具系统**: 38+ 原生 Rust 工具，含路径安全防护
+- **工具系统**: 21 个原生 Rust 工具 (5 内置 + 14 Agent-Reach + memory/skill_manage)，含路径安全防护
+- **自我进化工具**: `memory` (增删改持久记忆) 与 `skill_manage` (创建/查询/修改/删除 Skill) 直接暴露给 Agent
 - **动态 Skill**: Agent 可以自己编写并注册新 Skill
 - **审批流程**: 用户审批后 Skill 才可使用
 - **Provider 抽象**: 支持 OpenAI、Anthropic、NVIDIA NIM 等多种 LLM
@@ -62,7 +63,7 @@ RustClaw 采用分层架构设计：
 ├─────────────────────────────────────────────────────────┤
 │  Execution Plane: Agent Runtime, Tool Executor, Skill   │
 ├─────────────────────────────────────────────────────────┤
-│  Capability Layer: Tool Registry (38+), Provider Mgr    │
+│  Capability Layer: Tool Registry (21), Provider Mgr     │
 ├─────────────────────────────────────────────────────────┤
 │  Memory Layer: MEMORY.md, USER.md, SQLite Session Store │
 ├─────────────────────────────────────────────────────────┤

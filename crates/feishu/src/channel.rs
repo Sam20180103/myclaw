@@ -19,6 +19,19 @@ use crate::client::FeishuClient;
 use crate::message::{FeishuEvent, FeishuEventMessage, FeishuMsgType};
 use crate::permission::FeishuPermission;
 
+/// 通过文件头魔数探测图片格式 (默认 png)。
+fn detect_image_format(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpeg"
+    } else if bytes.starts_with(&[0x47, 0x49, 0x46]) {
+        "gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.len() > 11 && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        "png"
+    }
+}
+
 type DefaultRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
 /// 飞书通道 — 实现 Channel trait
@@ -36,6 +49,28 @@ pub struct FeishuChannel {
 }
 
 impl FeishuChannel {
+    /// 清洗飞书文本消息内容，避免空内容和非法控制字符触发 validate content fail
+    fn sanitize_text_for_feishu(text: &str) -> String {
+        const FEISHU_TEXT_SOFT_LIMIT: usize = 8000;
+
+        let mut cleaned: String = text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+            .collect();
+
+        if cleaned.chars().count() > FEISHU_TEXT_SOFT_LIMIT {
+            cleaned = cleaned.chars().take(FEISHU_TEXT_SOFT_LIMIT).collect();
+            cleaned.push_str("\n\n[内容过长，已截断]");
+        }
+
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() {
+            "[空响应]".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
     /// 创建新的飞书通道
     pub fn new(config: FeishuConfig) -> Self {
         let client = Arc::new(FeishuClient::new(config.clone()));
@@ -94,40 +129,50 @@ impl FeishuChannel {
             return Ok(());
         }
 
-        // 提取文本内容并进行安全扫描
-        let text = self.extract_text(&msg).await;
-        if text.is_empty() {
-            tracing::warn!("Extracted text is empty, skipping");
-            return Ok(());
-        }
+        // 图片消息走视觉路径: 下载并构建 Content::Image 传给视觉模型;
+        // 下载失败则降级为文本提示。
+        let content = if matches!(msg.msg_type, FeishuMsgType::Image) {
+            match self.extract_image(&msg).await {
+                Some(c) => c,
+                None => Content::text("[图片下载失败]".to_string()),
+            }
+        } else {
+            // 提取文本内容并进行安全扫描
+            let text = self.extract_text(&msg).await;
+            if text.is_empty() {
+                tracing::warn!("Extracted text is empty, skipping");
+                return Ok(());
+            }
 
-        if let Err(e) = MemoryScanner::scan(&text) {
-            tracing::warn!("Security scan failed for feishu message: {}", e);
-            return Ok(());
-        }
+            if let Err(e) = MemoryScanner::scan(&text) {
+                tracing::warn!("Security scan failed for feishu message: {}", e);
+                return Ok(());
+            }
 
-        // 构建消息内容
-        let final_content = if msg.chat_type == "group" {
-            if let Some(group_config) = self.permission.get_group_config(&msg.chat_id) {
-                if let Some(ref prompt) = group_config.system_prompt {
-                    format!("{}\n\n[群聊系统提示]\n{}", prompt, text)
+            // 构建消息内容
+            let final_content = if msg.chat_type == "group" {
+                if let Some(group_config) = self.permission.get_group_config(&msg.chat_id) {
+                    if let Some(ref prompt) = group_config.system_prompt {
+                        format!("{}\n\n[群聊系统提示]\n{}", prompt, text)
+                    } else {
+                        text
+                    }
                 } else {
                     text
                 }
             } else {
                 text
-            }
-        } else {
-            text
+            };
+            Content::text(final_content)
         };
 
         // 使用 chat_id 和 sender_id 构建 session_key
         // 格式: {chat_type}:{chat_id}:{sender_id}
         let session_key = format!("{}:{}:{}", msg.chat_type, msg.chat_id, msg.sender_id);
-        
+
         let message = Message {
             role: Role::User,
-            content: Content::text(final_content),
+            content,
         };
         let envelope = Envelope::new("feishu", &session_key, message);
 
@@ -163,7 +208,8 @@ impl FeishuChannel {
 
     /// 发送文本响应 (内部方法)
     async fn send_text_response(&self, session_key: &str, text: &str) -> Result<()> {
-        let content = json!({"text": text}).to_string();
+        let safe_text = Self::sanitize_text_for_feishu(text);
+        let content = json!({"text": safe_text}).to_string();
 
         let parts: Vec<&str> = session_key.split(':').collect();
         if parts.len() == 3 {
@@ -248,7 +294,8 @@ impl FeishuChannel {
 
     /// 发送流式响应
     pub async fn send_streaming_response(&self, text: &str, chat_id: &str) -> Result<()> {
-        let content = json!({"text": text}).to_string();
+        let safe_text = Self::sanitize_text_for_feishu(text);
+        let content = json!({"text": safe_text}).to_string();
         self.send_raw(chat_id, "text", &content).await
     }
 
@@ -409,6 +456,29 @@ impl FeishuChannel {
             FeishuMsgType::Interactive => "[卡片消息]".to_string(),
             FeishuMsgType::Unknown(t) => format!("[未知消息类型: {}]", t),
             _ => msg.content.clone(),
+        }
+    }
+
+    /// 提取图片消息为 Content::Image (下载 + base64),供视觉模型理解。
+    /// 下载失败时返回 None,调用方应降级处理。
+    async fn extract_image(&self, msg: &crate::message::FeishuMessage) -> Option<Content> {
+        let json = serde_json::from_str::<serde_json::Value>(&msg.content).ok()?;
+        let image_key = json.get("image_key").and_then(|v| v.as_str())?;
+
+        match self
+            .client
+            .download_message_resource(&msg.message_id, image_key, "image")
+            .await
+        {
+            Ok(bytes) => {
+                let image_type = detect_image_format(&bytes);
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Some(Content::image_with_description(b64, image_type, "用户发送的图片"))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download feishu image {}: {}", image_key, e);
+                None
+            }
         }
     }
 

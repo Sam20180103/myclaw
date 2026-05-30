@@ -149,6 +149,10 @@ let reach_config = rustclaw_tool::ReachConfig {
             agent_builder = agent_builder.with_session_store(store_arc);
         }
 
+        // 4. SkillManager — 同时注入 Agent (暴露 skill_manage 工具) 与 Gateway (审批 API)
+        let skill_manager = Arc::new(SkillManager::new(SkillConfig::default()));
+        agent_builder = agent_builder.with_skill_manager(skill_manager.clone());
+
         let agent = Arc::new(agent_builder);
 
         let gateway_config = GatewayConfig {
@@ -156,10 +160,7 @@ let reach_config = rustclaw_tool::ReachConfig {
             port: config.gateway.port,
             device_id: config.gateway.device_id.clone(),
         };
-        let skill_manager = SkillManager::new(SkillConfig::default());
         let (approval_tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
-
-        let skill_manager = Arc::new(skill_manager);
 
         let config_path = Config::config_path();
         
@@ -322,6 +323,7 @@ let reach_config = rustclaw_tool::ReachConfig {
 
         let app = Router::new()
             .route("/health", get(health_handler))
+            .route("/ws", get(ws_handler))
             .route("/api/message", axum::routing::post(message_handler))
             .route("/api/session", axum::routing::get(session_list_handler))
             .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
@@ -362,6 +364,24 @@ let reach_config = rustclaw_tool::ReachConfig {
                 while let Some(event) = events.next().await {
                     if let ChannelEvent::Message(envelope) = event {
                         info!("Feishu message received: session_key={}", envelope.session_key);
+                        
+                        if let Content::Text(ref text) = envelope.message.content {
+                            if text.trim() == "/clear" {
+                                info!("Received /clear command from Feishu, clearing session {}", envelope.session_key);
+                                agent.session_manager().delete(&envelope.session_key);
+                                let response = rustclaw_agent::AgentResponse {
+                                    session_key: envelope.session_key.clone(),
+                                    message: Message {
+                                        role: Role::Assistant,
+                                        content: Content::text("会话已清空".to_string()),
+                                    },
+                                    tool_calls: vec![],
+                                };
+                                let _ = feishu_ch.send_response(&response, &envelope.session_key).await;
+                                continue;
+                            }
+                        }
+
                         let ch = feishu_ch.clone();
                         let ag = agent.clone();
                         tokio::spawn(async move {
@@ -427,11 +447,87 @@ let reach_config = rustclaw_tool::ReachConfig {
 }
 
 async fn health_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ 
-        "status": "ok", 
+    Json(serde_json::json!({
+        "status": "ok",
         "service": "rustclaw-gateway",
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+/// 把响应 Content 折叠为可在 WS/REST 文本通道发送的字符串。
+fn content_to_text(content: Content) -> String {
+    match content {
+        Content::Text(s) => s,
+        Content::Structured { text, .. } => text.unwrap_or_default(),
+        Content::Image { description, .. } => {
+            format!("[Image: {}]", description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息"))
+        }
+    }
+}
+
+/// 通用 WebSocket 入站端点 — 每个文本帧驱动一次 Agent 循环并回送响应。
+/// 接受纯文本,或 JSON `{"sessionKey": "...", "content": "..."}`;
+/// 未提供 sessionKey 时,同一连接复用一个会话。
+async fn ws_handler(
+    State(state): State<Arc<Gateway>>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
+}
+
+async fn handle_ws_connection(mut socket: axum::extract::ws::WebSocket, state: Arc<Gateway>) {
+    use axum::extract::ws::Message as WsMessage;
+
+    let conn_session = uuid::Uuid::new_v4().to_string();
+    info!("WebSocket client connected: conn_session={}", conn_session);
+
+    while let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            WsMessage::Text(text) => {
+                // 支持 JSON {sessionKey, content} 或纯文本
+                let (session_key, content) = match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) if v.is_object() => {
+                        let sk = v.get("sessionKey")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| conn_session.clone());
+                        let c = v.get("content").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        (sk, c)
+                    }
+                    _ => (conn_session.clone(), text.to_string()),
+                };
+
+                if content.trim().is_empty() {
+                    continue;
+                }
+
+                let envelope = Envelope::new(
+                    "websocket",
+                    &session_key,
+                    Message { role: Role::User, content: Content::text(content) },
+                );
+
+                let payload = match state.agent.process_with_loop(envelope).await {
+                    Ok(AgentResponse { session_key, message, .. }) => serde_json::json!({
+                        "type": "response",
+                        "sessionKey": session_key,
+                        "content": content_to_text(message.content),
+                    }),
+                    Err(e) => serde_json::json!({ "type": "error", "error": e.to_string() }),
+                };
+
+                if socket.send(WsMessage::Text(payload.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            WsMessage::Close(_) => break,
+            WsMessage::Ping(p) => {
+                let _ = socket.send(WsMessage::Pong(p)).await;
+            }
+            _ => {}
+        }
+    }
+    info!("WebSocket client disconnected: conn_session={}", conn_session);
 }
 
 async fn session_list_handler(
@@ -496,7 +592,7 @@ let envelope = Envelope::new(
             let response_content = match message.content {
                 Content::Text(s) => s,
                 Content::Structured { text, .. } => text.unwrap_or_default(),
-                Content::Image { image_data, description, .. } => {
+                Content::Image { description, .. } => {
                     let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                     format!("[Image: {}]", desc)
                 }
@@ -545,7 +641,7 @@ let envelope = Envelope::new(
             let response_content = match message.content {
                 Content::Text(s) => s,
                 Content::Structured { text, .. } => text.unwrap_or_default(),
-                Content::Image { image_data, description, .. } => {
+                Content::Image { description, .. } => {
                     let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                     format!("[Image: {}]", desc)
                 }
@@ -769,7 +865,7 @@ async fn agent_get_handler(
 "content": match &m.content {
                     rustclaw_protocol::Content::Text(s) => s.to_string(),
                     rustclaw_protocol::Content::Structured { text, .. } => text.as_deref().unwrap_or("").to_string(),
-                    rustclaw_protocol::Content::Image { image_data, description, .. } => {
+                    rustclaw_protocol::Content::Image { description, .. } => {
                         let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                         format!("[Image: {}]", desc)
                     }

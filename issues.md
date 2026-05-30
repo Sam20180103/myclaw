@@ -1,22 +1,28 @@
 # RustClaw 项目问题与进展记录 (Issues & Progress)
 
-## 2026-04-16 更新: 待修复问题 (Pending) 🔍
+## 2026-05-30 更新: 待修复问题 (Pending) 🔍
 
-### 1. 飞书通道集成 (Feishu Channel)
-
-| # | 问题描述 | 建议方案 | 严重程度 |
-|---|---------|---------|----------|
-| 1 | **令牌刷新 Bug**: `FeishuClient::get_tenant_token` 缓存了 `tenant_access_token` 但未记录过期时间，也未处理 Token 失效后的重新获取逻辑。 | 添加过期时间记录和自动刷新逻辑。 | 🔴 高 |
-
-### 2. Agent 运行时与 Provider
+### 1. Agent 自我进化闭环缺失
 
 | # | 问题描述 | 建议方案 | 严重程度 |
 |---|---------|---------|----------|
-| 1 | **LLM 视觉信息丢失**: 所有 LlmProvider 实现均将 `Content::Image` 简化为文本占位符 `[Image: desc]`。AI 无法理解图片内容。 | 实现真正的视觉理解能力，或使用 vision-capable 模型。 | 🔴 高 |
+| 1 | **Memory/Skill 工具未挂载**: `MemoryManager`(add/replace/remove)与 `SkillManager`(create) 仅有方法，未实现 `Tool` trait 也未注册到 `ToolRegistry`，Agent 无法主动管理记忆或创建技能。 | 实现 `MemoryTool`/`SkillManageTool` 并在 Agent 构造时注册。 | 🔴 高 |
+
+### 2. 多通道入站
+
+| # | 问题描述 | 建议方案 | 严重程度 |
+|---|---------|---------|----------|
+| 1 | **通用 WS/Webhook 占位**: `crates/channel` 的 WebSocket/HTTP/Webhook 通道为空壳实现，实际入站仅 HTTP REST 与飞书 WebSocket。 | 实现通用入站或更新文档表述。 | 🟡 中 |
 
 ---
 
 ## 已完成的修复 (Completed) ✅
+
+### v0.45.0 (进行中)
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| 1 | `crates/feishu/src/client.rs` | 令牌刷新 Bug | `CachedToken` 记录 `expires_at`，带 300s buffer 自动刷新 (已核实修复) |
 
 ### v0.44.0 安全加固版
 

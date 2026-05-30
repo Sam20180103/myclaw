@@ -11,7 +11,7 @@ pub type TokenStream = Pin<Box<dyn Stream<Item = Result<String, ProviderError>> 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError>;
-    async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> { Err(ProviderError::ApiError("Not implemented".to_string())) }
+    async fn complete_with_tools(&self, _messages: Vec<Message>, _tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> { Err(ProviderError::ApiError("Not implemented".to_string())) }
     async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream;
     async fn list_models(&self) -> Result<Vec<String>, ProviderError>;
 }
@@ -129,7 +129,8 @@ impl OpenAiProvider {
 #[derive(Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    /// String for plain text, or an array of content parts (text + image_url) for vision.
+    content: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -165,6 +166,7 @@ struct OpenAiMessageResponse {
 struct OpenAiToolCall {
     id: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     call_type: String,
     function: OpenAiFunction,
 }
@@ -173,6 +175,93 @@ struct OpenAiToolCall {
 struct OpenAiFunction {
     name: String,
     arguments: String,
+}
+
+/// 归一化图片格式为标准 MIME 后缀 (jpg -> jpeg)。
+fn normalize_image_format(fmt: &str) -> String {
+    match fmt.to_lowercase().as_str() {
+        "jpg" | "jpeg" => "jpeg".to_string(),
+        "" => "png".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 把 image_data 转为可用于 OpenAI image_url 的 URL。
+/// 已是 http(s):// 或 data: 开头则原样使用,否则视为 base64 构造 data URL。
+fn image_data_url(image_data: &str, image_type: &str) -> String {
+    if image_data.starts_with("http://")
+        || image_data.starts_with("https://")
+        || image_data.starts_with("data:")
+    {
+        image_data.to_string()
+    } else {
+        format!("data:image/{};base64,{}", normalize_image_format(image_type), image_data)
+    }
+}
+
+/// 将内部 Content 转换为 OpenAI 消息 content (字符串或多模态数组)。
+fn openai_content(content: &rustclaw_protocol::Content) -> serde_json::Value {
+    use rustclaw_protocol::Content;
+    match content {
+        Content::Text(s) => serde_json::Value::String(s.clone()),
+        Content::Structured { text, .. } => {
+            serde_json::Value::String(text.clone().unwrap_or_default())
+        }
+        Content::Image { image_data, image_type, description } => {
+            let mut parts = Vec::new();
+            if let Some(desc) = description {
+                if !desc.is_empty() {
+                    parts.push(serde_json::json!({ "type": "text", "text": desc }));
+                }
+            }
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": image_data_url(image_data, image_type) }
+            }));
+            serde_json::Value::Array(parts)
+        }
+    }
+}
+
+/// 将内部 Content 转换为 Anthropic 消息 content (字符串或内容块数组)。
+fn anthropic_content(content: &rustclaw_protocol::Content) -> serde_json::Value {
+    use rustclaw_protocol::Content;
+    match content {
+        Content::Text(s) => serde_json::Value::String(s.clone()),
+        Content::Structured { text, .. } => {
+            serde_json::Value::String(text.clone().unwrap_or_default())
+        }
+        Content::Image { image_data, image_type, description } => {
+            // Anthropic 暂不支持远程 URL 图片,仅对 base64 走视觉块,否则降级为文本。
+            if image_data.starts_with("http://") || image_data.starts_with("https://") {
+                return serde_json::Value::String(format!(
+                    "[Image: {}]",
+                    description.as_deref().unwrap_or(image_data)
+                ));
+            }
+            // data:image/png;base64,XXXX -> 取逗号后的纯 base64
+            let data = if image_data.starts_with("data:") {
+                image_data.rsplit(',').next().unwrap_or(image_data)
+            } else {
+                image_data.as_str()
+            };
+            let mut parts = Vec::new();
+            if let Some(desc) = description {
+                if !desc.is_empty() {
+                    parts.push(serde_json::json!({ "type": "text", "text": desc }));
+                }
+            }
+            parts.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": format!("image/{}", normalize_image_format(image_type)),
+                    "data": data
+                }
+            }));
+            serde_json::Value::Array(parts)
+        }
+    }
 }
 
 fn extract_tool_calls(response: &OpenAiResponse) -> Vec<serde_json::Value> {
@@ -203,15 +292,7 @@ impl LlmProvider for OpenAiProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -268,15 +349,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -338,15 +411,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -497,7 +562,8 @@ impl AnthropicProvider {
 #[derive(Serialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    /// String for plain text, or an array of content blocks (text + image) for vision.
+    content: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -540,15 +606,7 @@ impl LlmProvider for AnthropicProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = anthropic_content(&m.content);
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -602,15 +660,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = anthropic_content(&m.content);
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -706,15 +756,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = anthropic_content(&m.content);
                 AnthropicMessage {
                     role: role.to_string(),
                     content,
@@ -850,15 +892,7 @@ impl LlmProvider for NvProvider {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -925,15 +959,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -995,15 +1021,7 @@ let content = match &m.content {
                     rustclaw_protocol::Role::Assistant => "assistant",
                     rustclaw_protocol::Role::System => "system",
                 };
-let content = match &m.content {
-            rustclaw_protocol::Content::Text(s) => s.clone(),
-            rustclaw_protocol::Content::Structured { text, .. } => {
-                text.clone().unwrap_or_default()
-            }
-            rustclaw_protocol::Content::Image { image_data, description, .. } => {
-                format!("[Image: {}]", description.as_deref().unwrap_or(image_data))
-            }
-        };
+                let content = openai_content(&m.content);
                 OpenAiMessage {
                     role: role.to_string(),
                     content,
@@ -1241,5 +1259,41 @@ mod tests {
         let models = rt.block_on(provider.list_models()).unwrap();
         assert!(!models.is_empty());
         assert!(models.iter().any(|m| m.contains("llama")));
+    }
+
+    #[test]
+    fn test_openai_content_text_is_string() {
+        let v = openai_content(&rustclaw_protocol::Content::Text("hello".into()));
+        assert_eq!(v, serde_json::Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_openai_content_image_is_multimodal_array() {
+        let c = rustclaw_protocol::Content::image_with_description("BASE64DATA", "png", "a cat");
+        let v = openai_content(&c);
+        let arr = v.as_array().expect("image content should be an array");
+        // 含一个文本块 + 一个 image_url 块
+        assert!(arr.iter().any(|p| p["type"] == "text" && p["text"] == "a cat"));
+        let img = arr.iter().find(|p| p["type"] == "image_url").expect("image_url part");
+        assert_eq!(img["image_url"]["url"], "data:image/png;base64,BASE64DATA");
+    }
+
+    #[test]
+    fn test_anthropic_content_image_uses_base64_source() {
+        let c = rustclaw_protocol::Content::image("BASE64DATA", "jpg");
+        let v = anthropic_content(&c);
+        let arr = v.as_array().expect("image content should be an array");
+        let img = arr.iter().find(|p| p["type"] == "image").expect("image block");
+        assert_eq!(img["source"]["type"], "base64");
+        assert_eq!(img["source"]["media_type"], "image/jpeg"); // jpg -> jpeg
+        assert_eq!(img["source"]["data"], "BASE64DATA");
+    }
+
+    #[test]
+    fn test_anthropic_content_remote_url_downgrades_to_text() {
+        let c = rustclaw_protocol::Content::image("https://example.com/a.png", "png");
+        let v = anthropic_content(&c);
+        // Anthropic 不支持远程 URL,降级为文本
+        assert!(v.is_string());
     }
 }

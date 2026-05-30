@@ -163,8 +163,13 @@ build_cmd() {
 
 check_error() {
     local output="$1"
-    
-    if echo "$output" | grep -qiE "quota|token.*(limit|exceed|insufficient)|credits?|rate.*limit|api.*(error|key).*(invalid|expired)|authentication.*fail|unauthorized|401|429|403|Request rate increased too quickly|upstream.*error.*alibaba|dashscope"; then
+
+    local strong_pattern="401|429|403|quota|token.*(invalid|expired|insufficient|exceed)|invalid key|expired key|authentication.*fail|unauthoriz|rate.*limit|Request rate increased too quickly|api.*key"
+    local matched
+    matched=$(echo "$output" | grep -iE "$strong_pattern" -m 1 || true)
+
+    if [[ -n "$matched" ]]; then
+        echo "$matched"
         return 0
     fi
     return 1
@@ -211,12 +216,17 @@ execute_prompt() {
     local output
     
     output=$($cmd 2>&1) || exit_code=$?
-    
+
     echo "$output" | tee -a "$LOG_FILE"
-    
-    if check_error "$output"; then
-        log_error "❌ 检测到 API 错误 (rate limit/quota/invalid)"
-        return 2
+
+    local matched
+    matched=$(check_error "$output" || true)
+    if [[ -n "$matched" ]]; then
+        log_warn "检测到可能的 API 警告匹配: $matched"
+        if [[ $exit_code -ne 0 ]]; then
+            log_error "❌ 检测到 API 错误 (rate limit/quota/invalid)"
+            return 2
+        fi
     fi
     
     if [[ $exit_code -eq 0 ]]; then
