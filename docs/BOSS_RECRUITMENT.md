@@ -2,9 +2,31 @@
 
 本指南介绍如何使用 RustClaw 的 BOSS直聘智能投递功能。该功能目前处于 Phase 17 阶段，支持自动搜索、简历匹配（匹配度 >= 90% 自动建议投递）以及手动认证管理。
 
-## 1. 认证管理 (手动注入)
+## 1. 认证管理
 
-由于 BOSS 直聘的反爬策略，你需要手动从浏览器获取 Cookie。
+### 方式一：手机号 + 短信验证码（推荐，自动）
+
+在 MCP 服务端配置登录手机号环境变量：
+
+```bash
+export BOSS_PHONE=13800001234          # 登录用手机号
+export BOSS_LOGIN_PAGE_TTL=300         # 可选：登录页保活秒数，默认 300
+```
+
+之后无需手动注入 Cookie。当业务请求发现未登录时，会自动走短信登录：
+
+1. Agent 调用 `boss_zhipin_reach(action="login_send_sms")` → 服务端无头浏览器打开登录页、
+   自动填入 `BOSS_PHONE`、点击“获取验证码”，并保活登录页。
+2. 你的手机收到验证码后，**直接在飞书里把验证码回复给 Agent**。
+3. Agent 调用 `boss_zhipin_reach(action="login_submit_sms", code="472913")` 完成登录，
+   服务端提取并缓存 Cookie，然后自动重试原业务请求。
+
+> 若 BOSS 触发滑块/安全验证，流程会**自动回退到二维码**并经飞书发图（仅作兜底；
+> 注意 BOSS App 无法扫相册图片，需用另一台设备摄像头扫码）。
+
+### 方式二：手动注入 Cookie（备用）
+
+如需手动从浏览器获取 Cookie：
 
 1.  在浏览器登录 [BOSS直聘](https://www.zhipin.com/)。
 2.  打开开发者工具 (F12) -> 网络 (Network)。
@@ -41,8 +63,9 @@ rustclaw tools config boss_zhipin_reach --set cookie="lastCity=101280100; __g=-;
 ## 4. 安全说明
 
 - **限频保护**: 建议每次搜索数量不要超过 20 个，防止触发平台风险控制。
-- **凭证有效期**: BOSS 的 Cookie 通常有 1-7 天有效期，过期后需重新注入。
+- **凭证有效期**: BOSS 的 Cookie 通常有 1-7 天有效期；短信登录方式过期后会自动重新登录（仍需你回复一次验证码）。
+- **手机号安全**: `BOSS_PHONE` 仅存于 MCP 服务端环境变量，不进 config.toml、不经网络传输；验证码经飞书对话回传。
 - **自动投递**: 默认为“建议投递”，除非你在指令中明确要求“自动投递”。
 
 ---
-*RustClaw Team - v0.43.0*
+*RustClaw Team - v0.45.0*

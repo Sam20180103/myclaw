@@ -11,7 +11,7 @@ from urllib.parse import quote, urljoin
 from urllib import request as urllib_request
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException
-from playwright.async_api import async_playwright, Browser, BrowserContext
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from playwright_stealth import Stealth
 from bs4 import BeautifulSoup
 import uvicorn
@@ -436,6 +436,9 @@ class BrowserManager:
         self.browser: Optional[Browser] = None
         self.login_context: Optional[BrowserContext] = None
         self.cookie_context: Optional[BrowserContext] = None
+        # 短信登录两步法之间保活的登录页 (login_send_sms -> login_submit_sms)
+        self.login_page: Optional[Page] = None
+        self.login_page_at: float = 0.0
 
     @classmethod
     async def get_instance(cls) -> 'BrowserManager':
@@ -458,6 +461,35 @@ class BrowserManager:
                 await page.goto("https://www.zhipin.com", wait_until="networkidle")
                 await page.close()
             return self.login_context
+
+    async def get_persistent_login_page(self, force_new: bool = False) -> Page:
+        """返回一个在两次 HTTP 调用间保活的登录页 (用于短信验证码两步登录)。
+        与 QR 流程不同, 这里不会 page.close(), 以便 login_send_sms 发码后,
+        login_submit_sms 能在同一页面填入验证码完成登录。
+        过期 (BOSS_LOGIN_PAGE_TTL, 默认 300s) 或 force_new 时重建。"""
+        ttl = _get_env_delay_seconds("BOSS_LOGIN_PAGE_TTL", 300.0)
+        # 复用 / 初始化 login_context (内部已持 self._lock)
+        context = await self.get_login_context()
+        async with self._lock:
+            page = self.login_page
+            expired = (time.time() - self.login_page_at) > ttl
+            stale = False
+            if page is not None:
+                try:
+                    stale = page.is_closed()
+                except Exception:
+                    stale = True
+            if force_new or expired or stale or page is None:
+                if page is not None:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                page = await context.new_page()
+                await Stealth().apply_stealth_async(page)
+                self.login_page = page
+                self.login_page_at = time.time()
+            return page
 
     async def get_cookie_context(self, cookie_str: str) -> BrowserContext:
         async with self._lock:
@@ -508,6 +540,13 @@ class BrowserManager:
         essential to recover from stale / blocked browser state that
         causes persistent QR capture failures (e.g. about:blank)."""
         async with self._lock:
+            if self.login_page is not None:
+                try:
+                    await self.login_page.close()
+                except Exception:
+                    pass
+                self.login_page = None
+                self.login_page_at = 0.0
             if self.login_context is not None:
                 try:
                     await self.login_context.close()
@@ -527,6 +566,13 @@ class BrowserManager:
 
     async def close(self):
         async with self._lock:
+            if self.login_page:
+                try:
+                    await self.login_page.close()
+                except Exception:
+                    pass
+                self.login_page = None
+                self.login_page_at = 0.0
             if self.login_context:
                 await self.login_context.close()
                 self.login_context = None
@@ -1315,6 +1361,232 @@ async def wait_for_login(context: BrowserContext, timeout: int = 120) -> Dict[st
         await asyncio.sleep(2.0)
 
 
+# ---------------------------------------------------------------------------
+# 手机号 + 短信验证码登录 (两步法, Agent 对话编排)
+# ---------------------------------------------------------------------------
+
+LOGIN_URL_WEB = "https://www.zhipin.com/web/user/?ka=header-login"
+LOGIN_URL_OLD = "https://www.zhipin.com/user/login.html"
+
+# best-effort 多选择器: BOSS 登录页 DOM 可能随版本变化, 顺序探测取第一个可见命中
+SMS_TAB_SELECTORS = [
+    "a[tab='sms']", "a[ka='login-by-sms']",
+    "a:has-text('短信登录')", "a:has-text('验证码登录')", "a:has-text('手机登录')",
+    "text=短信登录", "text=验证码登录",
+]
+PHONE_INPUT_SELECTORS = [
+    "input[name='phone']", "input[type='tel']",
+    "input[placeholder*='手机号']", "input[placeholder*='手机']",
+    ".phone-login input[type='text']", "#phone",
+]
+SEND_CODE_SELECTORS = [
+    "button:has-text('获取验证码')", "a:has-text('获取验证码')",
+    "button:has-text('发送验证码')", ".btn-sms", ".send-code",
+    "text=获取验证码", "text=发送验证码",
+]
+CODE_INPUT_SELECTORS = [
+    "input[name='code']", "input[placeholder*='验证码']", "#code", "input[maxlength='6']",
+]
+LOGIN_BTN_SELECTORS = [
+    ".btn-login", "button:has-text('登录')", "button[type='submit']", ".btn-sign",
+]
+# 仅匹配安全验证/滑块, 不含裸 "验证码" (它是合法的输入框文案)
+CAPTCHA_MARKERS = ["geetest", "captcha", "nc_iconfont", "安全验证", "滑块", "拖动滑", "向右滑"]
+
+
+def _mask_phone(phone: str) -> str:
+    p = (phone or "").strip()
+    if len(p) >= 7:
+        return p[:3] + "****" + p[-4:]
+    return "***"
+
+
+async def _probe_fill(page: Page, selectors: List[str], value: str, timeout: int = 2500) -> Optional[str]:
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() and await loc.is_visible():
+                await loc.fill(value, timeout=timeout)
+                return sel
+        except Exception:
+            continue
+    return None
+
+
+async def _probe_click(page: Page, selectors: List[str], timeout: int = 2500) -> Optional[str]:
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() and await loc.is_visible():
+                await loc.click(timeout=timeout, force=True)
+                return sel
+        except Exception:
+            continue
+    return None
+
+
+async def _has_captcha(page: Page) -> bool:
+    try:
+        html = (await page.content()).lower()
+    except Exception:
+        return False
+    return any(m.lower() in html for m in CAPTCHA_MARKERS)
+
+
+async def _fallback_to_qr(message: str) -> Dict[str, Any]:
+    """短信登录受阻 (滑块/安全验证) 时回退到二维码 + 飞书。"""
+    bm = await get_browser_manager()
+    try:
+        login_context = await bm.get_login_context()
+        qr = await acquire_qr_result(login_context, force_refresh=True)
+        feishu = None
+        if qr.get("qrcode_base64") and not qr.get("qr_cache_hit"):
+            feishu = await send_qr_to_feishu(qr.get("qrcode_base64", ""), qr.get("image_type", "png"))
+        if qr.get("qrcode_base64"):
+            await start_background_wait_for_login(timeout=240)
+        return {
+            "success": False,
+            "status": "captcha",
+            "fallback": "qrcode",
+            "message": message,
+            "qrcode_image": {
+                "image_data": qr.get("qrcode_base64", ""),
+                "image_type": qr.get("image_type", "png"),
+                "description": qr.get("description", "请使用Boss直聘APP扫描二维码登录"),
+            },
+            "feishu_delivery": feishu,
+        }
+    except Exception as e:
+        logger.warning("fallback_to_qr failed: %s", e)
+        return {"success": False, "status": "captcha", "fallback": "qrcode", "message": f"{message} (二维码兜底失败: {e})"}
+
+
+async def _collect_login_cookie(login_context: BrowserContext, bm: "BrowserManager") -> Optional[str]:
+    try:
+        cookies = await login_context.cookies()
+        cookie_str = _format_zhipin_cookie_from_cookie_list(cookies)
+        if cookie_str:
+            return cookie_str
+    except Exception:
+        pass
+    return await bm.transfer_login_cookies()
+
+
+async def login_send_sms(phone: Optional[str] = None) -> Dict[str, Any]:
+    """第一步: 打开登录页, 填手机号, 点“获取验证码”, 保活登录页等待验证码。"""
+    phone = (phone or os.getenv("BOSS_PHONE", "")).strip()
+    if not phone:
+        return {"success": False, "status": "no_phone", "message": "未配置 BOSS_PHONE 手机号"}
+
+    bm = await get_browser_manager()
+    page = await bm.get_persistent_login_page(force_new=True)
+
+    nav_ok = False
+    for url in (LOGIN_URL_WEB, LOGIN_URL_OLD):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(1500)
+            if not (page.url or "").startswith("about:blank"):
+                nav_ok = True
+                break
+        except Exception as e:
+            logger.warning("login_send_sms goto %s failed: %s", url, e)
+    if not nav_ok:
+        return {"success": False, "status": "nav_failed", "message": "无法打开 BOSS 登录页"}
+
+    # 切到短信登录 tab (新版登录页默认即短信, 失败可忽略)
+    await _probe_click(page, SMS_TAB_SELECTORS)
+    await page.wait_for_timeout(500)
+
+    filled = await _probe_fill(page, PHONE_INPUT_SELECTORS, phone)
+    if not filled:
+        if await _has_captcha(page):
+            return await _fallback_to_qr("短信登录受阻 (检测到安全验证), 已回退二维码登录")
+        return {"success": False, "status": "phone_input_not_found", "message": "未找到手机号输入框 (登录页结构可能已变化)"}
+
+    clicked = await _probe_click(page, SEND_CODE_SELECTORS)
+    if not clicked:
+        return {"success": False, "status": "send_button_not_found", "message": "未找到获取验证码按钮"}
+
+    await page.wait_for_timeout(1500)
+
+    if await _has_captcha(page):
+        return await _fallback_to_qr("发送验证码触发安全验证, 已回退二维码登录")
+
+    masked = _mask_phone(phone)
+    return {
+        "success": True,
+        "status": "sms_sent",
+        "phone_masked": masked,
+        "message": f"已向 {masked} 发送验证码。请向用户索取验证码后调用 boss.login_submit_sms(code=...) 完成登录。",
+    }
+
+
+async def login_submit_sms(code: str, timeout: int = 60) -> Dict[str, Any]:
+    """第二步: 在保活登录页填入验证码, 点登录, 等待登录态并提取/缓存 cookie。"""
+    code = (code or "").strip()
+    if not code:
+        return {"success": False, "status": "no_code", "message": "缺少验证码 code"}
+
+    bm = await get_browser_manager()
+    page = bm.login_page
+    ttl = _get_env_delay_seconds("BOSS_LOGIN_PAGE_TTL", 300.0)
+    if page is None or (time.time() - bm.login_page_at) > ttl:
+        return {"success": False, "status": "expired", "message": "登录会话已过期, 请重新调用 boss.login_send_sms"}
+    try:
+        if page.is_closed():
+            return {"success": False, "status": "expired", "message": "登录页已关闭, 请重新调用 boss.login_send_sms"}
+    except Exception:
+        return {"success": False, "status": "expired", "message": "登录页不可用, 请重新调用 boss.login_send_sms"}
+
+    filled = await _probe_fill(page, CODE_INPUT_SELECTORS, code)
+    if not filled:
+        return {"success": False, "status": "code_input_not_found", "message": "未找到验证码输入框"}
+
+    await _probe_click(page, LOGIN_BTN_SELECTORS)
+
+    login_context = await bm.get_login_context()
+    start = asyncio.get_event_loop().time()
+    while (asyncio.get_event_loop().time() - start) < timeout:
+        await page.wait_for_timeout(1500)
+        try:
+            cur = page.url or ""
+        except Exception:
+            cur = ""
+        markers_ok = "/web/geek/" in cur and "login" not in cur
+        if not markers_ok:
+            for sel in [".user-info", ".nav-figure", ".geek-name", ".user-nav"]:
+                try:
+                    if await page.query_selector(sel) is not None:
+                        markers_ok = True
+                        break
+                except Exception:
+                    continue
+
+        cookie_str = await _collect_login_cookie(login_context, bm)
+        if markers_ok and cookie_str:
+            cache_login_cookie(cookie_str)
+            return {"success": True, "status": "login_ok", "cookie": cookie_str, "cookie_saved": True}
+
+        # 验证码错误 / 安全验证
+        try:
+            txt = await page.evaluate("() => document.body ? document.body.innerText : ''")
+            if isinstance(txt, str):
+                for kw in ["验证码错误", "验证码不正确", "验证码已过期", "请输入正确"]:
+                    if kw in txt:
+                        return {"success": False, "status": "bad_code", "message": "验证码错误或已过期, 请重新获取"}
+        except Exception:
+            pass
+        if await _has_captcha(page):
+            return {"success": False, "status": "captcha", "message": "登录触发安全验证, 请改用二维码登录 (boss.get_qrcode)"}
+
+    cookie_str = await _collect_login_cookie(login_context, bm)
+    if cookie_str:
+        cache_login_cookie(cookie_str)
+        return {"success": True, "status": "login_ok", "cookie": cookie_str, "cookie_saved": True}
+    return {"success": False, "status": "timeout", "message": "登录超时, 请重试或改用二维码登录"}
+
+
 async def start_background_wait_for_login(timeout: int = 240) -> None:
     global login_wait_task
 
@@ -1345,104 +1617,36 @@ async def handle_mcp_request(request: Request):
     method = req_data.get("method")
     params = req_data.get("params", {})
     rpc_id = req_data.get("id")
-    login_first_enabled = os.getenv("BOSS_LOGIN_FIRST", "0").strip().lower() in {"1", "true", "yes", "on"}
-    cold_start_methods = {"boss.search_jobs", "boss.get_job", "boss.apply_job"}
 
     if method in ["boss.search_jobs", "boss.get_job", "boss.check_auth", "boss.apply_job"]:
         if not await rate_limiter.wait_and_acquire(timeout=30.0):
             logger.warning(f"Rate limit exceeded for method: {method}")
             return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "Rate limit exceeded. Please try again later."}, "id": rpc_id}
 
-    cookie = params.get("cookievi ")
+    cookie = params.get("cookie")
     
-
-    if not cookie and method not in ["boss.get_qrcode", "boss.wait_login"] and not (login_first_enabled and method in cold_start_methods):
-        logger.error("Request missing cookie")
-        return {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing cookie"}, "id": rpc_id}
 
     bm = await get_browser_manager()
 
+    def _auth_required_sms(message: str) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "status": "auth_required",
+            "login_method": "sms",
+            "message": message,
+            "has_cached_cookie": read_cached_login_cookie() is not None,
+        }
+
     try:
         result = None
-        should_start_wait = False
 
-        async def _start_qr_auth_flow(message: str) -> Dict[str, Any]:
-            login_context = await bm.get_login_context()
-            qr_result = await acquire_qr_result(login_context)
-            payload: Dict[str, Any] = {
-                "success": False,
-                "status": "auth_required",
-                "message": message,
-            }
-            should_start_wait = False
-            if qr_result.get("is_login"):
-                payload["message"] = "检测到浏览器已登录，请调用 boss.wait_login 获取并保存 cookie"
-                should_start_wait = True
-            else:
-                payload["qrcode_image"] = {
-                    "image_data": qr_result.get("qrcode_base64", ""),
-                    "image_type": qr_result.get("image_type", "png"),
-                    "description": qr_result.get("description", "请使用Boss直聘APP扫描此二维码登录"),
-                }
-                if qr_result.get("qrcode_base64"):
-                    should_start_wait = True
-                    if not qr_result.get("qr_cache_hit"):
-                        feishu_result = await send_qr_to_feishu(
-                            qr_result.get("qrcode_base64", ""),
-                            qr_result.get("image_type", "png"),
-                        )
-                    payload["feishu_delivery"] = feishu_result
-                else:
-                    payload["feishu_delivery"] = {"sent": False, "reason": "qr_cache_hit"}
-
-        if should_start_wait:
-            await start_background_wait_for_login(timeout=240)
-            payload["wait_login_background_started"] = True
-        else:
-            payload["wait_login_background_started"] = False
-        payload["qr_cache_hit"] = bool(qr_result.get("qr_cache_hit"))
-        payload["has_cached_cookie"] = read_cached_login_cookie() is not None
-        return payload
-
-        if login_first_enabled and method in cold_start_methods and not cookie:
-            cached_cookie = read_cached_login_cookie()
-            if cached_cookie:
-                cookie = cached_cookie
-                logger.info(f"Login-first enabled: reuse cached cookie for method={method}")
-            else:
-                logger.info(f"Login-first enabled: trigger QR flow for method={method}")
-                result = await _start_qr_auth_flow("冷启动优先登录：请先扫码登录，再继续业务请求")
-                return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
-
-        if method == "boss.search_jobs":
-            context = await bm.get_cookie_context(cookie)
-            scraper = BossScraper(context)
-            is_login = await scraper.check_auth()
-
-            if not is_login:
-                result = await _start_qr_auth_flow("Boss cookie 失效或需要重新登录，请扫码登录")
-            else:
-                result = await scraper.search_jobs(params.get("query", ""), params.get("city", ""), params.get("limit", 10))
-        elif method == "boss.get_job":
-            context = await bm.get_cookie_context(cookie)
-            scraper = BossScraper(context)
-            is_login = await scraper.check_auth()
-            if not is_login:
-                result = await _start_qr_auth_flow("Boss cookie 失效或需要重新登录，请扫码登录")
-            else:
-                result = await scraper.get_job_detail(params.get("job_id", ""))
-        elif method == "boss.check_auth":
-            context = await bm.get_cookie_context(cookie)
-            scraper = BossScraper(context)
-            result = {"is_login": await scraper.check_auth()}
-        elif method == "boss.apply_job":
-            context = await bm.get_cookie_context(cookie)
-            scraper = BossScraper(context)
-            is_login = await scraper.check_auth()
-            if not is_login:
-                result = await _start_qr_auth_flow("Boss cookie 失效或需要重新登录，请扫码登录")
-            else:
-                result = await scraper.apply_job(params.get("job_id", ""))
+        # ---- 登录相关方法 (无需 cookie) ----
+        if method == "boss.login_send_sms":
+            result = await login_send_sms(params.get("phone"))
+            return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+        elif method == "boss.login_submit_sms":
+            result = await login_submit_sms(params.get("code", ""), params.get("timeout", 60))
+            return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
         elif method == "boss.get_qrcode":
             force_refresh = bool(params.get("force_refresh", False))
             if force_refresh:
@@ -1466,16 +1670,49 @@ async def handle_mcp_request(request: Request):
                     result["feishu_delivery"] = {"sent": False, "reason": "qr_cache_hit"}
             elif result.get("is_login"):
                 should_start_wait = True
-
             if should_start_wait:
                 await start_background_wait_for_login(timeout=240)
                 result["wait_login_background_started"] = True
             else:
                 result["wait_login_background_started"] = False
             result["has_cached_cookie"] = read_cached_login_cookie() is not None
+            return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
         elif method == "boss.wait_login":
             context = await bm.get_login_context()
             result = await wait_for_login(context, params.get("timeout", 120))
+            return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+
+        # ---- 业务方法 (需要有效 cookie; 缺失/失效则提示短信登录) ----
+        biz_cookie = cookie or read_cached_login_cookie()
+        if not biz_cookie:
+            return {"jsonrpc": "2.0", "result": _auth_required_sms(
+                "BOSS 未登录，请调用 boss.login_send_sms 发起短信登录"), "id": rpc_id}
+
+        if method == "boss.search_jobs":
+            context = await bm.get_cookie_context(biz_cookie)
+            scraper = BossScraper(context)
+            if not await scraper.check_auth():
+                result = _auth_required_sms("BOSS cookie 失效，请调用 boss.login_send_sms 重新登录")
+            else:
+                result = await scraper.search_jobs(params.get("query", ""), params.get("city", ""), params.get("limit", 10))
+        elif method == "boss.get_job":
+            context = await bm.get_cookie_context(biz_cookie)
+            scraper = BossScraper(context)
+            if not await scraper.check_auth():
+                result = _auth_required_sms("BOSS cookie 失效，请调用 boss.login_send_sms 重新登录")
+            else:
+                result = await scraper.get_job_detail(params.get("job_id", ""))
+        elif method == "boss.check_auth":
+            context = await bm.get_cookie_context(biz_cookie)
+            scraper = BossScraper(context)
+            result = {"is_login": await scraper.check_auth()}
+        elif method == "boss.apply_job":
+            context = await bm.get_cookie_context(biz_cookie)
+            scraper = BossScraper(context)
+            if not await scraper.check_auth():
+                result = _auth_required_sms("BOSS cookie 失效，请调用 boss.login_send_sms 重新登录")
+            else:
+                result = await scraper.apply_job(params.get("job_id", ""))
         else:
             return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method {method} not found"}, "id": rpc_id}
 

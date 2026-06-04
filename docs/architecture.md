@@ -590,6 +590,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.42.0 | 2026-04-01 | Phase 16 全部完成 (architecture.md 任务清单全勾选) |
 | v0.43.0 | 2026-04-16 | Phase 17.5 扫码登录全自动化 (Image消息类型/飞书图片上传/MCP二维码捕获/自愈逻辑) |
 | v0.45.0 | 2026-06-04 | 自我进化闭环 + 视觉打通: memory/skill_manage 工具注册到 ToolRegistry; OpenAI/Anthropic 真实多模态图片; 飞书入站图片转 Content::Image; 通用 /ws WebSocket 入站端点; 文档纠偏 + 171 tests |
+| v0.45.0 | 2026-06-04 | BOSS 直聘登录改手机号+短信验证码 (login_send_sms/login_submit_sms 两步法, Agent 对话编排回传验证码, 二维码降级为滑块兜底); 修复 cookie typo 与 _start_qr_auth_flow 错乱 |
 
 ---
 
@@ -2405,7 +2406,36 @@ system_prompt = ""
    - Agent 随后阻塞调用 `boss.wait_for_login` (设置合理的 60-120s 超时)。
    - 登录成功后，Agent 自动重试刚才失败的业务逻辑（搜索或投递）。
 
+### 19.6 手机号+短信验证码登录 (v0.45.0, 当前主路径)
+
+> 背景: BOSS App **无法扫描相册图片**, 仅支持摄像头扫码, 导致「飞书发二维码图片→扫码」流程实际走不通。
+> BOSS 现行登录为 **手机号 + 短信验证码**, 故改为短信登录两步法 (Agent 对话编排), 二维码降级为兜底。
+
+#### 数据流
+```
+[Agent] 业务调用 ──► [MCP] check_auth 失败 ──► 返回 status=auth_required(login_method=sms)
+[Agent] ──► boss.login_send_sms ──► [MCP/Playwright] 打开登录页, 填 BOSS_PHONE, 点“获取验证码”, 保活登录页
+                                         │ (滑块/安全验证) ──► 回退二维码 + 飞书发图 (兜底)
+[Agent] ──飞书──► 用户: “已向 138****1234 发送验证码, 请回复验证码”
+[用户] ──飞书──► 验证码 472913
+[Agent] ──► boss.login_submit_sms(code) ──► [MCP] 填码登录, 提取并缓存 cookie
+[Agent] ──► 重试业务调用 (服务端命中缓存 cookie 直接成功)
+```
+
+#### 核心模块
+1. **MCP Server (Python, `vendor/mcp-bosszp/server.py`)**:
+   - `BrowserManager.get_persistent_login_page()`: 两次调用间保活登录页 (TTL `BOSS_LOGIN_PAGE_TTL`, 默认 300s)。
+   - `boss.login_send_sms(phone?)`: 读 `BOSS_PHONE`, 多选择器探测填手机号+发码; 遇滑块回退 `boss.get_qrcode` + 飞书。
+   - `boss.login_submit_sms(code)`: 在保活页填验证码登录, 复用 cookie 提取/缓存逻辑。
+   - 业务方法未登录时返回 `status=auth_required, login_method=sms` (不再直接返回二维码)。
+2. **Rust (`crates/tool/src/reach.rs` `BossZhipinReachTool`)**:
+   - 新增 `login_send_sms` / `login_submit_sms(code)` 动作; 业务动作透传服务端 `auth_required`，由 Agent 编排。
+   - `boss_cookie` 配置变为可选; cookie 缺失时由服务端缓存接管。
+3. **凭据**: `BOSS_PHONE` 仅在 MCP 服务端环境变量; 验证码经飞书对话回传, 不落配置文件。
+
+> 二维码方案 (19.5) 保留为滑块/异常时的自动兜底。
+
 ---
 
-*文档版本: v0.44.0*
+*文档版本: v0.45.0*
 

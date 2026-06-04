@@ -12,6 +12,15 @@
 
 ## 已完成的修复 (Completed) ✅
 
+### v0.45.0 BOSS 短信登录改造
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| 1 | `vendor/mcp-bosszp/server.py` | 二维码经飞书发图扫码不可用 (BOSS App 不能扫相册图) | 改为手机号+短信验证码两步登录 `boss.login_send_sms`/`boss.login_submit_sms`，登录页保活 (`get_persistent_login_page`)，遇滑块自动回退二维码 |
+| 2 | `vendor/mcp-bosszp/server.py` | `params.get("cookievi ")` 拼写 → cookie 永远为 None；`_start_qr_auth_flow` 缩进错乱 | 修正为 `params.get("cookie")`，重写分发器并清理坏函数 |
+| 3 | `crates/tool/src/reach.rs` | BOSS 工具仅支持扫码登录 | 新增 `login_send_sms`/`login_submit_sms` 动作，业务动作透传服务端 `auth_required(sms)` 由 Agent 编排；`wrap_boss_result` |
+| 4 | `.env.example` `docs/BOSS_RECRUITMENT.md` `docs/architecture.md` | 文档为扫码登录 | 更新为手机号+短信验证码 (BOSS_PHONE)，二维码兜底 |
+
 ### v0.45.0 自我进化 + 视觉 + 通用 WS
 
 | # | 模块/文件 | 问题描述 | 修复方案 |

@@ -1942,67 +1942,24 @@ let mcp_client = McpClient::new(config.boss_mcp_endpoint.clone(), boss_timeout_m
 Self { mcp_client, config }
 }
 
-async fn get_login_qrcode_payload(&self, action: &str, reason: &str) -> Result<serde_json::Value, ToolError> {
-    let result = self.mcp_client.call("boss.get_qrcode", serde_json::json!({})).await?;
-
-    if let Some(is_login) = result.get("is_login").and_then(|v| v.as_bool()) {
-        if is_login {
-            return Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "status": "already_logged_in",
-                "message": "已登录，无需扫码"
-            }));
+/// 业务结果封装。服务端在 cookie 缺失/失效时返回 status="auth_required"
+/// (login_method="sms"),此时直接透传给 Agent,由 Agent 编排短信登录;
+/// 否则包装为成功结果。`extra` 中的字段会并入成功响应顶层。
+fn wrap_boss_result(&self, action: &str, result: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    if result.get("status").and_then(|v| v.as_str()) == Some("auth_required") {
+        let mut r = result;
+        if let Some(obj) = r.as_object_mut() {
+            obj.insert("action".to_string(), serde_json::Value::String(action.to_string()));
+        }
+        return r;
+    }
+    let mut base = serde_json::json!({ "success": true, "action": action, "data": result });
+    if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            b.insert(k.clone(), v.clone());
         }
     }
-
-    let qrcode_base64 = result.get("qrcode_base64").and_then(|v| v.as_str()).unwrap_or("");
-    let image_type = result.get("image_type").and_then(|v| v.as_str()).unwrap_or("png");
-    let description = result.get("description").and_then(|v| v.as_str()).unwrap_or("请使用Boss直聘APP扫描此二维码登录");
-
-    Ok(serde_json::json!({
-        "success": false,
-        "action": action,
-        "status": "auth_required",
-        "message": reason,
-        "qrcode_image": {
-            "image_data": qrcode_base64,
-            "image_type": image_type,
-            "description": description
-        },
-        "next_step": "请先扫码登录，然后调用 boss_zhipin_reach(action=\"wait_login\") 获取新cookie"
-    }))
-}
-
-async fn ensure_cookie_valid_or_qrcode(
-    &self,
-    action: &str,
-    cookie: &str,
-) -> Result<Option<serde_json::Value>, ToolError> {
-    let auth_result = self.mcp_client.call("boss.check_auth", serde_json::json!({
-        "cookie": cookie
-    })).await;
-
-    match auth_result {
-        Ok(v) => {
-            let is_login = v.get("is_login").and_then(|x| x.as_bool()).unwrap_or(false);
-            if is_login {
-                Ok(None)
-            } else {
-                let payload = self
-                    .get_login_qrcode_payload(action, "Boss cookie 已失效，请扫码重新登录")
-                    .await?;
-                Ok(Some(payload))
-            }
-        }
-        Err(e) => {
-            // 对鉴权检查异常也触发二维码登录流程，提升可恢复性。
-            let payload = self
-                .get_login_qrcode_payload(action, &format!("鉴权检查失败，需扫码登录：{}", e))
-                .await?;
-            Ok(Some(payload))
-        }
-    }
+    base
 }
 }
 
@@ -2013,7 +1970,7 @@ fn name(&self) -> &str {
 }
 
 fn description(&self) -> &str {
-    "Access Boss Zhipin (BOSS直聘) for job searching, retrieving job/company details, and applying for jobs. This tool handles authentication, including initiating a QR code login flow and waiting for user scan if credentials are not provided or are invalid."
+    "Access Boss Zhipin (BOSS直聘) for job searching, retrieving job/company details, and applying for jobs. Login uses phone number + SMS code in two steps: when a business call returns status=\"auth_required\" (login_method=\"sms\"), call action=\"login_send_sms\" to send the code (server uses the configured BOSS_PHONE), ask the user for the code they received, then call action=\"login_submit_sms\" with code=... ; on success retry the business action. QR-code scan via Feishu remains only as an automatic fallback when SMS hits a slider captcha."
 }
 fn schema(&self) -> ToolSchema {
         ToolSchema {
@@ -2024,8 +1981,16 @@ fn schema(&self) -> ToolSchema {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["search", "job", "company", "apply", "check_auth", "get_qrcode", "wait_login"],
-                        "description": "Action: search (search jobs), job (job detail), company (company info), apply (apply for job), check_auth (check login status), get_qrcode (Phase 17.5: get QR code for login), wait_login (Phase 17.5: wait for scan login)"
+                        "enum": ["search", "job", "company", "apply", "check_auth", "login_send_sms", "login_submit_sms", "get_qrcode", "wait_login"],
+                        "description": "Action: search (search jobs), job (job detail), company (company info), apply (apply for job), check_auth (check login status), login_send_sms (send SMS code to BOSS_PHONE), login_submit_sms (submit the SMS code via 'code' param), get_qrcode (fallback: get QR code), wait_login (fallback: wait for scan login)"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "SMS verification code for 'login_submit_sms' action (provided by the user)"
+                    },
+                    "phone": {
+                        "type": "string",
+                        "description": "Optional phone override for 'login_send_sms'; defaults to server BOSS_PHONE env"
                     },
                     "query": {
                         "type": "string",
@@ -2084,15 +2049,8 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // cookie 可空: 服务端会复用已缓存 cookie, 失效则返回 auth_required(sms)
         let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
-        if cookie.is_empty() {
-            return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
-        }
-
-        if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
-            return Ok(payload);
-        }
-
         let result = self.mcp_client.call("boss.search_jobs", serde_json::json!({
             "query": query,
             "city": city,
@@ -2100,12 +2058,7 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
             "cookie": cookie
         })).await?;
 
-            Ok(serde_json::json!({
-                "success": true,
-                "action": action,
-                "query": query,
-                "data": result
-            }))
+            Ok(self.wrap_boss_result(action, result, serde_json::json!({ "query": query })))
         }
                 "job" => {
                     let job_id = params
@@ -2114,24 +2067,12 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                         .ok_or_else(|| ToolError::InvalidParams("Missing 'job_id' for job action".to_string()))?;
 
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
-                    if cookie.is_empty() {
-                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
-                    }
-
-                    if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
-                        return Ok(payload);
-                    }
-
                     let result = self.mcp_client.call("boss.get_job", serde_json::json!({
                         "job_id": job_id,
                         "cookie": cookie
                     })).await?;
 
-                    Ok(serde_json::json!({
-                        "success": true,
-                        "action": action,
-                        "data": result
-                    }))
+                    Ok(self.wrap_boss_result(action, result, serde_json::json!({})))
                 }
                 "company" => {
                     let company_id = params
@@ -2140,20 +2081,12 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                         .ok_or_else(|| ToolError::InvalidParams("Missing 'company_id' for company action".to_string()))?;
 
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
-                    if cookie.is_empty() {
-                        return Err(ToolError::ExecutionFailed("boss_cookie not configured".to_string()));
-                    }
-
                     let result = self.mcp_client.call("boss.get_company", serde_json::json!({
                         "company_id": company_id,
                         "cookie": cookie
                     })).await?;
 
-                    Ok(serde_json::json!({
-                        "success": true,
-                        "action": action,
-                        "data": result
-                    }))
+                    Ok(self.wrap_boss_result(action, result, serde_json::json!({})))
                 }
                 "apply" => {
                     let job_id = params
@@ -2164,33 +2097,16 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                     let resume_id = params.get("resume_id").and_then(|v| v.as_str());
 
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
-                    if cookie.is_empty() {
-                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
-                    }
-
-                    if let Some(payload) = self.ensure_cookie_valid_or_qrcode(action, cookie).await? {
-                        return Ok(payload);
-                    }
-
                     let result = self.mcp_client.call("boss.apply_job", serde_json::json!({
                         "job_id": job_id,
                         "resume_id": resume_id,
                         "cookie": cookie
                     })).await?;
 
-                    Ok(serde_json::json!({
-                        "success": true,
-                        "action": action,
-                        "job_id": job_id,
-                        "data": result
-                    }))
+                    Ok(self.wrap_boss_result(action, result, serde_json::json!({ "job_id": job_id })))
                 }
                 "check_auth" => {
                     let cookie = self.config.boss_cookie.as_deref().unwrap_or("");
-                    if cookie.is_empty() {
-                        return self.get_login_qrcode_payload(action, "boss_cookie 未配置，请先扫码登录").await;
-                    }
-
                     let result = self.mcp_client.call("boss.check_auth", serde_json::json!({
                         "cookie": cookie
                     })).await?;
@@ -2200,6 +2116,26 @@ async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, 
                         "action": action,
                         "data": result
                     }))
+                }
+                "login_send_sms" => {
+                    // 第一步: 服务端用 BOSS_PHONE 打开登录页并发送验证码
+                    let mut call_params = serde_json::json!({});
+                    if let Some(phone) = params.get("phone").and_then(|v| v.as_str()) {
+                        call_params["phone"] = serde_json::Value::String(phone.to_string());
+                    }
+                    let result = self.mcp_client.call("boss.login_send_sms", call_params).await?;
+                    Ok(self.wrap_boss_result(action, result, serde_json::json!({})))
+                }
+                "login_submit_sms" => {
+                    // 第二步: 提交用户经飞书回复的验证码完成登录
+                    let code = params
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidParams("Missing 'code' for login_submit_sms action".to_string()))?;
+                    let result = self.mcp_client.call("boss.login_submit_sms", serde_json::json!({
+                        "code": code
+                    })).await?;
+                    Ok(self.wrap_boss_result(action, result, serde_json::json!({})))
                 }
         "get_qrcode" => {
             // Phase 17.5: 获取登录二维码 (Base64图片)
