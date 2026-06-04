@@ -56,7 +56,7 @@ Crate package names are `rustclaw-<dir>` (e.g. `crates/agent` → `rustclaw-agen
 - **Memory/compression are active (v0.43.0+)** and wired into the gateway via DI and the main agent loop; changes there affect token cost and prompt-cache behavior (Anthropic `cache_control`).
 - **Self-evolution tools (v0.45.0):** the agent can call `memory` (add/replace/remove/list) and `skill_manage` (create/list/patch/delete) directly; `skill_manage create` still routes new skills through the user approval workflow. The tool count is 21 (5 builtin + 14 reach + these 2), not the "38+" some older docs claim.
 - **Vision (v0.45.0):** `Content::Image` is sent as true multimodal content — OpenAI `image_url` data URLs, Anthropic `base64` source blocks (remote URLs downgrade to text for Anthropic). Inbound Feishu images are downloaded via the message-resource endpoint and converted to `Content::Image`. Conversion lives in `provider`'s `openai_content`/`anthropic_content` helpers.
-- **Channels reality:** real inbound = HTTP REST (`/api/message`) + WebSocket (`/ws`) + Feishu long connection. The `channel` crate's WebSocket/HTTP/Webhook impls are still trait placeholders; generic Webhook is not implemented.
+- **Channels reality:** real inbound = HTTP REST (`/api/message`) + WebSocket (`/ws`) + Webhook (`POST /webhook`, `/webhook/{source}`, sync or `callback_url` async) + Feishu long connection. The `channel` crate's WebSocket/HTTP/Webhook impls are still trait placeholders — actual ingress lives in the gateway's axum handlers.
 - **MCP bridging** exists for advanced platform tools (e.g. Xiaohongshu/Douyin) via a JSON-RPC `McpClient`. Vendored MCP servers live under `vendor/` (`mcp-bosszp`, `open-lark`) and are not part of the Cargo build.
 
 ## Config and data locations

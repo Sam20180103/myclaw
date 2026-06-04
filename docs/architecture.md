@@ -591,6 +591,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.43.0 | 2026-04-16 | Phase 17.5 扫码登录全自动化 (Image消息类型/飞书图片上传/MCP二维码捕获/自愈逻辑) |
 | v0.45.0 | 2026-06-04 | 自我进化闭环 + 视觉打通: memory/skill_manage 工具注册到 ToolRegistry; OpenAI/Anthropic 真实多模态图片; 飞书入站图片转 Content::Image; 通用 /ws WebSocket 入站端点; 文档纠偏 + 171 tests |
 | v0.45.0 | 2026-06-04 | BOSS 直聘登录改手机号+短信验证码 (login_send_sms/login_submit_sms 两步法, Agent 对话编排回传验证码, 二维码降级为滑块兜底); 修复 cookie typo 与 _start_qr_auth_flow 错乱 |
+| v0.45.0 | 2026-06-05 | 通用 Webhook 入站: POST /webhook (+/webhook/{source}), 多字段文本提取, 同步响应 + callback_url 异步回调; +3 tests (共 174) |
 
 ---
 
@@ -621,6 +622,20 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 { "type": "response", "sessionKey": "...", "content": "..." }
 ```
 出错时返回 `{ "type": "error", "error": "..." }`。
+
+### Webhook (通用入站, v0.45.0)
+- `POST /webhook` - 外部系统推送消息, 路由到 Agent
+- `POST /webhook/{source}` - 同上, 来源由路径指定
+
+**请求体 (JSON):** 文本字段兼容 `text`/`content`/`message`/`msg`/`query`/`prompt` 及 `data.{text,content}`；
+可选 `sessionKey`/`session_key`、`source`、`callback_url`。
+
+**同步响应 (无 callback_url):**
+```json
+{ "success": true, "sessionKey": "...", "source": "webhook", "response": "..." }
+```
+**异步模式 (含 callback_url):** 立即返回 `202 { "accepted": true, "sessionKey": "...", "mode": "async_callback" }`,
+Agent 处理完后把上面的同步响应体 POST 到 `callback_url`。无文本时返回 `400`。
 
 ### Session
 - `GET /api/session` - 列出所有会话
@@ -1994,7 +2009,7 @@ if let Ok(store) = SQLiteSessionStore::new(&db_path) {
 | # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
 | 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-116` | 并发请求可能创建重复 session | ✅ 已修复 (v0.16.0) |
-| 6 | **通用 Channel 为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | `channel` crate 内 WebSocket/HTTP/Webhook 仅为 trait 占位；实际入站为 Gateway 的 HTTP REST + `/ws` WebSocket + 飞书长连接，Webhook 仍未实现 | ⚠️ 部分实现 (v0.45.0: /ws 端点已加，Webhook 规划中) |
+| 6 | **通用 Channel 为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | `channel` crate 内 trait 仅为占位；实际入站均由 Gateway 实现: HTTP REST (`/api/message`) + WebSocket (`/ws`) + Webhook (`/webhook`) + 飞书长连接 | ✅ 已实现 (v0.45.0: /ws + /webhook 端点齐备) |
 | 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ✅ 已修复 (v0.24.0, SQLiteSessionStore) |
 | 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ✅ 已修复 (v0.17.0, NvProvider实现) |
 | 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:327-353` | 模型列表语义错误 | ✅ 已修复 (v0.16.0, 实际代码已调用 API) |
@@ -2016,7 +2031,7 @@ if let Ok(store) = SQLiteSessionStore::new(&db_path) {
 |----------|----------|------|
 | "WebSocket 入站" | Gateway `/ws` 端点驱动 Agent 循环 (v0.45.0)；`channel` crate 内 trait 仍为占位 | ✅ 已实现 (Gateway 侧) |
 | "NVIDIA NIM Provider 支持" | NvProvider 已实现 | ✅ 已修复 (v0.17.0) |
-| "Webhook Channel" | 仅 `channel` crate trait 占位，无实际网络逻辑 | ⚠️ 未实现 (规划中) |
+| "Webhook Channel" | Gateway `POST /webhook` (+ `/webhook/{source}`) 入站, 支持同步与 callback_url 异步 | ✅ 已实现 (v0.45.0) |
 | "视觉理解 (Content::Image)" | OpenAI image_url / Anthropic base64 真实多模态；飞书入站图片转 Content::Image | ✅ 已实现 (v0.45.0) |
 | "Memory/SkillManage 工具" | MemoryTool/SkillManageTool 注册到 ToolRegistry，Agent 可调用 | ✅ 已实现 (v0.45.0) |
 | "Provider 抽象: 支持多种 LLM" | OpenAI/Anthropic/NVIDIA | ✅ 已修复 |

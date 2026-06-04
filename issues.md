@@ -1,16 +1,18 @@
 # RustClaw 项目问题与进展记录 (Issues & Progress)
 
-## 2026-06-04 更新: 待修复问题 (Pending) 🔍
+## 2026-06-05 更新: 待修复问题 (Pending) 🔍
 
-### 1. 多通道入站
-
-| # | 问题描述 | 建议方案 | 严重程度 |
-|---|---------|---------|----------|
-| 1 | **通用 Webhook 未实现**: `crates/channel` 的 Webhook 通道仍为空壳。HTTP REST、`/ws` WebSocket、飞书长连接已可用。 | 实现 Webhook 入站或保持文档如实标注。 | 🟡 中 |
+> 暂无未完成的已知功能项。Phase 18 (新功能规划) 待定义。
 
 ---
 
 ## 已完成的修复 (Completed) ✅
+
+### v0.45.0 通用 Webhook 入站
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| 1 | `crates/gateway/src/lib.rs` | 通用 Webhook 入站为空壳 | 新增 `POST /webhook` 与 `POST /webhook/{source}`: 兼容 text/content/message/msg/query/prompt 及 data.{text,content} 字段提取; 同步返回 Agent 响应; 带 `callback_url` 时转异步 (返回 202, 后台处理完 POST 回调)。gateway 新增 reqwest 依赖。 |
 
 ### v0.45.0 BOSS 短信登录改造
 

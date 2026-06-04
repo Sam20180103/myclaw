@@ -324,6 +324,8 @@ let reach_config = rustclaw_tool::ReachConfig {
         let app = Router::new()
             .route("/health", get(health_handler))
             .route("/ws", get(ws_handler))
+            .route("/webhook", axum::routing::post(webhook_handler))
+            .route("/webhook/{source}", axum::routing::post(webhook_source_handler))
             .route("/api/message", axum::routing::post(message_handler))
             .route("/api/session", axum::routing::get(session_list_handler))
             .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
@@ -528,6 +530,154 @@ async fn handle_ws_connection(mut socket: axum::extract::ws::WebSocket, state: A
         }
     }
     info!("WebSocket client disconnected: conn_session={}", conn_session);
+}
+
+/// 从 webhook JSON 负载中尽力提取消息文本 (兼容常见字段)。
+fn extract_webhook_text(body: &serde_json::Value) -> Option<String> {
+    // 顶层常见字段
+    for key in ["text", "content", "message", "msg", "query", "prompt"] {
+        if let Some(s) = body.get(key).and_then(|v| v.as_str()) {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    // 嵌套 data.{text|content}
+    if let Some(data) = body.get("data") {
+        for key in ["text", "content", "message"] {
+            if let Some(s) = data.get(key).and_then(|v| v.as_str()) {
+                if !s.trim().is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    // 整个 body 就是字符串
+    if let Some(s) = body.as_str() {
+        if !s.trim().is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+/// 通用 Webhook 入站端点。外部系统 POST JSON 推送消息, 路由到 Agent。
+/// - 文本字段兼容 text/content/message/msg/query/prompt 及 data.{text,content}
+/// - sessionKey/session_key 可选, 缺省按 source 生成
+/// - 提供 callback_url 时转为异步: 立即返回 202, Agent 处理完再 POST 回调
+async fn webhook_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    process_webhook(state, None, body).await
+}
+
+async fn webhook_source_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(source): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    process_webhook(state, Some(source), body).await
+}
+
+async fn process_webhook(
+    state: Arc<Gateway>,
+    path_source: Option<String>,
+    body: serde_json::Value,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let text = match extract_webhook_text(&body) {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "no message text found (expected one of: text/content/message/msg/query/prompt)"
+                })),
+            );
+        }
+    };
+
+    let source = path_source
+        .or_else(|| body.get("source").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "webhook".to_string());
+
+    let session_key = body
+        .get("sessionKey")
+        .or_else(|| body.get("session_key"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{}:{}", source, uuid::Uuid::new_v4()));
+
+    let callback_url = body
+        .get("callback_url")
+        .or_else(|| body.get("callbackUrl"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let envelope = Envelope::new(
+        "webhook",
+        &session_key,
+        Message { role: Role::User, content: Content::text(text) },
+    );
+
+    // 异步模式: 有 callback_url 则后台处理, 立即返回 202
+    if let Some(cb) = callback_url {
+        let agent = state.agent.clone();
+        let sk = session_key.clone();
+        let src = source.clone();
+        tokio::spawn(async move {
+            let payload = match agent.process_with_loop(envelope).await {
+                Ok(AgentResponse { session_key, message, .. }) => serde_json::json!({
+                    "success": true,
+                    "sessionKey": session_key,
+                    "source": src,
+                    "response": content_to_text(message.content),
+                }),
+                Err(e) => serde_json::json!({
+                    "success": false,
+                    "sessionKey": sk,
+                    "source": src,
+                    "error": e.to_string(),
+                }),
+            };
+            match reqwest::Client::new().post(&cb).json(&payload).send().await {
+                Ok(resp) => info!("Webhook callback POST {} -> {}", cb, resp.status()),
+                Err(e) => error!("Webhook callback POST {} failed: {}", cb, e),
+            }
+        });
+        return (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "accepted": true,
+                "sessionKey": session_key,
+                "source": source,
+                "mode": "async_callback"
+            })),
+        );
+    }
+
+    // 同步模式: 处理并直接返回 Agent 响应
+    match state.agent.process_with_loop(envelope).await {
+        Ok(AgentResponse { session_key, message, .. }) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "sessionKey": session_key,
+                "source": source,
+                "response": content_to_text(message.content),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "sessionKey": session_key,
+                "source": source,
+                "error": e.to_string(),
+            })),
+        ),
+    }
 }
 
 async fn session_list_handler(
@@ -1277,6 +1427,30 @@ async fn system_update_check_handler() -> Json<serde_json::Value> {
 mod tests {
     use super::*;
     use rustclaw_protocol::{Message, Role, Content};
+
+    #[test]
+    fn test_extract_webhook_text_top_level_fields() {
+        for key in ["text", "content", "message", "msg", "query", "prompt"] {
+            let body = serde_json::json!({ key: "hello" });
+            assert_eq!(extract_webhook_text(&body).as_deref(), Some("hello"), "key={}", key);
+        }
+    }
+
+    #[test]
+    fn test_extract_webhook_text_nested_and_raw() {
+        let nested = serde_json::json!({ "data": { "content": "hi there" } });
+        assert_eq!(extract_webhook_text(&nested).as_deref(), Some("hi there"));
+
+        let raw = serde_json::Value::String("just a string".to_string());
+        assert_eq!(extract_webhook_text(&raw).as_deref(), Some("just a string"));
+    }
+
+    #[test]
+    fn test_extract_webhook_text_missing_or_blank() {
+        assert!(extract_webhook_text(&serde_json::json!({ "foo": "bar" })).is_none());
+        assert!(extract_webhook_text(&serde_json::json!({ "text": "   " })).is_none());
+        assert!(extract_webhook_text(&serde_json::json!({})).is_none());
+    }
 
     #[test]
     fn test_gateway_session_structure() {
