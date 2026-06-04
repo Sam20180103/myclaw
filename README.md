@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-v0.43.0-blue.svg)](https://github.com/Sam20180103/myclaw)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-161%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
+[![Tests](https://img.shields.io/badge/tests-171%20passed-green.svg)](https://github.com/Sam20180103/myclaw)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参考 OpenClaw 和 Nous Research Hermes Agent，使用 Rust 实现以获得更高的性能和安全性。
@@ -17,17 +17,18 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 - **动态 Skill**: Agent 可以自己编写并注册新 Skill
 - **审批流程**: 用户审批后 Skill 才可使用
 - **Provider 抽象**: 支持 OpenAI、Anthropic、NVIDIA NIM 等多种 LLM
+- **视觉理解**: `Content::Image` 经 OpenAI (image_url) / Anthropic (base64 source) 真正传给视觉模型；飞书入站图片自动下载并转多模态
 
 ### 记忆系统 (Active v0.43.0)
 - **三层 memory 架构**: 即时记忆 + 持久记忆 + 会话搜索
 - **MEMORY.md / USER.md**: Agent 笔记 + 用户偏好档案 (2200/1375 chars)
-- **Memory 工具**: Agent 自主管理记忆 (add/replace/remove)
+- **Memory 工具**: Agent 自主管理记忆 (add/replace/remove/list)，已注册到 ToolRegistry 可直接调用
 - **安全扫描**: Prompt 注入检测、数据泄露防护、不可见字符检测
 - **SQLite 持久化**: WAL 模式，支持会话全量持久化、搜索和谱系追踪 (v0.43.0 激活)
 
 ### 自我进化 (Learning Loop)
 - **Skill 自动创建**: 复杂任务 (5+ tool calls) 后自动建议创建 Skill (已激活回调)
-- **SkillManage 工具**: create/patch/edit/delete/write_file/remove_file 全操作
+- **SkillManage 工具**: create/list/patch/delete (已注册到 ToolRegistry，创建走用户审批流程)
 - **用户纠正记录**: 记录用户纠正行为，持续改进
 - **迭代预算**: 父子 Agent 共享预算，防止资源耗尽
 
@@ -57,7 +58,7 @@ RustClaw 采用分层架构设计：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Ingress (入口层): WebSocket, HTTP, Webhook             │
+│  Ingress (入口层): HTTP REST, WebSocket (/ws), 飞书      │
 ├─────────────────────────────────────────────────────────┤
 │  Gateway (控制平面): 连接管理, 会话路由, 认证授权        │
 ├─────────────────────────────────────────────────────────┤
@@ -239,15 +240,15 @@ rustclaw open-code sessions list
 | protocol | 9 | ✅ |
 | skill | 9 | ✅ |
 | tool | 39 | ✅ |
-| agent | 10 | ✅ |
-| provider | 12 | ✅ |
+| agent | 12 | ✅ |
+| provider | 16 | ✅ |
 | gateway | 6 | ✅ |
 | channel | 11 | ✅ |
 | storage | 12 | ✅ |
 | memory | 12 | ✅ |
 | compression | 10 | ✅ |
 | integration | 6 | ✅ |
-| **总计** | **147** | **✅** |
+| **总计** | **171** | **✅** |
 
 ## 安全设计
 

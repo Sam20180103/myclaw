@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-RustClaw (crate: `rustclaw`) is a local AI agent gateway implemented as a Cargo workspace. A long-running gateway accepts messages over multiple channels (WebSocket / HTTP / Webhook / Feishu), routes them to an agent runtime that drives an LLM loop with tool calls, and persists sessions and memory. Architecture is inspired by OpenClaw / Hermes Agent. Documentation is primarily in Chinese; `docs/architecture.md` is the authoritative design doc and tracks the current version (currently v0.44.0).
+RustClaw (crate: `rustclaw`) is a local AI agent gateway implemented as a Cargo workspace. A long-running gateway accepts messages over multiple channels (WebSocket / HTTP / Webhook / Feishu), routes them to an agent runtime that drives an LLM loop with tool calls, and persists sessions and memory. Architecture is inspired by OpenClaw / Hermes Agent. Documentation is primarily in Chinese; `docs/architecture.md` is the authoritative design doc and tracks the current version (currently v0.45.0).
 
 ## Build / test / run
 
@@ -35,8 +35,8 @@ Crate package names are `rustclaw-<dir>` (e.g. `crates/agent` → `rustclaw-agen
 
 | Crate | Responsibility |
 |-------|----------------|
-| `gateway` | Axum HTTP/WS server, connection mgmt, session routing, auth, REST API. Entry: `crates/gateway/src/lib.rs`. API endpoints catalogued in `docs/architecture.md` §8. |
-| `agent` | Agent runtime — Session / Lane / Queue and the core loop (`process_with_loop`). `crates/agent/src/lib.rs`. |
+| `gateway` | Axum HTTP/WS server, connection mgmt, session routing, auth, REST API. `GET /ws` is the generic inbound WebSocket endpoint (each text frame → one agent loop). Entry: `crates/gateway/src/lib.rs`. API endpoints catalogued in `docs/architecture.md` §8. |
+| `agent` | Agent runtime — Session / Lane / Queue and the core loop (`process_with_loop`). `crates/agent/src/lib.rs`. `builtin_tools.rs` wraps `MemoryManager`/`SkillManager` as the `memory` / `skill_manage` tools (registered via `with_memory` / `with_skill_manager`). |
 | `tool` | `ToolRegistry`, `SandboxExecutor`, policy engine, and the Agent-Reach tool family (`crates/tool/src/reach.rs`). |
 | `skill` | Dynamic skill generation/validation/approval (`SkillManager`, `OpenCodeGenerator`). |
 | `provider` | LLM provider clients: OpenAI, Anthropic, NVIDIA NIM. Streaming responses. |
@@ -54,6 +54,9 @@ Crate package names are `rustclaw-<dir>` (e.g. `crates/agent` → `rustclaw-agen
 - **Tool sandbox:** `SandboxExecutor` enforces a 30s timeout and ~512MB cap, and blocks dangerous commands/patterns (`rm -rf /`, `mkfs`, `dd if=`, fork bombs, `curl|sh`, `chmod 777`, …). New shell-capable tools must go through it, not raw process spawns.
 - **Skill approval workflow:** the agent generates a skill (often via the OpenCode CLI) → it lands in `~/.config/rustclaw/skills/pending/` → user approves → it moves to `~/.config/rustclaw/skills/` → the tool registry reloads → the skill becomes callable. Skills can be Rust/Python/Shell/JS.
 - **Memory/compression are active (v0.43.0+)** and wired into the gateway via DI and the main agent loop; changes there affect token cost and prompt-cache behavior (Anthropic `cache_control`).
+- **Self-evolution tools (v0.45.0):** the agent can call `memory` (add/replace/remove/list) and `skill_manage` (create/list/patch/delete) directly; `skill_manage create` still routes new skills through the user approval workflow. The tool count is 21 (5 builtin + 14 reach + these 2), not the "38+" some older docs claim.
+- **Vision (v0.45.0):** `Content::Image` is sent as true multimodal content — OpenAI `image_url` data URLs, Anthropic `base64` source blocks (remote URLs downgrade to text for Anthropic). Inbound Feishu images are downloaded via the message-resource endpoint and converted to `Content::Image`. Conversion lives in `provider`'s `openai_content`/`anthropic_content` helpers.
+- **Channels reality:** real inbound = HTTP REST (`/api/message`) + WebSocket (`/ws`) + Feishu long connection. The `channel` crate's WebSocket/HTTP/Webhook impls are still trait placeholders; generic Webhook is not implemented.
 - **MCP bridging** exists for advanced platform tools (e.g. Xiaohongshu/Douyin) via a JSON-RPC `McpClient`. Vendored MCP servers live under `vendor/` (`mcp-bosszp`, `open-lark`) and are not part of the Cargo build.
 
 ## Config and data locations

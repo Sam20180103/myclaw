@@ -1,8 +1,8 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.44.0
-> 日期: 2026-04-16
-> 状态: Phase 17.5 完成，所有安全加固完成 ✅
+> 版本: v0.45.0
+> 日期: 2026-06-04
+> 状态: 自我进化闭环 + 视觉打通 + 通用 WS 入站完成 ✅
 
 ---
 
@@ -589,6 +589,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.41.0 | 2026-04-01 | Phase 16 群聊SystemPrompt注入/心跳保活 |
 | v0.42.0 | 2026-04-01 | Phase 16 全部完成 (architecture.md 任务清单全勾选) |
 | v0.43.0 | 2026-04-16 | Phase 17.5 扫码登录全自动化 (Image消息类型/飞书图片上传/MCP二维码捕获/自愈逻辑) |
+| v0.45.0 | 2026-06-04 | 自我进化闭环 + 视觉打通: memory/skill_manage 工具注册到 ToolRegistry; OpenAI/Anthropic 真实多模态图片; 飞书入站图片转 Content::Image; 通用 /ws WebSocket 入站端点; 文档纠偏 + 171 tests |
 
 ---
 
@@ -605,6 +606,20 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
   "version": "0.2.4"
 }
 ```
+
+### WebSocket (通用入站)
+- `GET /ws` - WebSocket 升级；每个文本帧驱动一次 Agent 循环并回送响应
+
+**请求帧 (纯文本或 JSON):**
+```json
+{ "sessionKey": "可选，缺省则按连接复用会话", "content": "你好" }
+```
+
+**响应帧:**
+```json
+{ "type": "response", "sessionKey": "...", "content": "..." }
+```
+出错时返回 `{ "type": "error", "error": "..." }`。
 
 ### Session
 - `GET /api/session` - 列出所有会话
@@ -1978,7 +1993,7 @@ if let Ok(store) = SQLiteSessionStore::new(&db_path) {
 | # | 问题 | 位置 | 影响 | 状态 |
 |---|------|------|------|------|
 | 5 | **SessionManager::get_or_create 竞态条件** | `crates/agent/src/lib.rs:93-116` | 并发请求可能创建重复 session | ✅ 已修复 (v0.16.0) |
-| 6 | **Channel 全部为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | WebSocket/HTTP/Webhook 均无实际网络逻辑 | ✅ 已实现 (trait + 测试覆盖) |
+| 6 | **通用 Channel 为 Stub 实现** | `crates/channel/src/lib.rs:25-128` | `channel` crate 内 WebSocket/HTTP/Webhook 仅为 trait 占位；实际入站为 Gateway 的 HTTP REST + `/ws` WebSocket + 飞书长连接，Webhook 仍未实现 | ⚠️ 部分实现 (v0.45.0: /ws 端点已加，Webhook 规划中) |
 | 7 | **Storage 仅内存, 无持久化** | `crates/storage/src/lib.rs:1-47` | 重启后所有会话数据丢失 | ✅ 已修复 (v0.24.0, SQLiteSessionStore) |
 | 8 | **NVIDIA Provider 缺失** | `crates/provider/src/lib.rs` | 文档声称支持但无实现 | ✅ 已修复 (v0.17.0, NvProvider实现) |
 | 9 | **OpenAiProvider::list_models 返回 Claude 模型** | `crates/provider/src/lib.rs:327-353` | 模型列表语义错误 | ✅ 已修复 (v0.16.0, 实际代码已调用 API) |
@@ -1998,9 +2013,11 @@ if let Ok(store) = SQLiteSessionStore::new(&db_path) {
 
 | 文档声称 | 实际状态 | 差距 |
 |----------|----------|------|
-| "WebSocket Channel" | Trait已实现, 测试覆盖 | ✅ 已实现 (v0.19.0) |
+| "WebSocket 入站" | Gateway `/ws` 端点驱动 Agent 循环 (v0.45.0)；`channel` crate 内 trait 仍为占位 | ✅ 已实现 (Gateway 侧) |
 | "NVIDIA NIM Provider 支持" | NvProvider 已实现 | ✅ 已修复 (v0.17.0) |
-| "Webhook Channel" | Trait已实现, 测试覆盖 | ✅ 已实现 (v0.19.0) |
+| "Webhook Channel" | 仅 `channel` crate trait 占位，无实际网络逻辑 | ⚠️ 未实现 (规划中) |
+| "视觉理解 (Content::Image)" | OpenAI image_url / Anthropic base64 真实多模态；飞书入站图片转 Content::Image | ✅ 已实现 (v0.45.0) |
+| "Memory/SkillManage 工具" | MemoryTool/SkillManageTool 注册到 ToolRegistry，Agent 可调用 | ✅ 已实现 (v0.45.0) |
 | "Provider 抽象: 支持多种 LLM" | OpenAI/Anthropic/NVIDIA | ✅ 已修复 |
 | "安全沙箱: 进程隔离" | shell_exec + 文件工具路径限制 | ✅ 已修复 (v0.16.0) |
 | "Phase 15 记忆系统" | 全部实现 | ✅ 已完成 (v0.34.0) |
@@ -2013,8 +2030,8 @@ if let Ok(store) = SQLiteSessionStore::new(&db_path) {
 | protocol | `tests.rs` | 9 | ✅ 良好 |
 | skill | `tests.rs` | 9 | ✅ 良好 |
 | tool | `tests.rs` | 39 | ✅ 良好 |
-| **agent** | **lib.rs (内联)** | **10** | ✅ 已补充 (v0.16.0) |
-| **provider** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.16.0) |
+| **agent** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.16.0/0.45.0 MemoryTool) |
+| **provider** | **lib.rs (内联)** | **16** | ✅ 已补充 (v0.16.0/0.45.0 视觉转换) |
 | **gateway** | **lib.rs (内联)** | **6** | ✅ 已补充 (v0.18.0) |
 | **channel** | **lib.rs (内联)** | **11** | ✅ 已补充 (v0.19.0) |
 | **storage** | **lib.rs (内联)** | **12** | ✅ 已补充 (v0.24.0/0.33.0) |

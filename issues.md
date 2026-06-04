@@ -1,28 +1,27 @@
 # RustClaw 项目问题与进展记录 (Issues & Progress)
 
-## 2026-05-30 更新: 待修复问题 (Pending) 🔍
+## 2026-06-04 更新: 待修复问题 (Pending) 🔍
 
-### 1. Agent 自我进化闭环缺失
-
-| # | 问题描述 | 建议方案 | 严重程度 |
-|---|---------|---------|----------|
-| 1 | **Memory/Skill 工具未挂载**: `MemoryManager`(add/replace/remove)与 `SkillManager`(create) 仅有方法，未实现 `Tool` trait 也未注册到 `ToolRegistry`，Agent 无法主动管理记忆或创建技能。 | 实现 `MemoryTool`/`SkillManageTool` 并在 Agent 构造时注册。 | 🔴 高 |
-
-### 2. 多通道入站
+### 1. 多通道入站
 
 | # | 问题描述 | 建议方案 | 严重程度 |
 |---|---------|---------|----------|
-| 1 | **通用 WS/Webhook 占位**: `crates/channel` 的 WebSocket/HTTP/Webhook 通道为空壳实现，实际入站仅 HTTP REST 与飞书 WebSocket。 | 实现通用入站或更新文档表述。 | 🟡 中 |
+| 1 | **通用 Webhook 未实现**: `crates/channel` 的 Webhook 通道仍为空壳。HTTP REST、`/ws` WebSocket、飞书长连接已可用。 | 实现 Webhook 入站或保持文档如实标注。 | 🟡 中 |
 
 ---
 
 ## 已完成的修复 (Completed) ✅
 
-### v0.45.0 (进行中)
+### v0.45.0 自我进化 + 视觉 + 通用 WS
 
 | # | 模块/文件 | 问题描述 | 修复方案 |
 |---|---|---|---|
 | 1 | `crates/feishu/src/client.rs` | 令牌刷新 Bug | `CachedToken` 记录 `expires_at`，带 300s buffer 自动刷新 (已核实修复) |
+| 2 | `crates/agent/src/builtin_tools.rs` | Memory/Skill 工具未挂载 | 实现 `MemoryTool`(add/replace/remove/list) 与 `SkillManageTool`(create/list/patch/delete)，经 `with_memory`/`with_skill_manager` 注册到 ToolRegistry |
+| 3 | `crates/provider/src/lib.rs` | 视觉信息丢失 (`[Image: desc]` 占位) | `openai_content`/`anthropic_content` 将 `Content::Image` 转为真实多模态 (OpenAI image_url / Anthropic base64 source) |
+| 4 | `crates/feishu/src/channel.rs` `client.rs` | 飞书入站图片降级为文本 | 新增 `download_message_resource` + `extract_image`，入站图片转 `Content::Image` |
+| 5 | `crates/gateway/src/lib.rs` | 通用 WebSocket 入站缺失 | 新增 `GET /ws` 端点，每帧驱动一次 Agent 循环 |
+| 6 | `README.md` `docs/architecture.md` `CLAUDE.md` | 文档夸大 (38+ 工具/多通道) | 纠正为实际 21 工具，如实标注通道状态 |
 
 ### v0.44.0 安全加固版
 
