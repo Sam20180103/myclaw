@@ -32,6 +32,7 @@ rustclaw-agent = { path = "../agent" }
 rustclaw-skill = { path = "../skill" }
 rustclaw-provider = { path = "../provider" }
 rustclaw-feishu = { path = "../feishu" }
+rustclaw-wechat = { path = "../wechat" }
 rustclaw-channel = { path = "../channel" }
 rustclaw-memory = { path = "../memory" }
 rustclaw-compression = { path = "../compression" }

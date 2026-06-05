@@ -592,6 +592,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.45.0 | 2026-06-04 | 自我进化闭环 + 视觉打通: memory/skill_manage 工具注册到 ToolRegistry; OpenAI/Anthropic 真实多模态图片; 飞书入站图片转 Content::Image; 通用 /ws WebSocket 入站端点; 文档纠偏 + 171 tests |
 | v0.45.0 | 2026-06-04 | BOSS 直聘登录改手机号+短信验证码 (login_send_sms/login_submit_sms 两步法, Agent 对话编排回传验证码, 二维码降级为滑块兜底); 修复 cookie typo 与 _start_qr_auth_flow 错乱 |
 | v0.45.0 | 2026-06-05 | 通用 Webhook 入站: POST /webhook (+/webhook/{source}), 多字段文本提取, 同步响应 + callback_url 异步回调; +3 tests (共 174) |
+| v0.46.0 | 2026-06-05 | 个人微信交互通道: 新增 crates/wechat (连接器无关 HTTP 契约, 连接器推送+网关回调发送), POST /channel/wechat/inbound, 私聊/群聊/图片, 复用飞书权限范式与视觉链路; 参考连接器 vendor/wechat-connector |
 
 ---
 
@@ -636,6 +637,13 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 ```
 **异步模式 (含 callback_url):** 立即返回 `202 { "accepted": true, "sessionKey": "...", "mode": "async_callback" }`,
 Agent 处理完后把上面的同步响应体 POST 到 `callback_url`。无文本时返回 `400`。
+
+### WeChat 个人微信入站 (v0.45.0)
+- `POST /channel/wechat/inbound` - 外部连接器把收到的个人微信消息推给网关 (经稳定 HTTP 契约)
+
+**请求体 (JSON):** `msg_type`(text/image)、`from_user`、`room_id`(群聊)、`is_at_bot`、`content`、`image_base64`/`image_type`。
+返回 `200 {"accepted": true|false}`(被权限/规则忽略为 false)。出站由网关 POST 到 `channels.wechat.connector_send_url`。
+详见 `docs/WECHAT_CHANNEL.md`。
 
 ### Session
 - `GET /api/session` - 列出所有会话

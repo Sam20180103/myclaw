@@ -15,9 +15,42 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelsConfig {
     pub feishu: Option<FeishuChannelConfig>,
+    #[serde(default)]
+    pub wechat: Option<WeChatChannelConfig>,
     pub websocket_enabled: bool,
     pub http_enabled: bool,
     pub webhook_enabled: bool,
+}
+
+/// 个人微信通道配置 (经外部连接器收发, 自定义 HTTP 契约)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeChatChannelConfig {
+    pub enabled: bool,
+    /// 出站发送目标: 网关把回复 POST 到此连接器地址
+    pub connector_send_url: String,
+    /// 可选: 调用连接器 send_url 时携带的 Bearer token
+    #[serde(default)]
+    pub send_token: Option<String>,
+    /// 机器人自身 wxid (群聊判断 @ 时可用)
+    #[serde(default)]
+    pub bot_wxid: String,
+    /// 群聊是否仅在 @机器人 时响应 (默认 true, 防刷屏)
+    #[serde(default = "default_true")]
+    pub require_at_in_group: bool,
+    pub dm_enabled: bool,
+    pub group_enabled: bool,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub allowed_groups: Vec<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub group_configs: Option<Vec<GroupChannelConfig>>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 飞书通道配置
@@ -240,6 +273,7 @@ impl Default for Config {
             }],
             channels: ChannelsConfig {
                 feishu: None,
+                wechat: None,
                 websocket_enabled: true,
                 http_enabled: true,
                 webhook_enabled: false,

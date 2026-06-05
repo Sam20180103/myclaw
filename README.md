@@ -10,7 +10,7 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 ## 核心特性
 
 ### 基础架构
-- **多通道接入**: HTTP REST、WebSocket (`/ws`)、Webhook (`/webhook`, 支持异步回调) 与飞书长连接
+- **多通道接入**: HTTP REST、WebSocket (`/ws`)、Webhook (`/webhook`, 支持异步回调)、飞书长连接、个人微信 (经连接器, `/channel/wechat/inbound`)
 - **智能体运行时**: 多会话并发、Agent 循环、流式响应
 - **工具系统**: 21 个原生 Rust 工具 (5 内置 + 14 Agent-Reach + memory/skill_manage)，含路径安全防护
 - **自我进化工具**: `memory` (增删改持久记忆) 与 `skill_manage` (创建/查询/修改/删除 Skill) 直接暴露给 Agent
@@ -52,13 +52,20 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 - **权限策略**: DM 白名单、群聊授权、敏感操作确认
 - **WebSocket 长连接**: 自动重连、心跳保活
 
+### 个人微信通道 (v0.46.0)
+- **连接器无关**: 经稳定 HTTP 契约对接任意微信框架 (wcferry/wechaty/...)，协议层解耦
+- **消息收发**: 私聊/群聊文本与图片 (图片走视觉模型)
+- **权限策略**: DM/群白名单、群聊默认仅 @机器人 响应 (防刷屏)
+- **接入**: 详见 [docs/WECHAT_CHANNEL.md](docs/WECHAT_CHANNEL.md) 与参考连接器 `vendor/wechat-connector/`
+- ⚠️ 个人微信自动化违反微信使用条款，有封号风险，请用小号、低频
+
 ## 系统架构
 
 RustClaw 采用分层架构设计：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Ingress (入口层): HTTP REST, WebSocket, Webhook, 飞书   │
+│  Ingress: HTTP REST, WebSocket, Webhook, 飞书, 个人微信 │
 ├─────────────────────────────────────────────────────────┤
 │  Gateway (控制平面): 连接管理, 会话路由, 认证授权        │
 ├─────────────────────────────────────────────────────────┤

@@ -8,6 +8,15 @@
 
 ## 已完成的修复 (Completed) ✅
 
+### v0.46.0 个人微信交互通道
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| 1 | `crates/wechat/` (新) | 缺个人微信交互通道 | 新增 `WeChatChannel` (实现 Channel trait, 连接器无关 HTTP 契约): 入站 `ingest()` + 出站连接器回调; 私聊/群聊/图片; 镜像飞书权限范式; +9 tests |
+| 2 | `crates/gateway/src/lib.rs` | 网关未接入微信 | 构造 WeChatChannel + `POST /channel/wechat/inbound` 路由 + 事件循环 (仿飞书) + ChannelInfo 注册 |
+| 3 | `crates/config/src/lib.rs` | 无微信配置 | `ChannelsConfig.wechat: Option<WeChatChannelConfig>` (serde default 兼容) |
+| 4 | `vendor/wechat-connector/` + `docs/WECHAT_CHANNEL.md` | 缺连接器与接入文档 | FastAPI 参考连接器骨架 + 契约/接入/风险文档 |
+
 ### v0.45.0 通用 Webhook 入站
 
 | # | 模块/文件 | 问题描述 | 修复方案 |

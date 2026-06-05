@@ -22,6 +22,7 @@ use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequ
 use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
 use rustclaw_feishu::{FeishuChannel, FeishuConfig, WebSocketManager};
+use rustclaw_wechat::{WeChatChannel, WeChatConfig, WeChatGroupConfig};
 use rustclaw_channel::{Channel, ChannelEvent};
 use rustclaw_compression::ContextCompressor;
 use rustclaw_memory::MemoryManager;
@@ -52,6 +53,7 @@ pub struct Gateway {
     feishu_channel: Option<Arc<FeishuChannel>>,
     #[allow(dead_code)]
     feishu_ws: Option<Arc<WebSocketManager>>,
+    wechat_channel: Option<Arc<WeChatChannel>>,
 }
 
 pub struct GatewayConfig {
@@ -183,6 +185,14 @@ let reach_config = rustclaw_tool::ReachConfig {
             enabled: true,
             config: HashMap::new(),
         });
+        if config.channels.wechat.as_ref().map(|w| w.enabled).unwrap_or(false) {
+            channels.insert("wechat".to_string(), ChannelInfo {
+                name: "wechat".to_string(),
+                channel_type: "wechat".to_string(),
+                enabled: true,
+                config: HashMap::new(),
+            });
+        }
 
         // 初始化飞书通道 (如果配置了)
         let feishu_channel = config.channels.feishu.as_ref().map(|fc| {
@@ -240,6 +250,29 @@ let reach_config = rustclaw_tool::ReachConfig {
 
         // Feishu channel is now handled via WebSocket, no need to set_agent
 
+        // 个人微信通道 (经外部连接器, 自定义 HTTP 契约)
+        let wechat_channel = config.channels.wechat.as_ref().filter(|wc| wc.enabled).map(|wc| {
+            let wechat_config = WeChatConfig {
+                connector_send_url: wc.connector_send_url.clone(),
+                send_token: wc.send_token.clone(),
+                bot_wxid: wc.bot_wxid.clone(),
+                require_at_in_group: wc.require_at_in_group,
+                dm_enabled: wc.dm_enabled,
+                group_enabled: wc.group_enabled,
+                allowed_users: wc.allowed_users.clone(),
+                allowed_groups: wc.allowed_groups.clone(),
+                system_prompt: wc.system_prompt.clone(),
+                group_configs: wc.group_configs.clone().unwrap_or_default().into_iter().map(|gc| {
+                    WeChatGroupConfig {
+                        group_id: gc.group_id,
+                        allowed_users: gc.allowed_users,
+                        system_prompt: gc.system_prompt,
+                    }
+                }).collect(),
+            };
+            Arc::new(WeChatChannel::new(wechat_config))
+        });
+
         Self {
             config: gateway_config,
             full_config: config,
@@ -251,6 +284,7 @@ let reach_config = rustclaw_tool::ReachConfig {
             channels: Arc::new(RwLock::new(channels)),
             feishu_channel,
             feishu_ws,
+            wechat_channel,
         }
     }
 
@@ -326,6 +360,7 @@ let reach_config = rustclaw_tool::ReachConfig {
             .route("/ws", get(ws_handler))
             .route("/webhook", axum::routing::post(webhook_handler))
             .route("/webhook/{source}", axum::routing::post(webhook_source_handler))
+            .route("/channel/wechat/inbound", axum::routing::post(wechat_inbound_handler))
             .route("/api/message", axum::routing::post(message_handler))
             .route("/api/session", axum::routing::get(session_list_handler))
             .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
@@ -429,6 +464,62 @@ let reach_config = rustclaw_tool::ReachConfig {
 
         // Note: Feishu event processor is now handled via WebSocket connection
 
+        // 个人微信通道事件循环 (入站经 /channel/wechat/inbound 推入 channel 队列)
+        if let Some(wechat_ch) = self.wechat_channel.as_ref() {
+            let wechat_ch = wechat_ch.clone();
+            let agent = self.agent.clone();
+            tokio::spawn(async move {
+                use futures_util::StreamExt;
+                let mut events = wechat_ch.events();
+                while let Some(event) = events.next().await {
+                    if let ChannelEvent::Message(envelope) = event {
+                        info!("WeChat message received: session_key={}", envelope.session_key);
+
+                        // /clear 清空会话
+                        if let Content::Text(ref text) = envelope.message.content {
+                            if text.trim() == "/clear" {
+                                agent.session_manager().delete(&envelope.session_key);
+                                let response = rustclaw_agent::AgentResponse {
+                                    session_key: envelope.session_key.clone(),
+                                    message: Message {
+                                        role: Role::Assistant,
+                                        content: Content::text("会话已清空".to_string()),
+                                    },
+                                    tool_calls: vec![],
+                                };
+                                let resp_env = Envelope::new("wechat", &response.session_key, response.message);
+                                let _ = wechat_ch.send(resp_env).await;
+                                continue;
+                            }
+                        }
+
+                        let ch = wechat_ch.clone();
+                        let ag = agent.clone();
+                        tokio::spawn(async move {
+                            let session_key = envelope.session_key.clone();
+                            match ag.process_with_loop(envelope).await {
+                                Ok(response) => {
+                                    let response_env = Envelope::new("wechat", &response.session_key, response.message);
+                                    if let Err(e) = ch.send(response_env).await {
+                                        error!("Failed to send response to wechat: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to process wechat message: {}", e);
+                                    let error_msg = Message {
+                                        role: Role::Assistant,
+                                        content: Content::Text(format!("抱歉，处理您的请求时发生了错误：{}", e)),
+                                    };
+                                    let error_env = Envelope::new("wechat", &session_key, error_msg);
+                                    let _ = ch.send(error_env).await;
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        }
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
 
@@ -530,6 +621,27 @@ async fn handle_ws_connection(mut socket: axum::extract::ws::WebSocket, state: A
         }
     }
     info!("WebSocket client disconnected: conn_session={}", conn_session);
+}
+
+/// 个人微信入站端点。外部连接器把收到的微信消息 POST 到这里, 推入 WeChatChannel 队列。
+/// 返回 200 {accepted}; 被权限/规则忽略时 accepted=false (避免连接器重试风暴)。
+async fn wechat_inbound_handler(
+    State(state): State<Arc<Gateway>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(ch) = state.wechat_channel.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "accepted": false, "error": "wechat channel not enabled" })),
+        );
+    };
+    match ch.ingest(body).await {
+        Ok(accepted) => (StatusCode::OK, Json(serde_json::json!({ "accepted": accepted }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "accepted": false, "error": e.to_string() })),
+        ),
+    }
 }
 
 /// 从 webhook JSON 负载中尽力提取消息文本 (兼容常见字段)。
