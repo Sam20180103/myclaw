@@ -28,9 +28,34 @@
 | Phase 16 | 飞书通道集成 | 2周 | ✅ 完成 |
 | Phase 17 | BOSS直聘智能投递助手 | 2周 | ✅ 完成 |
 | Phase 17.5 | 扫码登录全自动化 | 1周 | ✅ 完成 |
-| Phase 18 | 新功能规划 | TBD | ⏳ 规划中 |
+| Phase 18 | 个人微信交互通道 | 1周 | ✅ 完成 |
 
-**已完成: v0.44.0**
+**已完成: v0.46.0**
+
+---
+
+## Phase 18: 个人微信交互通道 ✅
+
+> **完成日期**: 2026-06-05
+> **背景**: 让用户用个人微信私聊/群聊直接与 Agent 对话。个人微信无官方 API，协议层放到外部连接器，
+> 网关只对接稳定的连接器无关 HTTP 契约（连接器推送入站 + 网关回调发送）。
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 18.1 | 通道 crate | - 新增 `crates/wechat`，`WeChatChannel` 实现 `Channel` trait | ✅ 完成 |
+| | | - `ingest()` 入站解析 + 连接器 `send()` 出站 + `events()` 流 | ✅ 完成 |
+| | | - 权限 (DM/群白名单，群聊默认仅 @机器人 响应) | ✅ 完成 |
+| 18.2 | 网关接线 | - `POST /channel/wechat/inbound` 路由 + 事件循环 (仿飞书) | ✅ 完成 |
+| | | - 由 `config.channels.wechat` 构造 + ChannelInfo 注册 | ✅ 完成 |
+| 18.3 | 配置 | - `ChannelsConfig.wechat`（serde default 向后兼容） | ✅ 完成 |
+| 18.4 | 范围 | - 私聊 + 群聊 + 图片（复用 v0.45.0 视觉链路） | ✅ 完成 |
+| 18.5 | 连接器与文档 | - `vendor/wechat-connector/` 参考骨架 + `docs/WECHAT_CHANNEL.md` | ✅ 完成 |
+| | | - 9 个单测；`cargo test --workspace` 183 通过 | ✅ 完成 |
+
+> 注：真实收发需用户提供能登录微信的连接器 (wcferry 需 Windows+指定微信版本；wechaty 需 puppet)。
+> 个人微信自动化违反微信使用条款，有封号风险。
 
 ---
 
