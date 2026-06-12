@@ -125,6 +125,12 @@ let reach_config = rustclaw_tool::ReachConfig {
         podcast_mcp_endpoint: config.tools.reach.podcast_mcp_endpoint.clone(),
         boss_cookie: config.tools.reach.boss_cookie.clone(),
         exa_api_key: config.tools.reach.exa_api_key.clone(),
+        xhs_mcp_endpoint: config.tools.reach.xhs_mcp_endpoint.clone(),
+        xhs_cookie: config.tools.reach.xhs_cookie.clone(),
+        image_gen_base_url: config.tools.reach.image_gen_base_url.clone(),
+        image_gen_api_key: config.tools.reach.image_gen_api_key.clone(),
+        image_gen_model: config.tools.reach.image_gen_model.clone(),
+        image_gen_output_dir: config.tools.reach.image_gen_output_dir.clone(),
     };
 
         let mut agent_builder = AgentRuntime::new_with_reach_config(agent_config, Some(reach_config))

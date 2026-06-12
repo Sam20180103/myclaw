@@ -29,8 +29,30 @@
 | Phase 17 | BOSS直聘智能投递助手 | 2周 | ✅ 完成 |
 | Phase 17.5 | 扫码登录全自动化 | 1周 | ✅ 完成 |
 | Phase 18 | 个人微信交互通道 | 1周 | ✅ 完成 |
+| Phase 19 | 小红书自动化 (登录/热门/写文生图发布) | 1周 | ✅ 完成 |
 
-**已完成: v0.46.0**
+**已完成: v0.47.0**
+
+---
+
+## Phase 19: 小红书自动化 ✅
+
+> **完成日期**: 2026-06-06
+> **背景**: 模拟用户操作实现小红书自动登录、查看热门 Top10、写文章+自动生图+发布。
+> 协议层放外部 Playwright MCP 服务器, 复用 BOSS 的短信两步登录范式; 新增通用文生图工具。
+
+### 任务列表
+
+| # | 任务 | 子任务 | 状态 |
+|---|------|--------|------|
+| 19.1 | 文生图工具 | - 通用 `image_gen` (OpenAI 兼容 /images/generations), 落盘返回路径 | ✅ 完成 |
+| 19.2 | XHS MCP 服务器 | - `vendor/mcp-xhs` (Playwright), 手机号+短信两步登录 + cookie 缓存 | ✅ 完成 |
+| | | - `get_hot` 热门 TopN / `publish` 图文发布 / 读方法 | ✅ 完成 |
+| 19.3 | xhs_reach 扩展 | - `hot`/`publish`/`login_send_sms`/`login_submit_sms` 动作 + auth_required 透传 | ✅ 完成 |
+| 19.4 | 配置/文档/测试 | - xhs_mcp_endpoint/image_gen_* 配置 + `docs/XHS_GUIDE.md` + 单测 (共 187) | ✅ 完成 |
+
+> 注：发布/登录选择器为 best-effort, 需对照线上 DOM 校准 (`vendor/mcp-xhs/test_xhs.py`)。
+> 小红书自动化发布违反平台规则, 有封号风险。
 
 ---
 

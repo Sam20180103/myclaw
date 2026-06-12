@@ -593,6 +593,7 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.45.0 | 2026-06-04 | BOSS 直聘登录改手机号+短信验证码 (login_send_sms/login_submit_sms 两步法, Agent 对话编排回传验证码, 二维码降级为滑块兜底); 修复 cookie typo 与 _start_qr_auth_flow 错乱 |
 | v0.45.0 | 2026-06-05 | 通用 Webhook 入站: POST /webhook (+/webhook/{source}), 多字段文本提取, 同步响应 + callback_url 异步回调; +3 tests (共 174) |
 | v0.46.0 | 2026-06-05 | 个人微信交互通道: 新增 crates/wechat (连接器无关 HTTP 契约, 连接器推送+网关回调发送), POST /channel/wechat/inbound, 私聊/群聊/图片, 复用飞书权限范式与视觉链路; 参考连接器 vendor/wechat-connector |
+| v0.47.0 | 2026-06-06 | 小红书自动化: vendor/mcp-xhs (Playwright, 手机号+短信两步登录/热门Top/发布), xhs_reach 扩展 hot/publish/login_send_sms/login_submit_sms, 新增通用 image_gen 文生图工具 (OpenAI 兼容); +4 tests (共 187) |
 
 ---
 

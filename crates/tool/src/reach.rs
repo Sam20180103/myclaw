@@ -117,6 +117,12 @@ pub boss_mcp_endpoint: String,
 pub podcast_mcp_endpoint: String,
 pub boss_cookie: Option<String>,
 pub exa_api_key: Option<String>,
+pub xhs_mcp_endpoint: String,
+pub xhs_cookie: Option<String>,
+pub image_gen_base_url: Option<String>,
+pub image_gen_api_key: Option<String>,
+pub image_gen_model: Option<String>,
+pub image_gen_output_dir: Option<String>,
 }
 
 impl Default for ReachConfig {
@@ -136,6 +142,12 @@ boss_mcp_endpoint: "http://127.0.0.1:8083".to_string(),
 podcast_mcp_endpoint: "http://127.0.0.1:8084".to_string(),
 boss_cookie: None,
 exa_api_key: None,
+xhs_mcp_endpoint: "http://127.0.0.1:8085".to_string(),
+xhs_cookie: None,
+image_gen_base_url: None,
+image_gen_api_key: None,
+image_gen_model: None,
+image_gen_output_dir: None,
 }
 }
 }
@@ -821,6 +833,134 @@ fn validate_path(path: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// 文生图工具 (OpenAI 兼容 /images/generations)。生成图片落盘到本地媒体目录,
+/// 返回文件路径 (不把 base64 灌回 LLM 上下文); 路径可直接传给 xhs_reach publish。
+pub struct ImageGenTool {
+    config: ReachConfig,
+    client: reqwest::Client,
+}
+
+impl Default for ImageGenTool {
+    fn default() -> Self {
+        Self::new(ReachConfig::default())
+    }
+}
+
+impl ImageGenTool {
+    pub fn new(config: ReachConfig) -> Self {
+        Self { config, client: reqwest::Client::new() }
+    }
+
+    fn output_dir(&self) -> std::path::PathBuf {
+        if let Some(d) = &self.config.image_gen_output_dir {
+            return std::path::PathBuf::from(d);
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        std::path::Path::new(&home).join(".rustclaw").join("media").join("generated")
+    }
+}
+
+#[async_trait]
+impl Tool for ImageGenTool {
+    fn name(&self) -> &str {
+        "image_gen"
+    }
+
+    fn description(&self) -> &str {
+        "Generate images from a text prompt (OpenAI-compatible text-to-image). Saves PNG files locally and returns their paths, which can be passed to xhs_reach action=publish image_paths."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "image_gen".to_string(),
+            description: "Text-to-image generation; returns local file paths".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": "Image generation prompt" },
+                    "n": { "type": "integer", "description": "Number of images (default 1)" },
+                    "size": { "type": "string", "description": "Image size, e.g. 1024x1024 (default)" }
+                },
+                "required": ["prompt"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        use base64::Engine as _;
+
+        let base_url = self.config.image_gen_base_url.as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ToolError::ExecutionFailed("image_gen_base_url 未配置".to_string()))?;
+        let api_key = self.config.image_gen_api_key.as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ToolError::ExecutionFailed("image_gen_api_key 未配置".to_string()))?;
+        let model = self.config.image_gen_model.as_deref().unwrap_or("gpt-image-1");
+
+        let prompt = params.get("prompt").and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidParams("Missing 'prompt'".to_string()))?;
+        let n = params.get("n").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 4);
+        let size = params.get("size").and_then(|v| v.as_str()).unwrap_or("1024x1024");
+
+        let url = format!("{}/images/generations", base_url.trim_end_matches('/'));
+        let req_body = serde_json::json!({
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            "response_format": "b64_json"
+        });
+
+        let resp = self.client.post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&req_body)
+            .send().await
+            .map_err(|e| ToolError::ExecutionFailed(format!("image gen request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ToolError::ExecutionFailed(format!("image gen HTTP {}: {}", status, body)));
+        }
+
+        let json: serde_json::Value = resp.json().await
+            .map_err(|e| ToolError::ExecutionFailed(format!("image gen parse failed: {}", e)))?;
+
+        let data = json.get("data").and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError::ExecutionFailed("image gen: no 'data' in response".to_string()))?;
+
+        let dir = self.output_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ToolError::ExecutionFailed(format!("create output dir failed: {}", e)))?;
+
+        let mut images = Vec::new();
+        for item in data {
+            let bytes = if let Some(b64) = item.get("b64_json").and_then(|v| v.as_str()) {
+                base64::engine::general_purpose::STANDARD.decode(b64)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("b64 decode failed: {}", e)))?
+            } else if let Some(img_url) = item.get("url").and_then(|v| v.as_str()) {
+                let r = self.client.get(img_url).send().await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("fetch image url failed: {}", e)))?;
+                r.bytes().await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("read image bytes failed: {}", e)))?
+                    .to_vec()
+            } else {
+                continue;
+            };
+            let path = dir.join(format!("{}.png", uuid::Uuid::new_v4()));
+            std::fs::write(&path, &bytes)
+                .map_err(|e| ToolError::ExecutionFailed(format!("write image failed: {}", e)))?;
+            images.push(serde_json::json!({ "path": path.to_string_lossy(), "prompt": prompt }));
+        }
+
+        if images.is_empty() {
+            return Err(ToolError::ExecutionFailed("image gen: no images returned".to_string()));
+        }
+
+        Ok(serde_json::json!({ "success": true, "count": images.len(), "images": images }))
+    }
+}
+
 pub fn register_reach_tools(registry: &crate::ToolRegistry, config: Option<ReachConfig>) {
 let config = config.unwrap_or_default();
 registry.register(std::sync::Arc::new(WebReachTool::new(config.clone())));
@@ -831,6 +971,7 @@ registry.register(std::sync::Arc::new(TwitterReachTool::new(config.clone())));
 registry.register(std::sync::Arc::new(RedditReachTool::new(config.clone())));
 registry.register(std::sync::Arc::new(WeiboReachTool::new(config.clone())));
 registry.register(std::sync::Arc::new(XhsReachTool::new(config.clone())));
+registry.register(std::sync::Arc::new(ImageGenTool::new(config.clone())));
 registry.register(std::sync::Arc::new(DouyinReachTool::new(config.clone())));
 registry.register(std::sync::Arc::new(SearchReachTool::new(config.clone())));
 registry.register(std::sync::Arc::new(LinkedInReachTool::new(config.clone())));
@@ -1406,8 +1547,29 @@ impl Default for XhsReachTool {
 
 impl XhsReachTool {
     pub fn new(config: ReachConfig) -> Self {
-        let mcp_client = McpClient::new(config.mcp_endpoint.clone(), config.social_timeout_ms);
+        // 登录/发布需较长时间, 取 max(120s, social_timeout)
+        let timeout = config.social_timeout_ms.max(120_000);
+        let mcp_client = McpClient::new(config.xhs_mcp_endpoint.clone(), timeout);
         Self { mcp_client, config }
+    }
+
+    /// 业务结果封装: 服务端在 cookie 缺失/失效时返回 status="auth_required"(login_method="sms"),
+    /// 直接透传给 Agent 编排短信登录; 否则包装为成功结果。
+    fn wrap_result(&self, action: &str, result: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+        if result.get("status").and_then(|v| v.as_str()) == Some("auth_required") {
+            let mut r = result;
+            if let Some(obj) = r.as_object_mut() {
+                obj.insert("action".to_string(), serde_json::Value::String(action.to_string()));
+            }
+            return r;
+        }
+        let mut base = serde_json::json!({ "success": true, "action": action, "data": result });
+        if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        base
     }
 }
 
@@ -1418,37 +1580,31 @@ impl Tool for XhsReachTool {
     }
 
     fn description(&self) -> &str {
-        "Read and search Xiaohongshu (Little Red Book) notes via MCP bridge."
+        "Xiaohongshu (小红书) via MCP bridge: read/search notes, list hot top-N, and publish a note. Login is phone+SMS two-step: on status=\"auth_required\" call action=login_send_sms, ask the user for the code, then login_submit_sms(code), and retry. To publish: write title/body/topics, generate images with the image_gen tool, then action=publish with image_paths."
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "xhs_reach".to_string(),
-            description: "Access Xiaohongshu data via MCP bridge".to_string(),
+            description: "Access Xiaohongshu data and publish notes via MCP bridge".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["note", "search", "user"],
-                        "description": "Action: note (read note), search (search notes), user (user info)"
+                        "enum": ["note", "search", "user", "hot", "login_send_sms", "login_submit_sms", "publish"],
+                        "description": "Action: note/search/user (read), hot (top-N hot notes), login_send_sms (send SMS to XHS_PHONE), login_submit_sms (submit code), publish (create+publish a note)"
                     },
-                    "note_id": {
-                        "type": "string",
-                        "description": "Note ID for 'note' action"
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for 'search' action"
-                    },
-                    "user_id": {
-                        "type": "string",
-                        "description": "User ID for 'user' action"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of results (default: 20)"
-                    }
+                    "note_id": { "type": "string", "description": "Note ID for 'note' action" },
+                    "query": { "type": "string", "description": "Search query for 'search' action" },
+                    "user_id": { "type": "string", "description": "User ID for 'user' action" },
+                    "limit": { "type": "integer", "description": "Result count (search default 20, hot default 10)" },
+                    "phone": { "type": "string", "description": "Optional phone override for 'login_send_sms' (defaults to server XHS_PHONE)" },
+                    "code": { "type": "string", "description": "SMS code for 'login_submit_sms' (from the user)" },
+                    "title": { "type": "string", "description": "Note title for 'publish'" },
+                    "body": { "type": "string", "description": "Note body text for 'publish'" },
+                    "topics": { "type": "array", "items": { "type": "string" }, "description": "Hashtag topics for 'publish' (without #)" },
+                    "image_paths": { "type": "array", "items": { "type": "string" }, "description": "Local image file paths for 'publish' (use image_gen to create them)" }
                 },
                 "required": ["action"]
             }),
@@ -1516,6 +1672,54 @@ impl Tool for XhsReachTool {
                     "action": action,
                     "data": result
                 }))
+            }
+            "hot" => {
+                let hot_limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
+                let cookie = self.config.xhs_cookie.as_deref().unwrap_or("");
+                let result = self.mcp_client.call("xhs.get_hot", serde_json::json!({
+                    "limit": hot_limit,
+                    "cookie": cookie
+                })).await?;
+                Ok(self.wrap_result(action, result, serde_json::json!({ "limit": hot_limit })))
+            }
+            "login_send_sms" => {
+                let mut call_params = serde_json::json!({});
+                if let Some(phone) = params.get("phone").and_then(|v| v.as_str()) {
+                    call_params["phone"] = serde_json::Value::String(phone.to_string());
+                }
+                let result = self.mcp_client.call("xhs.login_send_sms", call_params).await?;
+                Ok(self.wrap_result(action, result, serde_json::json!({})))
+            }
+            "login_submit_sms" => {
+                let code = params
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'code' for login_submit_sms".to_string()))?;
+                let result = self.mcp_client.call("xhs.login_submit_sms", serde_json::json!({
+                    "code": code
+                })).await?;
+                Ok(self.wrap_result(action, result, serde_json::json!({})))
+            }
+            "publish" => {
+                let title = params.get("title").and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidParams("Missing 'title' for publish".to_string()))?;
+                let body = params.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let topics = params.get("topics").cloned().unwrap_or_else(|| serde_json::json!([]));
+                let image_paths = params.get("image_paths").cloned().unwrap_or_else(|| serde_json::json!([]));
+                if image_paths.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+                    return Err(ToolError::InvalidParams(
+                        "publish 需要至少一张图片 (image_paths); 可先用 image_gen 生成".to_string(),
+                    ));
+                }
+                let cookie = self.config.xhs_cookie.as_deref().unwrap_or("");
+                let result = self.mcp_client.call("xhs.publish", serde_json::json!({
+                    "title": title,
+                    "body": body,
+                    "topics": topics,
+                    "image_paths": image_paths,
+                    "cookie": cookie
+                })).await?;
+                Ok(self.wrap_result(action, result, serde_json::json!({ "title": title })))
             }
             _ => Err(ToolError::InvalidParams(format!("Unknown action: {}", action))),
         }
@@ -2698,5 +2902,38 @@ assert!(registry.get("linkedin_reach").is_some());
 assert!(registry.get("wechat_reach").is_some());
 assert!(registry.get("boss_zhipin_reach").is_some());
 assert!(registry.get("podcast_reach").is_some());
+}
+
+#[test]
+fn test_reach_config_xhs_image_defaults() {
+let c = ReachConfig::default();
+assert_eq!(c.xhs_mcp_endpoint, "http://127.0.0.1:8085");
+assert!(c.xhs_cookie.is_none());
+assert!(c.image_gen_base_url.is_none());
+assert!(c.image_gen_api_key.is_none());
+}
+
+#[test]
+fn test_register_includes_image_gen() {
+let registry = ToolRegistry::new();
+register_reach_tools(&registry, None);
+assert!(registry.get("image_gen").is_some());
+assert!(registry.get("xhs_reach").is_some());
+}
+
+#[test]
+fn test_xhs_publish_requires_images() {
+let tool = XhsReachTool::default();
+let rt = tokio::runtime::Runtime::new().unwrap();
+let res = rt.block_on(tool.execute(serde_json::json!({ "action": "publish", "title": "t" })));
+assert!(res.is_err(), "publish without image_paths should error");
+}
+
+#[test]
+fn test_image_gen_requires_config() {
+let tool = ImageGenTool::default();
+let rt = tokio::runtime::Runtime::new().unwrap();
+let res = rt.block_on(tool.execute(serde_json::json!({ "prompt": "a cat" })));
+assert!(res.is_err(), "image_gen without base_url/api_key should error");
 }
 }

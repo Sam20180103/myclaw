@@ -8,6 +8,16 @@
 
 ## 已完成的修复 (Completed) ✅
 
+### v0.47.0 小红书自动化
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| 1 | `vendor/mcp-xhs/` (新) | 缺小红书 MCP 服务器 (原 mcp_endpoint 指向不存在的服务) | Playwright 服务器, 手机号+短信两步登录(复用 BOSS 范式)+cookie 缓存; get_hot/publish/读方法 |
+| 2 | `crates/tool/src/reach.rs` | XhsReachTool 仅只读 | 新增 `hot`/`publish`/`login_send_sms`/`login_submit_sms` 动作 + auth_required(sms) 透传; 改用 `xhs_mcp_endpoint` |
+| 3 | `crates/tool/src/reach.rs` | 全仓零文生图能力 | 新增通用 `image_gen` 工具 (OpenAI 兼容 /images/generations, 落盘返回路径) |
+| 4 | `crates/config` + gateway | 缺 xhs/生图配置 | ReachConfig 增 xhs_mcp_endpoint/xhs_cookie/image_gen_* (serde default 兼容) |
+| 5 | `docs/XHS_GUIDE.md` (新) | 缺接入文档 | 用法 + 数据流 + 选择器校准/风控声明 |
+
 ### v0.46.0 个人微信交互通道
 
 | # | 模块/文件 | 问题描述 | 修复方案 |

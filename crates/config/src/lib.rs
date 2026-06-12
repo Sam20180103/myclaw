@@ -153,6 +153,19 @@ pub struct ReachConfig {
     pub boss_cookie: Option<String>,
     #[serde(default)]
     pub exa_api_key: Option<String>,
+    #[serde(default = "default_xhs_mcp_endpoint")]
+    pub xhs_mcp_endpoint: String,
+    #[serde(default)]
+    pub xhs_cookie: Option<String>,
+    // 文生图 (OpenAI 兼容 /images/generations)
+    #[serde(default)]
+    pub image_gen_base_url: Option<String>,
+    #[serde(default)]
+    pub image_gen_api_key: Option<String>,
+    #[serde(default)]
+    pub image_gen_model: Option<String>,
+    #[serde(default)]
+    pub image_gen_output_dir: Option<String>,
 }
 
 fn default_web_endpoint() -> String {
@@ -191,6 +204,9 @@ fn default_boss_mcp_endpoint() -> String {
 fn default_podcast_mcp_endpoint() -> String {
     "http://127.0.0.1:8084".to_string()
 }
+fn default_xhs_mcp_endpoint() -> String {
+    "http://127.0.0.1:8085".to_string()
+}
 
 fn default_allowed_origins() -> Vec<String> {
     vec![
@@ -216,6 +232,12 @@ impl Default for ReachConfig {
             podcast_mcp_endpoint: default_podcast_mcp_endpoint(),
             boss_cookie: None,
             exa_api_key: None,
+            xhs_mcp_endpoint: default_xhs_mcp_endpoint(),
+            xhs_cookie: None,
+            image_gen_base_url: None,
+            image_gen_api_key: None,
+            image_gen_model: None,
+            image_gen_output_dir: None,
         }
     }
 }
