@@ -149,6 +149,13 @@ impl Channel for WeChatChannel {
             Content::Image { image_data, image_type, .. } => {
                 self.client.send_image(&target, &image_data, &image_type).await
             }
+            // 工具消息不会作为出站内容,降级为文本兜底
+            Content::ToolUse { text, .. } => {
+                self.client.send_text(&target, &text.unwrap_or_default()).await
+            }
+            Content::ToolResult { output, .. } => {
+                self.client.send_text(&target, &output).await
+            }
         }
     }
 

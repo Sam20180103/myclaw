@@ -50,16 +50,18 @@ impl SessionHygiene {
         let mut keep_tool_results = true;
 
         for msg in messages.iter().rev() {
-            if let Content::Text(text) = &msg.content {
-                if text.starts_with("Tool ") && text.contains("result:") {
-                    if keep_tool_results {
-                        keep_tool_results = false; // 只保留最后一个工具结果
-                        cleaned.push(msg.clone());
-                    } else {
-                        removed += 1;
-                        continue;
-                    }
+            // C1 后工具结果为 Content::ToolResult;同时兼容历史遗留的 "Tool X result:" 文本
+            let is_tool_result = matches!(&msg.content, Content::ToolResult { .. })
+                || matches!(&msg.content, Content::Text(text)
+                    if text.starts_with("Tool ") && text.contains("result:"));
+            if is_tool_result {
+                if keep_tool_results {
+                    keep_tool_results = false; // 只保留最后一个工具结果
+                    cleaned.push(msg.clone());
+                } else {
+                    removed += 1;
                 }
+                continue;
             }
             cleaned.push(msg.clone());
         }
@@ -86,6 +88,14 @@ impl SessionHygiene {
                 Content::Text(t) => t.len(),
                 Content::Structured { text, .. } => text.as_ref().map(|t| t.len()).unwrap_or(0),
                 Content::Image { image_data, .. } => image_data.len(),
+                Content::ToolUse { text, tool_calls } => {
+                    text.as_ref().map(|t| t.len()).unwrap_or(0)
+                        + tool_calls
+                            .iter()
+                            .map(|c| c.name.len() + c.arguments.to_string().len())
+                            .sum::<usize>()
+                }
+                Content::ToolResult { output, .. } => output.len(),
             };
             if total_chars + msg_chars > limit {
                 break;
@@ -184,18 +194,23 @@ impl CacheStrategy {
 /// 上下文压缩器 — Agent 层的精确 token 级压缩 (50% 阈值)
 /// 结合 SessionHygiene 实现双级压缩
 pub struct ContextCompressor {
-    threshold: f64, // 压缩阈值 (0.50 = 50%)
-    #[allow(dead_code)]
-    protect_last_n: usize, // 最少保护的消息数
+    threshold: f64,        // 压缩阈值 (0.50 = 50%)
+    context_window: usize, // 上下文窗口大小 (字符近似),作为压缩预算基准
 }
 
 impl ContextCompressor {
-    /// 创建上下文压缩器
-    pub fn new(threshold: f64, protect_last_n: usize) -> Self {
+    /// 创建上下文压缩器。`context_window` 为预算基准 (字符近似),
+    /// 压缩在 `chars > context_window * threshold` 时触发。
+    pub fn new(threshold: f64, context_window: usize) -> Self {
         Self {
             threshold,
-            protect_last_n,
+            context_window,
         }
+    }
+
+    /// 压缩预算基准 (C2: 供 Agent 复用,避免硬编码)
+    pub fn context_window(&self) -> usize {
+        self.context_window
     }
 
     /// 估算消息总字符数 (图片Base64不计入，避免压缩失真)
@@ -209,6 +224,14 @@ impl ContextCompressor {
                     // 图片不计算Base64长度，只计算描述长度（如果描述有意义）
                     description.as_ref().map(|d| d.len().min(100)).unwrap_or(10)
                 }
+                Content::ToolUse { text, tool_calls } => {
+                    text.as_ref().map(|t| t.len()).unwrap_or(0)
+                        + tool_calls
+                            .iter()
+                            .map(|c| c.name.len() + c.arguments.to_string().len())
+                            .sum::<usize>()
+                }
+                Content::ToolResult { output, .. } => output.len(),
             })
             .sum()
     }

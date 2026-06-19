@@ -1,6 +1,6 @@
 pub mod builtin_tools;
 
-use rustclaw_protocol::{Message, Envelope, Role, Content};
+use rustclaw_protocol::{Message, Envelope, Role, Content, ToolCallSpec};
 use rustclaw_tool::{ToolRegistry, ToolCall};
 use builtin_tools::{MemoryTool, SkillManageTool};
 use rustclaw_provider::ProviderClient;
@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use tokio::sync::mpsc;
 use futures_util::stream::StreamExt;
 
 /// Agent 事件枚举 — 用于回调系统，通知外部 Agent 的运行状态
@@ -42,7 +41,6 @@ use dashmap::DashMap;
 pub struct AgentRuntime {
     config: AgentConfig,                       // Agent 配置
     session_manager: SessionManager,           // 会话管理器
-    lane_router: LaneRouter,                   // 车道路由器 (并发隔离)
     tool_registry: Arc<ToolRegistry>,          // 工具注册表
     provider_client: ProviderClient,           // LLM 提供商客户端
     memory_manager: Option<Arc<MemoryManager>>, // 可选: 记忆管理器
@@ -125,8 +123,7 @@ use rustclaw_storage::SQLiteSessionStore;
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Session>>>, // 所有活跃会话 (内存缓存)
     store: Option<Arc<SQLiteSessionStore>>,           // SQLite 持久化存储
-    #[allow(dead_code)]
-    max_sessions: usize,  // 最大会话数
+    max_sessions: usize,  // 内存中最大活跃会话数 (R3: 超出按 LRU 淘汰)
     ttl_seconds: u64,     // 会话过期时间 (秒)
 }
 
@@ -324,12 +321,14 @@ impl SessionManager {
         }
     }
 
-    /// 清理过期会话 (两阶段: 先读锁收集, 再写锁删除)
-    pub fn cleanup_expired(&self) -> usize {
+    /// 清理过期会话并强制内存会话上限 (R1/R3)。
+    /// 返回被移出内存的 session key,供上层 (AgentRuntime) 同步清理会话锁。
+    /// 注意:仅移出内存缓存,SQLite 中的会话保留 (下次访问可回填)。
+    pub fn cleanup_expired(&self) -> Vec<String> {
         let ttl = Duration::from_secs(self.ttl_seconds);
         let now = Instant::now();
         let mut to_remove = vec![];
-        
+
         // 阶段1: 读锁收集过期 key
         {
             let sessions = self.sessions.read();
@@ -339,19 +338,36 @@ impl SessionManager {
                 }
             }
         }
-        
-        // 阶段2: 写锁逐个删除
-        for key in &to_remove {
-            self.sessions.write().remove(key);
+
+        // 阶段2: 写锁逐个删除过期会话,并按 LRU 强制上限
+        {
+            let mut sessions = self.sessions.write();
+            for key in &to_remove {
+                sessions.remove(key);
+            }
+
+            // R3: 超过上限时按 last_accessed 从旧到新淘汰
+            if sessions.len() > self.max_sessions {
+                let mut by_age: Vec<(String, Instant)> = sessions
+                    .iter()
+                    .map(|(k, s)| (k.clone(), s.last_accessed))
+                    .collect();
+                by_age.sort_by_key(|(_, t)| *t);
+                let evict_count = sessions.len() - self.max_sessions;
+                for (key, _) in by_age.into_iter().take(evict_count) {
+                    sessions.remove(&key);
+                    to_remove.push(key);
+                }
+            }
         }
 
         // 不从持久化存储中删除过期会话, 但清理过老的
         if let Some(ref store) = self.store {
             // 过期时间例如90天，而不是内存的几小时
-            let _ = store.cleanup_expired(90 * 24 * 3600); 
+            let _ = store.cleanup_expired(90 * 24 * 3600);
         }
 
-        to_remove.len()
+        to_remove
     }
 
     /// 列出所有会话
@@ -365,52 +381,15 @@ impl SessionManager {
     }
 }
 
-pub struct LaneRouter {
-    lanes: Arc<RwLock<HashMap<String, Lane>>>,
-    #[allow(dead_code)]
-    max_concurrent: usize,
-}
-
-pub struct Lane {
-    pub name: String,
-    pub queue_tx: mpsc::Sender<LaneTask>,
-}
-
-pub struct LaneTask {
-    pub session_key: String,
-    pub message: Message,
-    pub response_tx: mpsc::Sender<AgentResponse>,
-}
-
-impl LaneRouter {
-    pub fn new(max_concurrent: usize) -> Self {
-        Self {
-            lanes: Arc::new(RwLock::new(HashMap::with_capacity(10))),
-            max_concurrent,
-        }
-    }
-
-    pub fn route(&self, session_key: &str) -> String {
-        let hash = session_key.bytes().fold(0u64, |acc, b| acc.wrapping_add(b as u64));
-        format!("lane_{}", hash % 10)
-    }
-
-    pub fn get_lane(&self, name: &str) -> Option<Lane> {
-        self.lanes.read().get(name).cloned()
-    }
-
-    pub fn register_lane(&self, name: String, tx: mpsc::Sender<LaneTask>) {
-        self.lanes.write().insert(name.clone(), Lane { name, queue_tx: tx });
-    }
-}
-
-impl Clone for Lane {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            queue_tx: self.queue_tx.clone(),
-        }
-    }
+/// 将 session_key 哈希到固定的 lane 标签 (lane_0..lane_9)。
+///
+/// A1: 历史上这是一个"车道队列并发"子系统的入口,但队列从未接线 —
+/// 真实并发模型是 `process_with_loop` 里的 per-session `Mutex` (串行同一会话),
+/// 叠加每请求一个 tokio task (跨会话并行)。此处仅保留 lane 标签,
+/// 用于会话分组/可观测性 (写入 `Session.lane`)。
+pub fn route_lane(session_key: &str) -> String {
+    let hash = session_key.bytes().fold(0u64, |acc, b| acc.wrapping_add(b as u64));
+    format!("lane_{}", hash % 10)
 }
 
 impl AgentRuntime {
@@ -424,7 +403,6 @@ impl AgentRuntime {
         Self {
             config: config.clone(),
             session_manager: SessionManager::new(100, config.session_ttl_seconds),
-            lane_router: LaneRouter::new(config.max_concurrent_per_lane),
             tool_registry: registry,
             provider_client: ProviderClient::new(None),
             memory_manager: None,
@@ -500,7 +478,7 @@ impl AgentRuntime {
             envelope.channel, envelope.session_key);
         
         let session_key = &envelope.session_key;
-        let lane = self.lane_router.route(session_key);
+        let lane = route_lane(session_key);
         
         let _session = self.session_manager.get_or_create(
             session_key,
@@ -600,7 +578,7 @@ impl AgentRuntime {
         
         let _guard = lock.lock().await;
 
-        let lane = self.lane_router.route(&session_key);
+        let lane = route_lane(&session_key);
         
         self.session_manager.get_or_create(&session_key, &envelope.channel, &lane);
         self.session_manager.add_message(&session_key, envelope.message);
@@ -629,16 +607,29 @@ impl AgentRuntime {
                     .unwrap_or(0),
             });
 
-            let mut messages = self.session_manager.get(&session_key)
+            // 取原始会话历史
+            let mut history = self.session_manager.get(&session_key)
                 .map(|s| (*s.messages).clone())
                 .unwrap_or_default();
 
-            // Inject base system prompt
+            // C2: 压缩原始历史并落盘 (按配置预算触发),避免历史无界增长。
+            // 注意:压缩对象是纯历史,不含下面临时注入的 system/memory,
+            // 否则会把系统提示固化进历史导致重复注入。
+            if let Some(ref compressor) = self.context_compressor {
+                let result = compressor.compress(&history, compressor.context_window());
+                if result.compressed {
+                    history = result.messages;
+                    self.session_manager
+                        .replace_messages(&session_key, history.clone(), None);
+                }
+            }
+
+            // 组装本轮发送给 LLM 的消息 (临时,不落盘): [memory?, system, ...history]
+            let mut messages = history;
             messages.insert(0, Message {
                 role: Role::System,
                 content: Content::text(self.base_system_prompt.clone()),
             });
-
             if let Some(ref memory) = self.memory_manager {
                 let memory_text = memory.get_memory_text();
                 if !memory_text.is_empty() {
@@ -646,13 +637,6 @@ impl AgentRuntime {
                         role: Role::System,
                         content: Content::text(format!("Memory:\n{}", memory_text)),
                     });
-                }
-            }
-
-            if let Some(ref compressor) = self.context_compressor {
-                let result = compressor.compress(&messages, 100000);
-                if result.compressed {
-                    messages = result.messages;
                 }
             }
 
@@ -696,7 +680,7 @@ impl AgentRuntime {
                     });
                 }
                 self.emit_event(AgentEvent::Status { status: "completed".to_string() });
-                
+
                 let assistant_message = Message {
                     role: Role::Assistant,
                     content: Content::text(response_text.clone()),
@@ -709,6 +693,31 @@ impl AgentRuntime {
                     tool_calls: vec![],
                 });
             }
+
+            // C1: 确保每个 tool_call 有非空 ID,用于与 tool_result 配对
+            for tc in tool_calls.iter_mut() {
+                if tc.id.is_empty() {
+                    tc.id = uuid::Uuid::new_v4().to_string();
+                }
+            }
+
+            // C1: 把承载 tool_calls 的 assistant 消息回灌进历史,
+            // 否则模型在下一轮看不到自己刚才请求了哪个工具。
+            let call_specs: Vec<ToolCallSpec> = tool_calls
+                .iter()
+                .map(|tc| ToolCallSpec {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                })
+                .collect();
+            let assistant_text = if response_text.trim().is_empty() {
+                None
+            } else {
+                Some(response_text.clone())
+            };
+            self.session_manager
+                .add_message(&session_key, Message::tool_use(call_specs, assistant_text));
 
             for tool_call in &tool_calls {
                 total_tool_calls += 1;
@@ -725,55 +734,25 @@ impl AgentRuntime {
 
                 match self.execute_tool(tool_call).await {
                     Ok(result) => {
-                        // If a tool returns QR payload, convert it to an image response immediately.
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&result) {
-                            let qr_obj = v
-                                .get("qrcode_image")
-                                .or_else(|| v.get("data").and_then(|d| d.get("qrcode_image")));
-
-                            if let Some(qr) = qr_obj {
-                                let image_data = qr.get("image_data").and_then(|x| x.as_str()).unwrap_or("");
-                                if !image_data.is_empty() {
-                                    let image_type = qr.get("image_type").and_then(|x| x.as_str()).unwrap_or("png");
-                                    let mut description = qr
-                                        .get("description")
-                                        .and_then(|x| x.as_str())
-                                        .unwrap_or("请使用Boss直聘APP扫描二维码登录")
-                                        .to_string();
-
-                                    let msg = v
-                                        .get("message")
-                                        .and_then(|x| x.as_str())
-                                        .or_else(|| v.get("data").and_then(|d| d.get("message")).and_then(|x| x.as_str()));
-                                    if let Some(msg) = msg {
-                                        description = format!("{}\n{}", description, msg);
-                                    }
-
-                                    let next_step = v
-                                        .get("next_step")
-                                        .and_then(|x| x.as_str())
-                                        .or_else(|| v.get("data").and_then(|d| d.get("next_step")).and_then(|x| x.as_str()));
-                                    if let Some(next) = next_step {
-                                        description = format!("{}\n{}", description, next);
-                                    }
-
-                                    let assistant_message = Message {
-                                        role: Role::Assistant,
-                                        content: Content::image_with_description(
-                                            image_data,
-                                            image_type,
-                                            description,
-                                        ),
-                                    };
-                                    self.session_manager.add_message(&session_key, assistant_message.clone());
-
-                                    return Ok(AgentResponse {
-                                        session_key,
-                                        message: assistant_message,
-                                        tool_calls: vec![],
-                                    });
-                                }
-                            }
+                        // D1: 通用"工具结果含可渲染图片 → 直接回给用户"适配,
+                        // 平台特例 (如 BOSS 扫码二维码) 不再硬编码在内核里。
+                        if let Some(image_message) = extract_renderable_image(&result) {
+                            // C1: 先回灌 tool_result 保持 tool_calls 配对,再返回图片消息
+                            self.session_manager.add_message(
+                                &session_key,
+                                Message::tool_result(&tool_call.id, &tool_call.name, &result),
+                            );
+                            self.session_manager
+                                .add_message(&session_key, image_message.clone());
+                            self.emit_event(AgentEvent::ToolEnd {
+                                tool_name: tool_call.name.clone(),
+                                success: true,
+                            });
+                            return Ok(AgentResponse {
+                                session_key,
+                                message: image_message,
+                                tool_calls: vec![],
+                            });
                         }
 
                         tracing::info!(
@@ -785,15 +764,11 @@ impl AgentRuntime {
                             tool_name: tool_call.name.clone(),
                             success: true,
                         });
-                        let result_message = Message {
-                            role: Role::System,
-                            content: Content::text(format!(
-                                "Tool {} result: {}",
-                                tool_call.name,
-                                result
-                            )),
-                        };
-                        self.session_manager.add_message(&session_key, result_message);
+                        // C1: 工具结果以 tool 角色 + tool_call_id 回灌,而非 System 文本
+                        self.session_manager.add_message(
+                            &session_key,
+                            Message::tool_result(&tool_call.id, &tool_call.name, &result),
+                        );
                     }
                     Err(e) => {
                         tracing::error!(
@@ -806,15 +781,15 @@ impl AgentRuntime {
                             tool_name: tool_call.name.clone(),
                             success: false,
                         });
-                        let error_message = Message {
-                            role: Role::System,
-                            content: Content::text(format!(
-                                "Tool {} error: {}",
-                                tool_call.name,
-                                e
-                            )),
-                        };
-                        self.session_manager.add_message(&session_key, error_message);
+                        // C1: 工具错误同样以 tool 角色回灌,保持 tool_calls/tool_result 配对
+                        self.session_manager.add_message(
+                            &session_key,
+                            Message::tool_result(
+                                &tool_call.id,
+                                &tool_call.name,
+                                format!("error: {}", e),
+                            ),
+                        );
                     }
                 }
             }
@@ -1039,8 +1014,18 @@ impl AgentRuntime {
         let tool = self.tool_registry.get(&tool_call.name)
             .ok_or_else(|| AgentError::ToolError(format!("Tool not found: {}", tool_call.name)))?;
 
-        let result = tool.execute(tool_call.arguments.clone()).await
-            .map_err(|e| AgentError::ToolError(e.to_string()))?;
+        // A3: 强制工具超时,避免挂死的 MCP/HTTP 工具无限期占住会话锁。
+        let timeout = Duration::from_millis(self.config.tool_timeout_ms);
+        let result = match tokio::time::timeout(timeout, tool.execute(tool_call.arguments.clone())).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(AgentError::ToolError(e.to_string())),
+            Err(_) => {
+                return Err(AgentError::ToolError(format!(
+                    "tool '{}' timed out after {}ms",
+                    tool_call.name, self.config.tool_timeout_ms
+                )))
+            }
+        };
 
         Ok(result.to_string())
     }
@@ -1063,6 +1048,21 @@ impl AgentRuntime {
 
     pub fn delete_session(&self, key: &str) {
         self.session_manager.delete(key);
+        // R1: 同步移除会话锁,避免 DashMap 无界增长
+        self.session_locks.remove(key);
+    }
+
+    /// 周期性维护 (R1/R3): 清理过期/超限会话,并回收对应的会话锁。
+    /// 还会顺带回收当前无人持有的孤儿锁 (strong_count == 1)。
+    pub fn maintenance(&self) -> usize {
+        let removed = self.session_manager.cleanup_expired();
+        for key in &removed {
+            self.session_locks.remove(key);
+        }
+        // 回收不再对应活跃会话、且无在途持有者的锁条目
+        self.session_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        removed.len()
     }
 
     pub async fn process_stream(
@@ -1070,7 +1070,7 @@ impl AgentRuntime {
         envelope: Envelope,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<String, AgentError>>, AgentError> {
         let session_key = envelope.session_key.clone();
-        let lane = self.lane_router.route(&session_key);
+        let lane = route_lane(&session_key);
         
         self.session_manager.get_or_create(
             &session_key,
@@ -1112,6 +1112,53 @@ impl AgentRuntime {
 
         Ok(rx)
     }
+}
+
+/// D1: 通用地从工具结果 JSON 里识别"可直接渲染给用户的图片"。
+///
+/// 约定:工具结果若含 `qrcode_image`/`image`(或嵌套在 `data` 下),且其中带非空
+/// base64 `image_data`,则转为一条图片 assistant 消息。把平台特例 (BOSS 扫码登录、
+/// 未来其它需要展示图片的工具) 收敛到这一处约定,而非散落在 Agent 内核。
+fn extract_renderable_image(result: &str) -> Option<Message> {
+    let v: serde_json::Value = serde_json::from_str(result).ok()?;
+    let img = v
+        .get("qrcode_image")
+        .or_else(|| v.get("image"))
+        .or_else(|| v.get("data").and_then(|d| d.get("qrcode_image")))
+        .or_else(|| v.get("data").and_then(|d| d.get("image")))?;
+
+    let image_data = img.get("image_data").and_then(|x| x.as_str()).unwrap_or("");
+    if image_data.is_empty() {
+        return None;
+    }
+    let image_type = img.get("image_type").and_then(|x| x.as_str()).unwrap_or("png");
+
+    // 描述行 = 图片自带描述 + 顶层 message + next_step (任意可缺省)
+    let mut description = img
+        .get("description")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    for key in ["message", "next_step"] {
+        let extra = v
+            .get(key)
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("data").and_then(|d| d.get(key)).and_then(|x| x.as_str()));
+        if let Some(extra) = extra {
+            if !extra.is_empty() {
+                if description.is_empty() {
+                    description = extra.to_string();
+                } else {
+                    description = format!("{}\n{}", description, extra);
+                }
+            }
+        }
+    }
+
+    Some(Message {
+        role: Role::Assistant,
+        content: Content::image_with_description(image_data, image_type, description),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1236,8 +1283,30 @@ mod tests {
         assert!(manager.get(&key).is_some());
         std::thread::sleep(std::time::Duration::from_secs(2));
         let removed = manager.cleanup_expired();
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], key);
         assert!(manager.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_session_manager_enforces_max_sessions_lru() {
+        // R3: 上限为 2,插入 4 个,应淘汰最旧的 2 个,保留最近访问的 2 个
+        let manager = SessionManager::new(2, 3600);
+        let keep_recent = manager.get_or_create("s3", "http", "lane_0");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let _ = manager.get_or_create("s4", "http", "lane_0");
+        // s1/s2 更旧
+        let _old1 = manager.get_or_create("s1", "http", "lane_0");
+        let _old2 = manager.get_or_create("s2", "http", "lane_0");
+        // 触碰 s3/s4 使其成为最近访问
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        manager.add_message(&keep_recent.key, Message { role: Role::User, content: Content::text("x") });
+        manager.add_message("s4", Message { role: Role::User, content: Content::text("y") });
+        let removed = manager.cleanup_expired();
+        assert_eq!(manager.count(), 2);
+        // 被淘汰的应是更旧的 s1/s2
+        assert!(removed.contains(&"s1".to_string()));
+        assert!(removed.contains(&"s2".to_string()));
     }
 
     #[test]
@@ -1259,21 +1328,141 @@ mod tests {
     }
 
     #[test]
-    fn test_lane_router_route() {
-        let router = LaneRouter::new(10);
-        let lane1 = router.route("session_abc");
-        let lane2 = router.route("session_abc");
+    fn test_route_lane_is_deterministic() {
+        let lane1 = route_lane("session_abc");
+        let lane2 = route_lane("session_abc");
         assert_eq!(lane1, lane2);
         assert!(lane1.starts_with("lane_"));
     }
 
-    #[test]
-    fn test_lane_router_register_and_get() {
-        let router = LaneRouter::new(10);
-        let (tx, _rx) = tokio::sync::mpsc::channel(10);
-        router.register_lane("test_lane".to_string(), tx);
-        let lane = router.get_lane("test_lane");
-        assert!(lane.is_some());
-        assert_eq!(lane.unwrap().name, "test_lane");
+    // --- T1: 端到端工具循环测试 (锁定 C1 回归) ---
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Mock 工具:回显入参
+    struct EchoTool;
+
+    #[async_trait::async_trait]
+    impl rustclaw_tool::Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo back the input"
+        }
+        fn schema(&self) -> rustclaw_tool::ToolSchema {
+            rustclaw_tool::ToolSchema {
+                name: "echo".to_string(),
+                description: "echo back the input".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, rustclaw_tool::ToolError> {
+            Ok(serde_json::json!({ "ok": true, "echoed": params }))
+        }
+    }
+
+    /// Mock provider:第一次调用请求一个工具,第二次返回终答。
+    struct MockProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl rustclaw_provider::LlmProvider for MockProvider {
+        async fn complete(
+            &self,
+            _m: Vec<Message>,
+        ) -> Result<String, rustclaw_provider::ProviderError> {
+            Ok(String::new())
+        }
+        async fn complete_with_tools(
+            &self,
+            _m: Vec<Message>,
+            _t: Vec<serde_json::Value>,
+        ) -> Result<(String, Vec<serde_json::Value>), rustclaw_provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok((
+                    "let me check".to_string(),
+                    vec![serde_json::json!({
+                        "id": "call_1",
+                        "name": "echo",
+                        "arguments": { "x": 1 }
+                    })],
+                ))
+            } else {
+                Ok(("done".to_string(), vec![]))
+            }
+        }
+        async fn stream_complete(&self, _m: Vec<Message>) -> rustclaw_provider::TokenStream {
+            Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+        }
+        async fn list_models(&self) -> Result<Vec<String>, rustclaw_provider::ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_with_loop_persists_tool_calls_and_results() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let provider = ProviderClient::new(Some(Arc::new(MockProvider {
+            calls: AtomicUsize::new(0),
+        })));
+        let rt = AgentRuntime::new(AgentConfig::default())
+            .with_tools(registry)
+            .with_provider(provider);
+
+        let env = Envelope::new(
+            "test",
+            "sess-roundtrip",
+            Message {
+                role: Role::User,
+                content: Content::text("hi"),
+            },
+        );
+        let resp = rt.process_with_loop(env).await.expect("loop should succeed");
+
+        // 终答应为第二次响应文本
+        match &resp.message.content {
+            Content::Text(t) => assert_eq!(t, "done"),
+            other => panic!("expected text final answer, got {:?}", other),
+        }
+
+        // C1 关键断言:历史按协议成对回灌
+        // [user, assistant(ToolUse), tool(ToolResult), assistant(done)]
+        let session = rt.get_session("sess-roundtrip").unwrap();
+        let msgs = &*session.messages;
+        assert_eq!(msgs.len(), 4, "history should have 4 messages, got {}", msgs.len());
+
+        assert_eq!(msgs[0].role, Role::User);
+
+        assert_eq!(msgs[1].role, Role::Assistant);
+        match &msgs[1].content {
+            Content::ToolUse { tool_calls, text } => {
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].name, "echo");
+                assert_eq!(tool_calls[0].id, "call_1");
+                assert_eq!(text.as_deref(), Some("let me check"));
+            }
+            other => panic!("expected ToolUse, got {:?}", other),
+        }
+
+        assert_eq!(msgs[2].role, Role::Tool);
+        match &msgs[2].content {
+            Content::ToolResult { tool_call_id, name, output } => {
+                // tool_result 必须与 tool_call 的 id 配对
+                assert_eq!(tool_call_id, "call_1");
+                assert_eq!(name, "echo");
+                assert!(output.contains("echoed"));
+            }
+            other => panic!("expected ToolResult, got {:?}", other),
+        }
+
+        assert_eq!(msgs[3].role, Role::Assistant);
+        assert!(matches!(&msgs[3].content, Content::Text(t) if t == "done"));
     }
 }

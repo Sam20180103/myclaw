@@ -340,6 +340,22 @@ let reach_config = rustclaw_tool::ReachConfig {
     pub async fn start(&self) -> anyhow::Result<()> {
         self.skill_manager.init().await?;
 
+        // R1/R3: 周期性维护 — 清理过期/超限会话并回收会话锁。
+        // 此前 cleanup_expired 无任何调用方,会话与锁均无界增长。
+        {
+            let agent = self.agent.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    ticker.tick().await;
+                    let removed = agent.maintenance();
+                    if removed > 0 {
+                        tracing::debug!("session maintenance: evicted {} sessions", removed);
+                    }
+                }
+            });
+        }
+
         let host = self.config.host.parse()
             .map_err(|e| anyhow::anyhow!("Invalid host '{}': {}", self.config.host, e))?;
         let addr = SocketAddr::new(host, self.config.port);
@@ -561,6 +577,8 @@ fn content_to_text(content: Content) -> String {
         Content::Image { description, .. } => {
             format!("[Image: {}]", description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息"))
         }
+        Content::ToolUse { text, .. } => text.unwrap_or_default(),
+        Content::ToolResult { output, .. } => output,
     }
 }
 
@@ -857,14 +875,7 @@ let envelope = Envelope::new(
 
     match state.agent.process_with_loop(envelope).await {
         Ok(AgentResponse { session_key, message, tool_calls }) => {
-            let response_content = match message.content {
-                Content::Text(s) => s,
-                Content::Structured { text, .. } => text.unwrap_or_default(),
-                Content::Image { description, .. } => {
-                    let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
-                    format!("[Image: {}]", desc)
-                }
-            };
+            let response_content = content_to_text(message.content);
             Json(serde_json::json!({
                 "success": true,
                 "sessionKey": session_key,
@@ -906,14 +917,7 @@ let envelope = Envelope::new(
 
     match state.agent.process_with_loop(envelope).await {
         Ok(AgentResponse { session_key, message, tool_calls }) => {
-            let response_content = match message.content {
-                Content::Text(s) => s,
-                Content::Structured { text, .. } => text.unwrap_or_default(),
-                Content::Image { description, .. } => {
-                    let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
-                    format!("[Image: {}]", desc)
-                }
-            };
+            let response_content = content_to_text(message.content);
             Json(serde_json::json!({
                 "success": true,
                 "sessionKey": session_key,
@@ -1129,6 +1133,7 @@ async fn agent_get_handler(
                         rustclaw_protocol::Role::User => "user",
                         rustclaw_protocol::Role::Assistant => "assistant",
                         rustclaw_protocol::Role::System => "system",
+                        rustclaw_protocol::Role::Tool => "tool",
                     },
 "content": match &m.content {
                     rustclaw_protocol::Content::Text(s) => s.to_string(),
@@ -1136,6 +1141,13 @@ async fn agent_get_handler(
                     rustclaw_protocol::Content::Image { description, .. } => {
                         let desc = description.as_deref().filter(|d| !d.is_empty()).unwrap_or("图片消息");
                         format!("[Image: {}]", desc)
+                    }
+                    rustclaw_protocol::Content::ToolUse { text, tool_calls } => {
+                        let names: Vec<&str> = tool_calls.iter().map(|c| c.name.as_str()).collect();
+                        format!("{}[tool_call: {}]", text.as_deref().unwrap_or(""), names.join(", "))
+                    }
+                    rustclaw_protocol::Content::ToolResult { name, output, .. } => {
+                        format!("[tool_result {}: {}]", name, output)
                     }
                 }
                 })).collect::<Vec<_>>()

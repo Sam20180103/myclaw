@@ -203,6 +203,13 @@ impl FeishuChannel {
             Content::Structured { text, .. } => {
                 self.send_text_response(session_key, text.as_deref().unwrap_or("")).await
             }
+            // 工具消息不会作为出站内容,降级为文本兜底
+            Content::ToolUse { text, .. } => {
+                self.send_text_response(session_key, text.as_deref().unwrap_or("")).await
+            }
+            Content::ToolResult { output, .. } => {
+                self.send_text_response(session_key, output).await
+            }
         }
     }
 
@@ -579,6 +586,23 @@ impl Channel for FeishuChannel {
                     tool_calls: vec![],
                 }
             }
+            // 工具消息不会作为出站内容,降级为文本兜底
+            Content::ToolUse { text, .. } => AgentResponse {
+                session_key: envelope.session_key,
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::text(text.unwrap_or_default()),
+                },
+                tool_calls: vec![],
+            },
+            Content::ToolResult { output, .. } => AgentResponse {
+                session_key: envelope.session_key,
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::text(output),
+                },
+                tool_calls: vec![],
+            },
         };
 
         self.send_response(&response, &response.session_key).await

@@ -131,6 +131,60 @@ struct OpenAiMessage {
     role: String,
     /// String for plain text, or an array of content parts (text + image_url) for vision.
     content: serde_json::Value,
+    /// C1: assistant 请求的原生 tool_calls
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<serde_json::Value>>,
+    /// C1: tool 角色消息对应的调用 ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+/// C1: 将内部 Message 映射为 OpenAI 消息,正确处理 tool_calls / tool 角色。
+fn openai_message(m: &Message) -> OpenAiMessage {
+    use rustclaw_protocol::Content;
+    match &m.content {
+        Content::ToolUse { tool_calls, text } => OpenAiMessage {
+            role: "assistant".to_string(),
+            content: serde_json::Value::String(text.clone().unwrap_or_default()),
+            tool_calls: Some(
+                tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                // OpenAI 要求 arguments 为 JSON 字符串
+                                "arguments": tc.arguments.to_string(),
+                            }
+                        })
+                    })
+                    .collect(),
+            ),
+            tool_call_id: None,
+        },
+        Content::ToolResult { tool_call_id, output, .. } => OpenAiMessage {
+            role: "tool".to_string(),
+            content: serde_json::Value::String(output.clone()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.clone()),
+        },
+        other => {
+            let role = match m.role {
+                rustclaw_protocol::Role::User => "user",
+                rustclaw_protocol::Role::Assistant => "assistant",
+                rustclaw_protocol::Role::System => "system",
+                rustclaw_protocol::Role::Tool => "tool",
+            };
+            OpenAiMessage {
+                role: role.to_string(),
+                content: openai_content(other),
+                tool_calls: None,
+                tool_call_id: None,
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -220,6 +274,11 @@ fn openai_content(content: &rustclaw_protocol::Content) -> serde_json::Value {
             }));
             serde_json::Value::Array(parts)
         }
+        // 工具语义由 openai_message 处理;此处仅作降级文本兜底。
+        Content::ToolUse { text, .. } => {
+            serde_json::Value::String(text.clone().unwrap_or_default())
+        }
+        Content::ToolResult { output, .. } => serde_json::Value::String(output.clone()),
     }
 }
 
@@ -261,6 +320,58 @@ fn anthropic_content(content: &rustclaw_protocol::Content) -> serde_json::Value 
             }));
             serde_json::Value::Array(parts)
         }
+        // 工具语义由 anthropic_message 处理;此处仅作降级文本兜底。
+        Content::ToolUse { text, .. } => {
+            serde_json::Value::String(text.clone().unwrap_or_default())
+        }
+        Content::ToolResult { output, .. } => serde_json::Value::String(output.clone()),
+    }
+}
+
+/// C1: 将内部 Message 映射为 Anthropic 消息,正确处理 tool_use / tool_result 块。
+fn anthropic_message(m: &Message) -> AnthropicMessage {
+    use rustclaw_protocol::Content;
+    match &m.content {
+        Content::ToolUse { tool_calls, text } => {
+            let mut blocks = Vec::new();
+            if let Some(t) = text {
+                if !t.is_empty() {
+                    blocks.push(serde_json::json!({ "type": "text", "text": t }));
+                }
+            }
+            for tc in tool_calls {
+                blocks.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments,
+                }));
+            }
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: serde_json::Value::Array(blocks),
+            }
+        }
+        Content::ToolResult { tool_call_id, output, .. } => AnthropicMessage {
+            // Anthropic 把 tool_result 放在 user 回合
+            role: "user".to_string(),
+            content: serde_json::json!([{
+                "type": "tool_result",
+                "tool_use_id": tool_call_id,
+                "content": output,
+            }]),
+        },
+        other => {
+            let role = match m.role {
+                rustclaw_protocol::Role::Assistant => "assistant",
+                // Anthropic messages 数组无 system/tool 角色,统一降级为 user
+                _ => "user",
+            };
+            AnthropicMessage {
+                role: role.to_string(),
+                content: anthropic_content(other),
+            }
+        }
     }
 }
 
@@ -286,18 +397,7 @@ impl LlmProvider for OpenAiProvider {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {
@@ -343,18 +443,7 @@ impl LlmProvider for OpenAiProvider {
     async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {
@@ -405,18 +494,7 @@ impl LlmProvider for OpenAiProvider {
         
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {
@@ -600,18 +678,7 @@ impl LlmProvider for AnthropicProvider {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
         let anthropic_messages: Vec<AnthropicMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = anthropic_content(&m.content);
-                AnthropicMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(anthropic_message)
             .collect();
 
         let request = AnthropicRequest {
@@ -654,18 +721,7 @@ impl LlmProvider for AnthropicProvider {
     async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
         let anthropic_messages: Vec<AnthropicMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = anthropic_content(&m.content);
-                AnthropicMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(anthropic_message)
             .collect();
 
         // Convert OpenAI-style tool schema to Anthropic-style tool schema
@@ -750,18 +806,7 @@ impl LlmProvider for AnthropicProvider {
 
         let anthropic_messages: Vec<AnthropicMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = anthropic_content(&m.content);
-                AnthropicMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(anthropic_message)
             .collect();
 
         let request = AnthropicStreamRequest {
@@ -886,18 +931,7 @@ impl LlmProvider for NvProvider {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {
@@ -953,18 +987,7 @@ impl LlmProvider for NvProvider {
     async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {
@@ -1015,18 +1038,7 @@ impl LlmProvider for NvProvider {
         
         let openai_messages: Vec<OpenAiMessage> = messages
             .iter()
-            .map(|m| {
-                let role = match m.role {
-                    rustclaw_protocol::Role::User => "user",
-                    rustclaw_protocol::Role::Assistant => "assistant",
-                    rustclaw_protocol::Role::System => "system",
-                };
-                let content = openai_content(&m.content);
-                OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                }
-            })
+            .map(openai_message)
             .collect();
 
         let request = OpenAiRequest {

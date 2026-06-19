@@ -172,12 +172,25 @@ pub struct Message {
     pub content: Content,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     User,
     Assistant,
     System,
+    /// 工具执行结果消息 (与 assistant 的 tool_calls 配对)
+    Tool,
+}
+
+/// 一次工具调用请求 (承载原生 tool_calls 语义)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCallSpec {
+    /// 工具调用 ID (provider 分配,用于与 tool_result 配对)
+    pub id: String,
+    /// 工具名
+    pub name: String,
+    /// 调用参数
+    pub arguments: serde_json::Value,
 }
 
 /// 内容类型枚举 — 支持多种消息格式
@@ -205,6 +218,23 @@ pub enum Content {
         /// 图片描述 (可选)
         #[serde(default)]
         description: Option<String>,
+    },
+    /// Assistant 请求调用工具 (C1: 把原生 tool_calls 持久化进会话历史)
+    ToolUse {
+        /// 工具调用列表
+        tool_calls: Vec<ToolCallSpec>,
+        /// 伴随 tool_calls 的助手文本 (可空)
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// 工具执行结果 (C1: 与 tool_call_id 配对回灌,而非 System 文本)
+    ToolResult {
+        /// 对应的工具调用 ID
+        tool_call_id: String,
+        /// 工具名 (便于日志/展示)
+        name: String,
+        /// 工具输出 (序列化后的字符串)
+        output: String,
     },
 }
 
@@ -245,6 +275,46 @@ impl Content {
             image_data: data.into(),
             image_type: image_type.into(),
             description: Some(desc.into()),
+        }
+    }
+
+    /// 创建工具调用请求内容 (C1)
+    pub fn tool_use(tool_calls: Vec<ToolCallSpec>, text: Option<String>) -> Self {
+        Content::ToolUse { tool_calls, text }
+    }
+
+    /// 创建工具结果内容 (C1)
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        Content::ToolResult {
+            tool_call_id: tool_call_id.into(),
+            name: name.into(),
+            output: output.into(),
+        }
+    }
+}
+
+impl Message {
+    /// 构造承载工具调用请求的 assistant 消息 (C1)
+    pub fn tool_use(tool_calls: Vec<ToolCallSpec>, text: Option<String>) -> Self {
+        Message {
+            role: Role::Assistant,
+            content: Content::tool_use(tool_calls, text),
+        }
+    }
+
+    /// 构造工具结果消息 (C1)
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        Message {
+            role: Role::Tool,
+            content: Content::tool_result(tool_call_id, name, output),
         }
     }
 }
