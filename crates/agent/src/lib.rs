@@ -1,7 +1,9 @@
 pub mod builtin_tools;
 
 use rustclaw_protocol::{Message, Envelope, Role, Content, ToolCallSpec};
-use rustclaw_tool::{ToolRegistry, ToolCall};
+use rustclaw_tool::{ToolRegistry, ToolCall, ToolPolicy};
+use std::future::Future;
+use std::pin::Pin;
 use builtin_tools::{MemoryTool, SkillManageTool};
 use rustclaw_provider::ProviderClient;
 use rustclaw_memory::MemoryManager;
@@ -29,10 +31,17 @@ pub enum AgentEvent {
     SkillSuggestion { task_summary: String, tool_call_count: u32 },
     /// 用户纠正记录
     UserCorrection { original: String, corrected: String },
+    /// G1: 工具被策略拒绝或未获审批
+    ToolDenied { tool_name: String, reason: String },
 }
 
 /// 事件回调类型 — 用于外部监听 Agent 运行事件
 pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// G1: 工具审批回调 — 对 `require_approval` 名单内的工具,在执行前异步征求批准。
+/// 返回 `true` 放行、`false` 拒绝。未设置时,需审批的工具一律拒绝 (fail-closed)。
+pub type ApprovalHook =
+    Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 use dashmap::DashMap;
 
@@ -49,6 +58,8 @@ pub struct AgentRuntime {
     iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
     session_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>, // 会话锁
     base_system_prompt: String,                 // 基础系统提示
+    tool_policy: ToolPolicy,                    // G1: 工具策略 (允许/拒绝/需审批)
+    approval_hook: Option<ApprovalHook>,        // G1: 工具审批回调 (fail-closed)
 }
 
 const DEFAULT_BASE_SYSTEM_PROMPT: &str = r#"You are RustClaw, an autonomous AI agent.
@@ -411,6 +422,8 @@ impl AgentRuntime {
             iteration_budget: None,
             session_locks: DashMap::new(),
             base_system_prompt: DEFAULT_BASE_SYSTEM_PROMPT.to_string(),
+            tool_policy: ToolPolicy::permissive(),
+            approval_hook: None,
         }
     }
 
@@ -461,6 +474,22 @@ impl AgentRuntime {
     pub fn with_iteration_budget(mut self, budget: u32) -> Self {
         self.iteration_budget = Some(budget);
         self
+    }
+
+    /// G1: 设置工具策略 (允许/拒绝/需审批)。
+    pub fn with_tool_policy(mut self, policy: ToolPolicy) -> Self {
+        self.tool_policy = policy;
+        self
+    }
+
+    /// G1: 设置工具审批回调。未设置时,`require_approval` 名单内的工具一律拒绝。
+    pub fn with_approval_hook(mut self, hook: ApprovalHook) -> Self {
+        self.approval_hook = Some(hook);
+        self
+    }
+
+    pub fn tool_policy(&self) -> &ToolPolicy {
+        &self.tool_policy
     }
 
     pub fn memory_manager(&self) -> Option<&Arc<MemoryManager>> {
@@ -624,12 +653,10 @@ impl AgentRuntime {
                 }
             }
 
-            // 组装本轮发送给 LLM 的消息 (临时,不落盘): [memory?, system, ...history]
+            // 组装本轮发送给 LLM 的消息 (临时,不落盘): [base_system, memory?, ...history]
+            // G2: 稳定的 base system prompt 置于最前,保证可缓存前缀稳定 (Anthropic
+            // 将这些前导 System 消息提升为带 cache_control 的 system 块)。
             let mut messages = history;
-            messages.insert(0, Message {
-                role: Role::System,
-                content: Content::text(self.base_system_prompt.clone()),
-            });
             if let Some(ref memory) = self.memory_manager {
                 let memory_text = memory.get_memory_text();
                 if !memory_text.is_empty() {
@@ -639,6 +666,10 @@ impl AgentRuntime {
                     });
                 }
             }
+            messages.insert(0, Message {
+                role: Role::System,
+                content: Content::text(self.base_system_prompt.clone()),
+            });
 
             let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
                 .into_iter()
@@ -1011,6 +1042,31 @@ impl AgentRuntime {
     }
 
     async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String, AgentError> {
+        // G1: 策略门控 —— 黑名单拒绝
+        if !self.tool_policy.is_allowed(&tool_call.name) {
+            let reason = "denied by tool policy".to_string();
+            self.emit_event(AgentEvent::ToolDenied {
+                tool_name: tool_call.name.clone(),
+                reason: reason.clone(),
+            });
+            return Err(AgentError::ToolError(format!("tool '{}' {}", tool_call.name, reason)));
+        }
+        // G1: 需审批的工具,执行前征求批准 (无 hook → fail-closed 拒绝)
+        if self.tool_policy.requires_approval(&tool_call.name) {
+            let approved = match &self.approval_hook {
+                Some(hook) => hook(tool_call.name.clone(), tool_call.arguments.clone()).await,
+                None => false,
+            };
+            if !approved {
+                let reason = "requires approval, not granted".to_string();
+                self.emit_event(AgentEvent::ToolDenied {
+                    tool_name: tool_call.name.clone(),
+                    reason: reason.clone(),
+                });
+                return Err(AgentError::ToolError(format!("tool '{}' {}", tool_call.name, reason)));
+            }
+        }
+
         let tool = self.tool_registry.get(&tool_call.name)
             .ok_or_else(|| AgentError::ToolError(format!("Tool not found: {}", tool_call.name)))?;
 
@@ -1464,5 +1520,73 @@ mod tests {
 
         assert_eq!(msgs[3].role, Role::Assistant);
         assert!(matches!(&msgs[3].content, Content::Text(t) if t == "done"));
+    }
+
+    // --- G1: 工具策略与人审 ---
+
+    fn rt_with_policy(policy: ToolPolicy) -> AgentRuntime {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let provider = ProviderClient::new(Some(Arc::new(MockProvider {
+            calls: AtomicUsize::new(0),
+        })));
+        AgentRuntime::new(AgentConfig::default())
+            .with_tools(registry)
+            .with_provider(provider)
+            .with_tool_policy(policy)
+    }
+
+    /// 被拒绝的工具不应执行,且历史里 tool_result 记录的是拒绝错误。
+    #[tokio::test]
+    async fn test_denied_tool_is_blocked() {
+        let policy = ToolPolicy::permissive().with_denied_tools(vec!["echo".to_string()]);
+        let rt = rt_with_policy(policy);
+        let env = Envelope::new("test", "sess-deny", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        });
+        // 循环不应 panic;echo 被拒后以 tool_result(error) 回灌,模型第二轮给终答
+        let resp = rt.process_with_loop(env).await.expect("loop should still complete");
+        assert!(matches!(&resp.message.content, Content::Text(t) if t == "done"));
+        let session = rt.get_session("sess-deny").unwrap();
+        let tool_result = session.messages.iter().find_map(|m| match &m.content {
+            Content::ToolResult { output, .. } => Some(output.clone()),
+            _ => None,
+        }).expect("a tool_result should exist");
+        assert!(tool_result.contains("denied"), "got: {}", tool_result);
+    }
+
+    /// require_approval 工具:无 hook → fail-closed 拒绝。
+    #[tokio::test]
+    async fn test_require_approval_without_hook_is_denied() {
+        let policy = ToolPolicy::permissive().with_require_approval(vec!["echo".to_string()]);
+        let rt = rt_with_policy(policy);
+        let env = Envelope::new("test", "sess-appr-none", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        });
+        let _ = rt.process_with_loop(env).await.expect("loop completes");
+        let session = rt.get_session("sess-appr-none").unwrap();
+        let denied = session.messages.iter().any(|m| matches!(&m.content,
+            Content::ToolResult { output, .. } if output.contains("approval")));
+        assert!(denied, "tool requiring approval should be denied without a hook");
+    }
+
+    /// require_approval 工具:hook 批准 → 执行成功。
+    #[tokio::test]
+    async fn test_require_approval_with_granting_hook_runs() {
+        let policy = ToolPolicy::permissive().with_require_approval(vec!["echo".to_string()]);
+        let rt = rt_with_policy(policy).with_approval_hook(Arc::new(|_name, _args| {
+            Box::pin(async { true })
+        }));
+        let env = Envelope::new("test", "sess-appr-ok", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        });
+        let _ = rt.process_with_loop(env).await.expect("loop completes");
+        let session = rt.get_session("sess-appr-ok").unwrap();
+        let ran = session.messages.iter().any(|m| matches!(&m.content,
+            Content::ToolResult { output, .. } if output.contains("echoed")));
+        assert!(ran, "approved tool should execute and produce its result");
     }
 }

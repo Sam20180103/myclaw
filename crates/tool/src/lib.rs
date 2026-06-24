@@ -542,6 +542,15 @@ impl Default for ToolPolicy {
 }
 
 impl ToolPolicy {
+    /// 全放行策略 (无白/黑名单、无审批) — 作为运行时默认,保持向后兼容。
+    pub fn permissive() -> Self {
+        Self {
+            allowed_tools: vec![],
+            denied_tools: vec![],
+            require_approval: vec![],
+        }
+    }
+
     pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self

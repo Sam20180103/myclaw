@@ -54,6 +54,7 @@ pub struct Gateway {
     #[allow(dead_code)]
     feishu_ws: Option<Arc<WebSocketManager>>,
     wechat_channel: Option<Arc<WeChatChannel>>,
+    approval_registry: Arc<ApprovalRegistry>,
 }
 
 pub struct GatewayConfig {
@@ -85,6 +86,76 @@ pub struct ChannelInfo {
     pub channel_type: String,
     pub enabled: bool,
     pub config: HashMap<String, serde_json::Value>,
+}
+
+/// G1: 一条待处理的工具审批请求 (供操作员经 REST/SSE 审批)。
+#[derive(Clone, serde::Serialize)]
+pub struct ToolApprovalRequest {
+    pub id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub created_at: i64,
+}
+
+/// G1: 工具审批登记处 —— Agent 的审批 hook 在此挂起,等待操作员裁决或超时。
+pub struct ApprovalRegistry {
+    pending: parking_lot::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    meta: parking_lot::Mutex<HashMap<String, ToolApprovalRequest>>,
+    broadcaster: broadcast::Sender<ToolApprovalRequest>,
+    timeout: std::time::Duration,
+}
+
+impl ApprovalRegistry {
+    fn new(timeout: std::time::Duration) -> Self {
+        let (tx, _) = broadcast::channel(APPROVAL_CHANNEL_CAPACITY);
+        Self {
+            pending: parking_lot::Mutex::new(HashMap::new()),
+            meta: parking_lot::Mutex::new(HashMap::new()),
+            broadcaster: tx,
+            timeout,
+        }
+    }
+
+    /// 发起一次审批请求并等待裁决;超时或通道关闭则默认拒绝 (fail-closed)。
+    async fn request(&self, tool_name: String, arguments: serde_json::Value) -> bool {
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = ToolApprovalRequest {
+            id: id.clone(),
+            tool_name: tool_name.clone(),
+            arguments,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().insert(id.clone(), tx);
+        self.meta.lock().insert(id.clone(), req.clone());
+        let _ = self.broadcaster.send(req);
+        warn!("tool '{}' awaiting approval (id={}, timeout={:?})", tool_name, id, self.timeout);
+
+        let decision = match tokio::time::timeout(self.timeout, rx).await {
+            Ok(Ok(approved)) => approved,
+            _ => false, // 超时或发送端被丢弃 → 拒绝
+        };
+        self.pending.lock().remove(&id);
+        self.meta.lock().remove(&id);
+        decision
+    }
+
+    /// 操作员裁决一个挂起的审批;返回是否命中。
+    fn resolve(&self, id: &str, approved: bool) -> bool {
+        if let Some(tx) = self.pending.lock().remove(id) {
+            let _ = tx.send(approved);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn list(&self) -> Vec<ToolApprovalRequest> {
+        self.meta.lock().values().cloned().collect()
+    }
 }
 
 /// Create an approval subscription stream that yields approval requests
@@ -160,6 +231,25 @@ let reach_config = rustclaw_tool::ReachConfig {
         // 4. SkillManager — 同时注入 Agent (暴露 skill_manage 工具) 与 Gateway (审批 API)
         let skill_manager = Arc::new(SkillManager::new(SkillConfig::default()));
         agent_builder = agent_builder.with_skill_manager(skill_manager.clone());
+
+        // 5. G1: 工具策略 + 审批 hook。
+        // 仅接 disabled_tools(拒绝) 与 require_approval;不把 enabled_tools 当硬白名单
+        // (其默认值是过时的 4 项子集,会误杀其余工具)。
+        let tool_policy = rustclaw_tool::ToolPolicy::permissive()
+            .with_denied_tools(config.tools.disabled_tools.clone())
+            .with_require_approval(config.tools.require_approval.clone());
+        agent_builder = agent_builder.with_tool_policy(tool_policy);
+
+        let approval_timeout = std::time::Duration::from_secs(120);
+        let approval_registry = Arc::new(ApprovalRegistry::new(approval_timeout));
+        {
+            let reg = approval_registry.clone();
+            let hook: rustclaw_agent::ApprovalHook = Arc::new(move |tool_name, args| {
+                let reg = reg.clone();
+                Box::pin(async move { reg.request(tool_name, args).await })
+            });
+            agent_builder = agent_builder.with_approval_hook(hook);
+        }
 
         let agent = Arc::new(agent_builder);
 
@@ -291,23 +381,26 @@ let reach_config = rustclaw_tool::ReachConfig {
             feishu_channel,
             feishu_ws,
             wechat_channel,
+            approval_registry,
         }
     }
 
     fn create_provider_client(providers: &[ProviderConfig]) -> ProviderClient {
+        // G3: 构造全部已配置 provider (首个为主,其余为降级备选),而非只取第一个。
+        let mut clients: Vec<Arc<dyn LlmProvider>> = Vec::new();
         for p in providers {
             let api_key = p.api_key.clone().or_else(|| {
                 std::env::var("OPENAI_API_KEY").ok()
             });
-            
-            info!("Provider config: name={}, type={}, model={:?}, base_url={:?}", 
+
+            info!("Provider config: name={}, type={}, model={:?}, base_url={:?}",
                 p.name, p.provider_type, p.default_model, p.base_url);
-            
+
             if let Some(key) = api_key {
                 let provider: Arc<dyn LlmProvider> = match p.provider_type.as_str() {
                     "openai" | "nvidia" => {
                         let model = p.default_model.as_deref().unwrap_or("gpt-4o");
-                        info!("Creating OpenAI provider: model={}, base_url={}", 
+                        info!("Creating OpenAI provider: model={}, base_url={}",
                             model, p.base_url.as_deref().unwrap_or("https://api.openai.com"));
                         Arc::new(
                             OpenAiProvider::new(key, model)
@@ -320,11 +413,15 @@ let reach_config = rustclaw_tool::ReachConfig {
                     }
                     _ => continue,
                 };
-                return ProviderClient::new(Some(provider));
+                clients.push(provider);
             }
         }
-        warn!("No provider configured - API key missing or no providers defined");
-        ProviderClient::new(None)
+        if clients.is_empty() {
+            warn!("No provider configured - API key missing or no providers defined");
+            return ProviderClient::new(None);
+        }
+        info!("Provider client: {} provider(s) (primary + {} fallback)", clients.len(), clients.len() - 1);
+        ProviderClient::with_providers(clients)
     }
 
     pub fn with_agent(mut self, agent: Arc<AgentRuntime>) -> Self {
@@ -407,6 +504,8 @@ let reach_config = rustclaw_tool::ReachConfig {
             .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
             .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
             .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
+            .route("/api/tools/approvals", axum::routing::get(tool_approvals_list_handler))
+            .route("/api/tools/approvals/{id}", axum::routing::post(tool_approval_resolve_handler))
             .layer(cors)
             .layer(axum::middleware::from_fn_with_state(Arc::new(self.clone()), api_key_auth))
             .with_state(Arc::new(self.clone()));
@@ -1059,6 +1158,31 @@ async fn skill_reject_handler(
             "message": format!("Skill {} rejected", id)
         })),
         Err(e) => api_error(&e.to_string()),
+    }
+}
+
+/// G1: 列出待审批的工具调用 (操作员视图)。
+async fn tool_approvals_list_handler(
+    State(state): State<Arc<Gateway>>,
+) -> Json<serde_json::Value> {
+    api_success(serde_json::json!({ "pending": state.approval_registry.list() }))
+}
+
+#[derive(serde::Deserialize)]
+struct ApprovalDecision {
+    approved: bool,
+}
+
+/// G1: 操作员裁决一个待审批的工具调用。
+async fn tool_approval_resolve_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ApprovalDecision>,
+) -> Json<serde_json::Value> {
+    if state.approval_registry.resolve(&id, body.approved) {
+        api_success(serde_json::json!({ "id": id, "approved": body.approved }))
+    } else {
+        api_error(&format!("no pending approval with id {}", id))
     }
 }
 

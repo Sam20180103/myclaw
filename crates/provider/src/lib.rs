@@ -375,6 +375,49 @@ fn anthropic_message(m: &Message) -> AnthropicMessage {
     }
 }
 
+/// G2: 将前导 System 消息提升为 Anthropic 顶层 `system` 块数组 (并在最后一块打
+/// `cache_control` 缓存断点),其余消息走 `anthropic_message`。
+///
+/// 这同时修正了"System 角色被降级成 user 消息"的旧问题。返回 (system_blocks, messages)。
+/// 注意:缓存前缀 = system + tools;只要单次请求内 system (含 memory) 不变,
+/// 工具循环的多次迭代即可命中缓存 (成本主要来源)。memory 被工具改写时该轮失效。
+fn anthropic_system_blocks(messages: &[Message]) -> (Vec<serde_json::Value>, Vec<AnthropicMessage>) {
+    use rustclaw_protocol::{Content, Role};
+    let mut system_blocks: Vec<serde_json::Value> = Vec::new();
+    let mut rest: Vec<AnthropicMessage> = Vec::new();
+    let mut in_prefix = true;
+    for m in messages {
+        let system_text = if in_prefix && m.role == Role::System {
+            match &m.content {
+                Content::Text(s) => Some(s.clone()),
+                Content::Structured { text, .. } => Some(text.clone().unwrap_or_default()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        match system_text {
+            Some(text) => system_blocks.push(serde_json::json!({ "type": "text", "text": text })),
+            None => {
+                in_prefix = false;
+                rest.push(anthropic_message(m));
+            }
+        }
+    }
+    if let Some(last) = system_blocks.last_mut() {
+        last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+    }
+    (system_blocks, rest)
+}
+
+/// G2: 在工具数组最后一项打 `cache_control`,缓存 (system + tools) 这一大块稳定前缀。
+fn with_tool_cache(mut tools: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    if let Some(last) = tools.last_mut() {
+        last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+    }
+    tools
+}
+
 fn extract_tool_calls(response: &OpenAiResponse) -> Vec<serde_json::Value> {
     let mut result = Vec::new();
     if let Some(choice) = response.choices.first() {
@@ -650,6 +693,9 @@ struct AnthropicRequest {
     messages: Vec<AnthropicMessage>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
+    /// G2: 顶层 system 块 (含 cache_control)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Serialize)]
@@ -676,16 +722,15 @@ struct AnthropicContentBlock {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
-        let anthropic_messages: Vec<AnthropicMessage> = messages
-            .iter()
-            .map(anthropic_message)
-            .collect();
+        // G2: 提升 system 前缀 + 缓存断点
+        let (system_blocks, anthropic_messages) = anthropic_system_blocks(&messages);
 
         let request = AnthropicRequest {
             model: self.model.clone(),
             messages: anthropic_messages,
             max_tokens: Some(4096),
             temperature: Some(0.7),
+            system: if system_blocks.is_empty() { None } else { Some(system_blocks) },
         };
 
         let url = format!("{}/v1/messages", self.base_url);
@@ -719,10 +764,8 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
-        let anthropic_messages: Vec<AnthropicMessage> = messages
-            .iter()
-            .map(anthropic_message)
-            .collect();
+        // G2: 提升 system 前缀 + 打缓存断点
+        let (system_blocks, anthropic_messages) = anthropic_system_blocks(&messages);
 
         // Convert OpenAI-style tool schema to Anthropic-style tool schema
         let anthropic_tools: Vec<serde_json::Value> = tools.into_iter().map(|t| {
@@ -737,16 +780,21 @@ impl LlmProvider for AnthropicProvider {
             }
         }).collect();
 
-        let request = serde_json::json!({
+        let anthropic_tools = with_tool_cache(anthropic_tools);
+
+        let mut request = serde_json::json!({
             "model": self.model.clone(),
             "messages": anthropic_messages,
             "max_tokens": 4096,
             "temperature": 0.7,
             "tools": anthropic_tools
         });
+        if !system_blocks.is_empty() {
+            request["system"] = serde_json::Value::Array(system_blocks);
+        }
 
         let url = format!("{}/v1/messages", self.base_url);
-        
+
         let response = self.client
             .post(&url)
             .header("x-api-key", &self.api_key)
@@ -1139,36 +1187,126 @@ impl LlmProvider for NvProvider {
     }
 }
 
+/// G3: 某个错误是否值得重试 (限流 / 5xx / 网络瞬断),区别于鉴权/参数/解析等确定性错误。
+fn is_retryable(e: &ProviderError) -> bool {
+    match e {
+        ProviderError::RateLimited => true,
+        // ApiError 既含网络错误也含 "Status 5xx: ..." 文本;5xx 与网络错误可重试,4xx 不重试。
+        ProviderError::ApiError(msg) => {
+            !(msg.contains("Status 4") || msg.contains("status 4"))
+        }
+        ProviderError::AuthError | ProviderError::InvalidRequest(_) | ProviderError::ParseError(_) => false,
+    }
+}
+
+/// 多 Provider 客户端 (G3): 持有有序 provider 列表 (主在前,其余为降级备选);
+/// 对可重试错误指数退避重试,耗尽后降级到下一个 provider。
 #[derive(Clone)]
 pub struct ProviderClient {
-    provider: Option<Arc<dyn LlmProvider>>,
+    providers: Vec<Arc<dyn LlmProvider>>, // 主 provider 在 index 0,后续为 fallback
+    max_retries: u32,                     // 单个 provider 的额外重试次数 (退避)
 }
 
 impl ProviderClient {
+    /// 向后兼容: 单 provider (或无)。
     pub fn new(provider: Option<Arc<dyn LlmProvider>>) -> Self {
-        Self { provider }
+        Self {
+            providers: provider.into_iter().collect(),
+            max_retries: 2,
+        }
     }
 
+    /// G3: 以有序列表构造 (主 + 降级备选)。
+    pub fn with_providers(providers: Vec<Arc<dyn LlmProvider>>) -> Self {
+        Self {
+            providers,
+            max_retries: 2,
+        }
+    }
+
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// 是否已配置至少一个 provider。
+    pub fn is_configured(&self) -> bool {
+        !self.providers.is_empty()
+    }
+
+    /// 退避时长 (指数: 200ms, 400ms, 800ms, 上限 5s)。
+    fn backoff(attempt: u32) -> std::time::Duration {
+        let ms = (200u64 << attempt.min(5)).min(5000);
+        std::time::Duration::from_millis(ms)
+    }
+
+    /// 通用执行器: 遍历 provider (降级),每个 provider 内对可重试错误退避重试。
+    async fn run<T, F, Fut>(&self, label: &str, mut call: F) -> Result<T, ProviderError>
+    where
+        F: FnMut(Arc<dyn LlmProvider>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, ProviderError>>,
+    {
+        if self.providers.is_empty() {
+            return Err(ProviderError::ApiError("No provider configured".to_string()));
+        }
+        let last_idx = self.providers.len() - 1;
+        let mut last_err: Option<ProviderError> = None;
+        for (idx, provider) in self.providers.iter().enumerate() {
+            for attempt in 0..=self.max_retries {
+                match call(provider.clone()).await {
+                    Ok(v) => return Ok(v),
+                    Err(e) => {
+                        let retryable = is_retryable(&e);
+                        if retryable && attempt < self.max_retries {
+                            tracing::warn!(
+                                "{}: provider[{}] retryable error (attempt {}): {} — backing off",
+                                label, idx, attempt + 1, e
+                            );
+                            tokio::time::sleep(Self::backoff(attempt)).await;
+                            continue;
+                        }
+                        // 不可重试,或重试已耗尽 → 尝试降级到下一个 provider
+                        if idx < last_idx {
+                            tracing::warn!(
+                                "{}: provider[{}] failed ({}), failing over to next provider",
+                                label, idx, e
+                            );
+                        }
+                        last_err = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ProviderError::ApiError("All providers failed".to_string())))
+    }
 
     pub async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
-        if let Some(ref provider) = self.provider {
-            provider.complete(messages).await
-        } else {
-            Ok("Provider not configured".to_string())
+        if self.providers.is_empty() {
+            return Ok("Provider not configured".to_string());
         }
+        self.run("complete", |p| {
+            let messages = messages.clone();
+            async move { p.complete(messages).await }
+        })
+        .await
     }
 
     pub async fn complete_with_tools(&self, messages: Vec<Message>, tools: Vec<serde_json::Value>) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
-        if let Some(ref provider) = self.provider {
-            provider.complete_with_tools(messages, tools).await
-        } else {
-            Ok(("Provider not configured".to_string(), vec![]))
+        if self.providers.is_empty() {
+            return Ok(("Provider not configured".to_string(), vec![]));
         }
+        self.run("complete_with_tools", |p| {
+            let messages = messages.clone();
+            let tools = tools.clone();
+            async move { p.complete_with_tools(messages, tools).await }
+        })
+        .await
     }
 
-
     pub async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
-        if let Some(ref provider) = self.provider {
+        // 流式不做降级/重试 (响应已开始难以回滚);用主 provider。
+        if let Some(provider) = self.providers.first() {
             provider.stream_complete(messages).await
         } else {
             Box::pin(futures_util::stream::iter(vec![Ok(
@@ -1181,6 +1319,144 @@ impl ProviderClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- G3: 多 Provider 重试/降级 ---
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FlakyProvider {
+        calls: Arc<AtomicUsize>,
+        // 返回 Err 的次数 (之后成功);Err 类型由 retryable 决定
+        fail_times: usize,
+        retryable: bool,
+        tag: String,
+    }
+
+    #[async_trait]
+    impl LlmProvider for FlakyProvider {
+        async fn complete(&self, _m: Vec<Message>) -> Result<String, ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_times {
+                if self.retryable {
+                    Err(ProviderError::RateLimited)
+                } else {
+                    Err(ProviderError::AuthError)
+                }
+            } else {
+                Ok(self.tag.clone())
+            }
+        }
+        async fn stream_complete(&self, _m: Vec<Message>) -> TokenStream {
+            Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+        }
+        async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_client_retries_then_succeeds() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let p = Arc::new(FlakyProvider {
+            calls: calls.clone(),
+            fail_times: 2, // 前两次限流,第三次成功
+            retryable: true,
+            tag: "ok".to_string(),
+        });
+        let client = ProviderClient::with_providers(vec![p]).with_max_retries(2);
+        let r = client.complete(vec![]).await.unwrap();
+        assert_eq!(r, "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 3); // 1 + 2 retries
+    }
+
+    #[tokio::test]
+    async fn test_provider_client_fails_over_to_fallback() {
+        // 主 provider 永远不可重试地失败 → 降级到备选
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let primary = Arc::new(FlakyProvider {
+            calls: primary_calls.clone(),
+            fail_times: 999,
+            retryable: false, // AuthError 不重试,直接降级
+            tag: "primary".to_string(),
+        });
+        let fallback = Arc::new(FlakyProvider {
+            calls: fallback_calls.clone(),
+            fail_times: 0,
+            retryable: true,
+            tag: "fallback".to_string(),
+        });
+        let client = ProviderClient::with_providers(vec![primary, fallback]).with_max_retries(2);
+        let r = client.complete(vec![]).await.unwrap();
+        assert_eq!(r, "fallback");
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1); // 不重试
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_provider_client_non_retryable_no_retry_single() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let p = Arc::new(FlakyProvider {
+            calls: calls.clone(),
+            fail_times: 1,
+            retryable: false,
+            tag: "ok".to_string(),
+        });
+        let client = ProviderClient::with_providers(vec![p]).with_max_retries(3);
+        let err = client.complete(vec![]).await;
+        assert!(err.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1); // AuthError 不重试
+    }
+
+    // --- G2: Anthropic prompt 缓存 ---
+
+    #[test]
+    fn test_anthropic_system_hoisting_and_cache_control() {
+        use rustclaw_protocol::{Content, Message, Role};
+        let msgs = vec![
+            Message { role: Role::System, content: Content::text("base prompt") },
+            Message { role: Role::System, content: Content::text("Memory:\nfoo") },
+            Message { role: Role::User, content: Content::text("hi") },
+        ];
+        let (system_blocks, rest) = anthropic_system_blocks(&msgs);
+        assert_eq!(system_blocks.len(), 2, "two leading system messages hoisted");
+        assert_eq!(system_blocks[0]["text"], "base prompt");
+        // 仅最后一个 system 块带缓存断点
+        assert!(system_blocks[0].get("cache_control").is_none());
+        assert_eq!(system_blocks[1]["cache_control"]["type"], "ephemeral");
+        // 其余消息保留,user 不进 system
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].role, "user");
+    }
+
+    #[test]
+    fn test_anthropic_no_system_blocks_when_none() {
+        use rustclaw_protocol::{Content, Message, Role};
+        let msgs = vec![Message { role: Role::User, content: Content::text("hi") }];
+        let (system_blocks, rest) = anthropic_system_blocks(&msgs);
+        assert!(system_blocks.is_empty());
+        assert_eq!(rest.len(), 1);
+    }
+
+    #[test]
+    fn test_with_tool_cache_marks_last_tool() {
+        let tools = vec![
+            serde_json::json!({"name": "a"}),
+            serde_json::json!({"name": "b"}),
+        ];
+        let cached = with_tool_cache(tools);
+        assert!(cached[0].get("cache_control").is_none());
+        assert_eq!(cached[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_is_retryable() {
+        assert!(is_retryable(&ProviderError::RateLimited));
+        assert!(is_retryable(&ProviderError::ApiError("Status 503: x".into())));
+        assert!(!is_retryable(&ProviderError::ApiError("Status 400: x".into())));
+        assert!(!is_retryable(&ProviderError::AuthError));
+        assert!(!is_retryable(&ProviderError::ParseError("x".into())));
+    }
 
     #[test]
     fn test_provider_manager_register_and_get() {

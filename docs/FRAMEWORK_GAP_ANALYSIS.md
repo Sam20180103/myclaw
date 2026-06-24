@@ -145,3 +145,22 @@ Hermes 支持 `chat_completions` / `codex_responses` / `anthropic_messages`。Ru
 | **P3** | G10 子 Agent · G11 trajectory · G12 多 API | 增值能力,按路线图推进 |
 
 > 说明: G1/G2/G3 与上一轮 `DESIGN_REVIEW.md` 的 A2 / 缓存隐患同源,此处从"对标参考框架"视角进一步量化。RustClaw 在**核心循环正确性、持久化、压缩、视觉**上已与两框架齐平;主要差距集中在**策略治理、运行时弹性、执行隔离、可扩展插件化**四块。
+
+---
+
+## 修复进展 (P0, v0.49.0)
+
+> 日期: 2026-06-24 · `cargo test --workspace` 198 通过 · 改动 crate clippy 干净。
+
+| 条目 | 状态 | 实现要点 |
+|------|------|----------|
+| **G3** 多 Provider 路由/重试/降级 | ✅ | `ProviderClient` 改持有有序 provider 列表;对可重试错误 (RateLimited / 5xx,经 `is_retryable`) 指数退避 (200ms→5s) 重试,耗尽则降级到下一 provider;`stream` 不降级 (响应已开始)。gateway `create_provider_client` 构造全部已配置 provider (主+备),不再只取第一个。(按请求选模型仍待办) |
+| **G2** Anthropic prompt 缓存 | ✅ | 新增 `anthropic_system_blocks` 把前导 System 消息提升为顶层 `system` 数组并在末块打 `cache_control:ephemeral`(并修正"System 被降级成 user"的旧问题);`with_tool_cache` 给工具数组末项打缓存断点 → 缓存 (system+tools) 大块稳定前缀;agent 注入顺序改为 `[base_system, memory, …]` 稳定前缀。OpenAI 自动缓存无需改。 |
+| **G1** 工具策略 + 人审接线 | ✅ | `AgentRuntime` 持有 `ToolPolicy` + 异步 `ApprovalHook`;`execute_tool` 前置 deny/allow 校验,对 `require_approval` 工具征求批准 (无 hook → fail-closed 拒绝),拒绝以 `tool_result(error)` 回灌并发 `ToolDenied` 事件。gateway 由 `config.tools.{disabled_tools,require_approval}` 构造策略 (不把过时的 `enabled_tools` 当硬白名单),并接入 `ApprovalRegistry`(挂起+120s 超时默认拒绝)+ REST `GET/POST /api/tools/approvals[/{id}]` 供操作员裁决。 |
+
+### P0 收尾说明
+- G1 默认 `require_approval=["shell_exec"]`: 现在 `shell_exec` **必须经 `/api/tools/approvals/{id}` 批准**才执行 (超时/无操作 = 拒绝),这是有意的安全收紧。
+- G2 局限: memory 在 system 前缀内,被工具改写时该轮缓存失效;但单次工具循环内 memory 稳定,多轮迭代仍命中 (成本主来源)。
+- G3 局限: 暂未支持按请求/Envelope 覆盖 model;为后续项。
+
+> 其余 P1/P2/P3 (G4 工具门控 · G5 沙箱后端 · G6 记忆 provider · G7 profile · G8 调度 · G9 凭据加密 · G10 子 Agent · G11 trajectory · G12 多 API) 仍待办。
