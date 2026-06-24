@@ -174,4 +174,63 @@ mod tests {
         assert!(actions_str.contains(&"apply"));
         assert!(actions_str.contains(&"check_auth"));
     }
+
+    // --- G5: 执行后端抽象 ---
+
+    #[test]
+    fn test_g5_backend_from_spec() {
+        assert!(matches!(ExecutionBackend::from_spec("local"), ExecutionBackend::Local));
+        match ExecutionBackend::from_spec("docker:alpine:3.20") {
+            ExecutionBackend::Docker { image, network } => {
+                assert_eq!(image, "alpine:3.20");
+                assert!(!network);
+            }
+            _ => panic!("expected docker backend"),
+        }
+        match ExecutionBackend::from_spec("docker+net:python:3.12") {
+            ExecutionBackend::Docker { image, network } => {
+                assert_eq!(image, "python:3.12");
+                assert!(network);
+            }
+            _ => panic!("expected docker backend with net"),
+        }
+        // 缺 image → 退回 Local
+        assert!(matches!(ExecutionBackend::from_spec("docker:"), ExecutionBackend::Local));
+    }
+
+    #[test]
+    fn test_g5_local_invocation() {
+        let (prog, args) = ExecutionBackend::Local.build_invocation("echo hi", 512);
+        assert_eq!(prog, "sh");
+        assert_eq!(args, vec!["-c".to_string(), "echo hi".to_string()]);
+    }
+
+    #[test]
+    fn test_g5_docker_invocation_builds_isolated_run() {
+        let backend = ExecutionBackend::Docker { image: "alpine".to_string(), network: false };
+        let (prog, args) = backend.build_invocation("echo hi", 256);
+        assert_eq!(prog, "docker");
+        let joined = args.join(" ");
+        assert!(joined.contains("run --rm"));
+        assert!(joined.contains("--network none"), "no-net by default: {}", joined);
+        assert!(joined.contains("--memory 256m"));
+        assert!(joined.contains("no-new-privileges"));
+        assert_eq!(args.last().unwrap(), "echo hi");
+        assert!(joined.contains("alpine sh -c"));
+    }
+
+    #[test]
+    fn test_g5_docker_with_network_omits_none() {
+        let backend = ExecutionBackend::Docker { image: "alpine".to_string(), network: true };
+        let (_p, args) = backend.build_invocation("ls", 0);
+        let joined = args.join(" ");
+        assert!(!joined.contains("--network none"));
+        assert!(!joined.contains("--memory"), "mem 0 omits limit: {}", joined);
+    }
+
+    #[test]
+    fn test_g5_sandbox_default_backend_is_local() {
+        let sandbox = SandboxExecutor::new(SandboxConfig::default());
+        assert!(matches!(sandbox.backend(), ExecutionBackend::Local));
+    }
 }

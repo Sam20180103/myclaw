@@ -304,6 +304,31 @@ impl Default for Config {
     }
 }
 
+/// G9: 解析单个可选密钥字段的 `env:VAR` 引用。env 缺失 → None。
+fn resolve_secret_opt(value: &mut Option<String>) {
+    if let Some(v) = value {
+        if let Some(var) = v.strip_prefix("env:") {
+            match std::env::var(var) {
+                Ok(env_val) => *value = Some(env_val),
+                Err(_) => {
+                    eprintln!("[config] secret env var '{}' not set; clearing field", var);
+                    *value = None;
+                }
+            }
+        }
+    }
+}
+
+/// G9: 解析必填密钥字段的 `env:VAR` 引用。env 缺失 → 保留原样并告警。
+fn resolve_secret_str(value: &mut String) {
+    if let Some(var) = value.strip_prefix("env:").map(|s| s.to_string()) {
+        match std::env::var(&var) {
+            Ok(env_val) => *value = env_val,
+            Err(_) => eprintln!("[config] secret env var '{}' not set; keeping literal", var),
+        }
+    }
+}
+
 impl Config {
     pub fn load(path: Option<PathBuf>) -> anyhow::Result<Self> {
         let config_path = path.unwrap_or_else(|| {
@@ -315,7 +340,11 @@ impl Config {
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
-            toml::from_str(&content).map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))
+            let mut config: Config = toml::from_str(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+            // G9: 解析密钥的 env 间接引用,避免敏感值落 config.toml 明文
+            config.resolve_secret_refs();
+            Ok(config)
         } else {
             let default_config = Self::default();
             if let Some(parent) = config_path.parent() {
@@ -324,6 +353,31 @@ impl Config {
             let content = toml::to_string_pretty(&default_config)?;
             std::fs::write(&config_path, content)?;
             Ok(default_config)
+        }
+    }
+
+    /// G9: 把形如 `env:VARNAME` 的密钥值替换为对应环境变量的内容。
+    ///
+    /// 让用户可在 config.toml 写 `api_key = "env:OPENAI_API_KEY"`,真实密钥只存在于
+    /// 环境变量,不落明文。env 变量缺失时:`Option<String>` 字段置为 `None`,
+    /// 必填 `String` 字段保留原样 (并告警)。覆盖 provider key、网关 api_key、
+    /// reach 凭据、飞书/微信通道密钥。
+    pub fn resolve_secret_refs(&mut self) {
+        for p in self.providers.iter_mut() {
+            resolve_secret_opt(&mut p.api_key);
+        }
+        resolve_secret_opt(&mut self.gateway.auth.api_key);
+        resolve_secret_opt(&mut self.tools.reach.boss_cookie);
+        resolve_secret_opt(&mut self.tools.reach.exa_api_key);
+        resolve_secret_opt(&mut self.tools.reach.xhs_cookie);
+        resolve_secret_opt(&mut self.tools.reach.image_gen_api_key);
+        if let Some(feishu) = self.channels.feishu.as_mut() {
+            resolve_secret_str(&mut feishu.app_secret);
+            resolve_secret_str(&mut feishu.verification_token);
+            resolve_secret_opt(&mut feishu.encrypt_key);
+        }
+        if let Some(wechat) = self.channels.wechat.as_mut() {
+            resolve_secret_opt(&mut wechat.send_token);
         }
     }
 

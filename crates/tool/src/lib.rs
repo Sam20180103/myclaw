@@ -17,6 +17,13 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+
+    /// G4: 工具当前是否可用 (例如所需凭据/依赖已配置)。
+    /// 不可用的工具不会进入发给 LLM 的 schema,避免浪费 token 与诱导必然失败的调用。
+    /// 默认 `true`。
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +84,16 @@ impl ToolRegistry {
         self.tools
             .read()
             .values()
+            .map(|t| t.schema())
+            .collect()
+    }
+
+    /// G4: 仅返回当前可用工具的 schema (供 Agent 组装发给 LLM 的工具列表)。
+    pub fn available_schemas(&self) -> Vec<ToolSchema> {
+        self.tools
+            .read()
+            .values()
+            .filter(|t| t.is_available())
             .map(|t| t.schema())
             .collect()
     }
@@ -266,8 +283,13 @@ pub struct ShellExecTool {
 
 impl Default for ShellExecTool {
     fn default() -> Self {
+        // G5: 后端可经 RUSTCLAW_SANDBOX_BACKEND 选择 (local | docker:IMAGE[:net]),默认 local。
+        let backend = std::env::var("RUSTCLAW_SANDBOX_BACKEND")
+            .ok()
+            .map(|s| ExecutionBackend::from_spec(&s))
+            .unwrap_or_default();
         Self {
-            sandbox: SandboxExecutor::new(SandboxConfig::default()),
+            sandbox: SandboxExecutor::new(SandboxConfig::default()).with_backend(backend),
         }
     }
 }
@@ -642,13 +664,90 @@ impl Default for SandboxConfig {
     }
 }
 
+/// G5: 执行后端 —— 决定 shell 命令在哪里运行。
+/// 为不可信 skill/shell 提供容器隔离的扩展点;`Local` 保持现有行为。
+#[derive(Debug, Clone, Default)]
+pub enum ExecutionBackend {
+    /// 本地进程内 (`sh -c`)。
+    #[default]
+    Local,
+    /// Docker 容器 (`docker run --rm`)。需宿主已安装 docker。
+    Docker {
+        image: String,
+        /// 是否允许容器联网 (默认禁网,降低不可信代码外联风险)。
+        network: bool,
+    },
+}
+
+impl ExecutionBackend {
+    /// 从规格串解析: `local` | `docker:IMAGE` | `docker+net:IMAGE`。
+    /// 用 `docker+net:` 前缀表示允许联网,使镜像名 (含冒号如 `alpine:3.20`) 不歧义。
+    pub fn from_spec(spec: &str) -> Self {
+        let spec = spec.trim();
+        let (scheme, image) = match spec.split_once(':') {
+            Some((s, img)) => (s, img),
+            None => (spec, ""),
+        };
+        match scheme {
+            "docker" if !image.is_empty() => ExecutionBackend::Docker {
+                image: image.to_string(),
+                network: false,
+            },
+            "docker+net" if !image.is_empty() => ExecutionBackend::Docker {
+                image: image.to_string(),
+                network: true,
+            },
+            _ => ExecutionBackend::Local,
+        }
+    }
+
+    /// 构造执行 `command` 的 (程序, 参数)。`mem_mb` 用于容器内存上限。
+    fn build_invocation(&self, command: &str, mem_mb: u64) -> (String, Vec<String>) {
+        match self {
+            ExecutionBackend::Local => {
+                ("sh".to_string(), vec!["-c".to_string(), command.to_string()])
+            }
+            ExecutionBackend::Docker { image, network } => {
+                let mut args = vec!["run".to_string(), "--rm".to_string()];
+                if !network {
+                    args.push("--network".to_string());
+                    args.push("none".to_string());
+                }
+                if mem_mb > 0 {
+                    args.push("--memory".to_string());
+                    args.push(format!("{}m", mem_mb));
+                }
+                // 禁止新增权限,降低逃逸面
+                args.push("--security-opt".to_string());
+                args.push("no-new-privileges".to_string());
+                args.push(image.clone());
+                args.push("sh".to_string());
+                args.push("-c".to_string());
+                args.push(command.to_string());
+                ("docker".to_string(), args)
+            }
+        }
+    }
+}
+
 pub struct SandboxExecutor {
     config: SandboxConfig,
+    backend: ExecutionBackend,
 }
 
 impl SandboxExecutor {
     pub fn new(config: SandboxConfig) -> Self {
-        Self { config }
+        Self { config, backend: ExecutionBackend::Local }
+    }
+
+    /// G5: 选择执行后端 (默认 Local)。
+    pub fn with_backend(mut self, backend: ExecutionBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    pub fn backend(&self) -> &ExecutionBackend {
+        &self.backend
     }
 
     pub async fn execute_command(
@@ -662,12 +761,12 @@ impl SandboxExecutor {
         }
 
         let timeout = std::time::Duration::from_millis(self.config.timeout_ms);
-        
+        let (program, args) = self.backend.build_invocation(command, self.config.max_memory_mb);
+
         let output = tokio::time::timeout(
             timeout,
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command)
+            tokio::process::Command::new(&program)
+                .args(&args)
                 .output()
         )
         .await

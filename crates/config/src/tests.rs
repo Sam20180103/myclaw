@@ -58,4 +58,34 @@ mod tests {
         let pending_dir = Config::pending_skills_dir();
         assert!(pending_dir.to_string_lossy().contains("pending"));
     }
+
+    // G9: env 间接引用解析
+    #[test]
+    fn test_g9_resolve_secret_env_ref() {
+        std::env::set_var("RUSTCLAW_TEST_SECRET_G9", "resolved-key");
+        let mut config = Config::default();
+        config.providers[0].api_key = Some("env:RUSTCLAW_TEST_SECRET_G9".to_string());
+        config.gateway.auth.api_key = Some("env:RUSTCLAW_TEST_SECRET_G9".to_string());
+        config.resolve_secret_refs();
+        assert_eq!(config.providers[0].api_key.as_deref(), Some("resolved-key"));
+        assert_eq!(config.gateway.auth.api_key.as_deref(), Some("resolved-key"));
+        std::env::remove_var("RUSTCLAW_TEST_SECRET_G9");
+    }
+
+    #[test]
+    fn test_g9_missing_env_clears_optional() {
+        std::env::remove_var("RUSTCLAW_TEST_MISSING_G9");
+        let mut config = Config::default();
+        config.providers[0].api_key = Some("env:RUSTCLAW_TEST_MISSING_G9".to_string());
+        config.resolve_secret_refs();
+        assert!(config.providers[0].api_key.is_none(), "missing env should clear optional secret");
+    }
+
+    #[test]
+    fn test_g9_literal_values_untouched() {
+        let mut config = Config::default();
+        config.providers[0].api_key = Some("sk-literal-123".to_string());
+        config.resolve_secret_refs();
+        assert_eq!(config.providers[0].api_key.as_deref(), Some("sk-literal-123"));
+    }
 }

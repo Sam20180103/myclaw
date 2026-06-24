@@ -886,6 +886,12 @@ impl Tool for ImageGenTool {
         }
     }
 
+    /// G4: 仅当文生图后端 (base_url + api_key) 已配置时可用。
+    fn is_available(&self) -> bool {
+        self.config.image_gen_base_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+            && self.config.image_gen_api_key.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         use base64::Engine as _;
 
@@ -2618,6 +2624,11 @@ impl Tool for SearchReachTool {
         }
     }
 
+    /// G4: 仅当 Exa API key 已配置时可用。
+    fn is_available(&self) -> bool {
+        self.config.exa_api_key.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let query = params
             .get("query")
@@ -2935,5 +2946,41 @@ let tool = ImageGenTool::default();
 let rt = tokio::runtime::Runtime::new().unwrap();
 let res = rt.block_on(tool.execute(serde_json::json!({ "prompt": "a cat" })));
 assert!(res.is_err(), "image_gen without base_url/api_key should error");
+}
+
+#[test]
+fn test_g4_image_gen_availability() {
+    use crate::Tool;
+    // 未配置 → 不可用
+    assert!(!ImageGenTool::default().is_available());
+    // 配齐 base_url + api_key → 可用
+    let cfg = ReachConfig {
+        image_gen_base_url: Some("https://api.example.com/v1".to_string()),
+        image_gen_api_key: Some("sk-x".to_string()),
+        ..ReachConfig::default()
+    };
+    assert!(ImageGenTool::new(cfg).is_available());
+}
+
+#[test]
+fn test_g4_search_reach_availability() {
+    use crate::Tool;
+    assert!(!SearchReachTool::default().is_available());
+    let cfg = ReachConfig { exa_api_key: Some("exa-x".to_string()), ..ReachConfig::default() };
+    assert!(SearchReachTool::new(cfg).is_available());
+}
+
+#[test]
+fn test_g4_available_schemas_filters_unconfigured() {
+    // 默认配置下 (无 exa / image_gen key),available_schemas 应少于全量 list
+    let reg = crate::ToolRegistry::new();
+    register_reach_tools(&reg, None);
+    let all = reg.list().len();
+    let available = reg.available_schemas().len();
+    assert!(available < all, "available ({}) should be fewer than all ({})", available, all);
+    // image_gen / search_reach 不应出现在可用列表
+    let avail_names: Vec<String> = reg.available_schemas().into_iter().map(|s| s.name).collect();
+    assert!(!avail_names.contains(&"image_gen".to_string()));
+    assert!(!avail_names.contains(&"search_reach".to_string()));
 }
 }

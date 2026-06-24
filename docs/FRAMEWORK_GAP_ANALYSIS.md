@@ -164,3 +164,21 @@ Hermes 支持 `chat_completions` / `codex_responses` / `anthropic_messages`。Ru
 - G3 局限: 暂未支持按请求/Envelope 覆盖 model;为后续项。
 
 > 其余 P1/P2/P3 (G4 工具门控 · G5 沙箱后端 · G6 记忆 provider · G7 profile · G8 调度 · G9 凭据加密 · G10 子 Agent · G11 trajectory · G12 多 API) 仍待办。
+
+---
+
+## 修复进展 (P1, v0.50.0)
+
+> 日期: 2026-06-24 · `cargo test --workspace` 209 通过 · 改动 crate clippy 干净。
+
+| 条目 | 状态 | 实现要点 |
+|------|------|----------|
+| **G4** 工具可用性门控 | ✅ | `Tool` trait 增 `is_available()`(默认 true);`ToolRegistry::available_schemas()` 过滤后供 Agent 组装发给 LLM 的工具列表 (`list()` 仍返回全量供管理视图)。`image_gen`(需 base_url+api_key)、`search_reach`(需 exa_api_key) 未配置即不出现在 schema,省 token 且不诱导必败调用。 |
+| **G9** 凭据 env 间接引用 | ✅ | `Config::resolve_secret_refs()` 在加载后把 `env:VARNAME` 替换为环境变量值,密钥不落 config.toml 明文;覆盖 provider/网关/reach/飞书/微信密钥;缺失 env → 可选字段置空、必填保留并告警。`.env.example` 补用法。 |
+| **G5** 执行后端抽象 + Docker | ✅ | 新增 `ExecutionBackend` (`Local` / `Docker{image,network}`);`SandboxExecutor` 经 `with_backend` 选择,`execute_command` 走 `build_invocation`。Docker 后端构造 `docker run --rm [--network none] [--memory Nm] --security-opt no-new-privileges IMAGE sh -c CMD`。经 `RUSTCLAW_SANDBOX_BACKEND=local\|docker:IMG\|docker+net:IMG` 选择 (默认 local)。沙箱内无法实跑 docker,故对命令构造 + 规格解析做单测。 |
+
+### P1 局限
+- G4 仅门控有硬凭据要求的工具 (image_gen / search_reach);MCP 类工具 (xhs/boss) 仍常驻 (它们以 `auth_required` 优雅处理未登录),后续可加按会话/平台门控。
+- G5 容器/远程实跑未在本环境验证;Hermes 的 SSH/Daytona/Modal/Singularity 后端为后续扩展点。
+
+> 余下 P2 (G6 记忆 provider · G7 profile · G8 调度/触发) 与 P3 (G10 子 Agent · G11 trajectory · G12 多 API) 仍待办。

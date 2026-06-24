@@ -546,7 +546,7 @@ impl AgentRuntime {
 
         tracing::debug!("Agent about to call LLM with {} messages", messages.len());
 
-        let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
+        let tool_schemas: Vec<serde_json::Value> = self.tool_registry.available_schemas()
             .into_iter()
             .map(|s| serde_json::json!({
                 "type": "function",
@@ -671,7 +671,7 @@ impl AgentRuntime {
                 content: Content::text(self.base_system_prompt.clone()),
             });
 
-            let tool_schemas: Vec<serde_json::Value> = self.tool_registry.list()
+            let tool_schemas: Vec<serde_json::Value> = self.tool_registry.available_schemas()
                 .into_iter()
                 .map(|s| serde_json::json!({
                     "type": "function",
