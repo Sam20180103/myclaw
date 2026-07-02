@@ -182,3 +182,22 @@ Hermes 支持 `chat_completions` / `codex_responses` / `anthropic_messages`。Ru
 - G5 容器/远程实跑未在本环境验证;Hermes 的 SSH/Daytona/Modal/Singularity 后端为后续扩展点。
 
 > 余下 P2 (G6 记忆 provider · G7 profile · G8 调度/触发) 与 P3 (G10 子 Agent · G11 trajectory · G12 多 API) 仍待办。
+
+---
+
+## 修复进展 (P2, v0.51.0)
+
+> 日期: 2026-07-03 · `cargo test --workspace` 213 通过 · 改动 crate clippy 干净。
+
+| 条目 | 状态 | 实现要点 |
+|------|------|----------|
+| **G6** 记忆 provider 抽象 | ✅ | `memory` crate 新增 `MemoryProvider` trait (add/replace/remove/entries/memory_text/usage/load);文件型 `MemoryManager` 为默认实现;`AgentRuntime.memory_manager` 与 `MemoryTool` 改持 `Arc<dyn MemoryProvider>`——向量检索/外部 KV 后端实现同一 trait 即可整体替换 (Hermes memory_provider 范式)。gateway 传参零改动 (unsize 自动强转)。 |
+| **G7** Profile 隔离 | ✅ | `RUSTCLAW_PROFILE=<name>` → config/skills/logs (`~/.config/rustclaw/profiles/<name>/…`) 与数据目录 (`~/.rustclaw/profiles/<name>`) 全部按 profile 隔离;默认/`default` 保持旧路径 (兼容既有数据);profile 名过滤为 `[A-Za-z0-9_-]` 防路径穿越。gateway 改用 `Config::data_dir()`;`image_gen` 落盘目录同步隔离 (tool crate 不依赖 config,内联同一规则)。 |
+| **G8** 定时调度 | ✅ | config 新增 `[[schedules]]` (name/every/prompt/enabled/session_key,serde default 兼容);`parse_interval` 支持 `30s/10m/2h/1d` (下限 10s 防打爆 provider);gateway `start()` 为每条启用任务 spawn ticker,到点构造 `Envelope(channel="schedule", session_key="schedule:<name>")` 驱动 `process_with_loop`,结果/错误入日志。同名任务共享会话 → 有跨次上下文。 |
+
+### P2 局限
+- G8 为固定间隔,非 cron 表达式 (到点对齐);结果仅入日志,未回推通道 (飞书/微信推送为自然扩展)。
+- G7 未提供 CLI `--profile` 旗标 (env 对两个二进制都生效,已够用);profile 间无资源配额。
+- G6 暂无第二个 provider 实现;trait 即扩展点。
+
+> 余下 P3 (G10 子 Agent 编排 · G11 trajectory 导出 · G12 多 API 形态) 仍待办。

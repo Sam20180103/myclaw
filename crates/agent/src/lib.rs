@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use builtin_tools::{MemoryTool, SkillManageTool};
 use rustclaw_provider::ProviderClient;
-use rustclaw_memory::MemoryManager;
+use rustclaw_memory::MemoryProvider;
 use rustclaw_compression::ContextCompressor;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ pub struct AgentRuntime {
     session_manager: SessionManager,           // 会话管理器
     tool_registry: Arc<ToolRegistry>,          // 工具注册表
     provider_client: ProviderClient,           // LLM 提供商客户端
-    memory_manager: Option<Arc<MemoryManager>>, // 可选: 记忆管理器
+    memory_manager: Option<Arc<dyn MemoryProvider>>, // 可选: 记忆后端 (G6: trait 抽象)
     context_compressor: Option<Arc<ContextCompressor>>, // 可选: 上下文压缩器
     event_callback: Option<Arc<EventCallback>>, // 可选: 事件回调
     iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
@@ -442,7 +442,8 @@ impl AgentRuntime {
         self
     }
 
-    pub fn with_memory(mut self, memory: Arc<MemoryManager>) -> Self {
+    /// G6: 接受任意 MemoryProvider 实现 (默认文件型 MemoryManager 可直接传入)。
+    pub fn with_memory(mut self, memory: Arc<dyn MemoryProvider>) -> Self {
         memory.load_memory().ok();
         // 把记忆管理暴露为 Agent 可调用工具,实现自主记忆管理
         self.tool_registry.register(Arc::new(MemoryTool::new(memory.clone())));
@@ -492,7 +493,7 @@ impl AgentRuntime {
         &self.tool_policy
     }
 
-    pub fn memory_manager(&self) -> Option<&Arc<MemoryManager>> {
+    pub fn memory_manager(&self) -> Option<&Arc<dyn MemoryProvider>> {
         self.memory_manager.as_ref()
     }
 

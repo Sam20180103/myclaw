@@ -45,6 +45,27 @@ pub struct UserProfile {
     pub corrections: Vec<CorrectionEntry>,
 }
 
+/// G6: 记忆后端抽象 — Agent 与内置 `memory` 工具只依赖此 trait。
+///
+/// 默认实现是文件型 `MemoryManager` (MEMORY.md);向量检索 / 外部 KV 等后端
+/// 实现同一 trait 即可整体替换 (单选激活,参照 Hermes memory_provider 范式)。
+pub trait MemoryProvider: Send + Sync {
+    /// 新增一条记忆 (实现方负责安全扫描与容量控制)。
+    fn add_entry(&self, content: &str) -> Result<(), MemoryError>;
+    /// 按子串定位并替换记忆内容。
+    fn replace_entry(&self, old_text: &str, new_text: &str) -> Result<(), MemoryError>;
+    /// 按子串定位并删除记忆。
+    fn remove_entry(&self, text: &str) -> Result<(), MemoryError>;
+    /// 全部记忆条目 (管理/list 视图)。
+    fn get_entries(&self) -> Vec<MemoryEntry>;
+    /// 注入 system prompt 的记忆文本 (空串 = 无记忆)。
+    fn get_memory_text(&self) -> String;
+    /// (已用字符数, 上限)。
+    fn memory_usage(&self) -> (usize, usize);
+    /// 从持久化介质加载 (启动时调用一次)。
+    fn load_memory(&self) -> Result<(), MemoryError>;
+}
+
 /// 记忆管理器 — 管理 Agent 的持久记忆 (MEMORY.md)
 /// 支持增删改查、安全扫描、容量管理
 pub struct MemoryManager {
@@ -210,6 +231,31 @@ impl MemoryManager {
     }
 }
 
+/// G6: 文件型 MemoryManager 即默认 MemoryProvider (委托固有方法)。
+impl MemoryProvider for MemoryManager {
+    fn add_entry(&self, content: &str) -> Result<(), MemoryError> {
+        MemoryManager::add_entry(self, content)
+    }
+    fn replace_entry(&self, old_text: &str, new_text: &str) -> Result<(), MemoryError> {
+        MemoryManager::replace_entry(self, old_text, new_text)
+    }
+    fn remove_entry(&self, text: &str) -> Result<(), MemoryError> {
+        MemoryManager::remove_entry(self, text)
+    }
+    fn get_entries(&self) -> Vec<MemoryEntry> {
+        MemoryManager::get_entries(self)
+    }
+    fn get_memory_text(&self) -> String {
+        MemoryManager::get_memory_text(self)
+    }
+    fn memory_usage(&self) -> (usize, usize) {
+        MemoryManager::memory_usage(self)
+    }
+    fn load_memory(&self) -> Result<(), MemoryError> {
+        MemoryManager::load_memory(self)
+    }
+}
+
 /// 记忆安全扫描器 — 防止 Prompt 注入和数据泄露
 pub struct MemoryScanner;
 
@@ -307,6 +353,24 @@ impl MemoryScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // G6: MemoryManager 可作为 trait 对象使用,且行为与固有方法一致。
+    #[test]
+    fn test_g6_memory_manager_as_provider_trait_object() {
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_mem_{}", uuid::Uuid::new_v4()));
+        let provider: std::sync::Arc<dyn MemoryProvider> =
+            std::sync::Arc::new(MemoryManager::new(temp_dir.join("MEMORY.md"), 2200, 1375));
+        provider.add_entry("likes rust").unwrap();
+        assert_eq!(provider.get_entries().len(), 1);
+        assert!(provider.get_memory_text().contains("likes rust"));
+        provider.replace_entry("rust", "rust and tokio").unwrap();
+        assert!(provider.get_memory_text().contains("tokio"));
+        provider.remove_entry("tokio").unwrap();
+        assert!(provider.get_entries().is_empty());
+        let (_used, limit) = provider.memory_usage();
+        assert_eq!(limit, 2200);
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
 
     #[test]
     fn test_memory_manager_new() {

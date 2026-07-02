@@ -856,7 +856,15 @@ impl ImageGenTool {
             return std::path::PathBuf::from(d);
         }
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        std::path::Path::new(&home).join(".rustclaw").join("media").join("generated")
+        let root = std::path::Path::new(&home).join(".rustclaw");
+        // G7: 与 Config::data_dir() 一致地按 profile 隔离 (tool crate 不依赖 config crate,故内联)
+        let root = match std::env::var("RUSTCLAW_PROFILE") {
+            Ok(p) if !p.trim().is_empty() && p.trim() != "default" => {
+                root.join("profiles").join(p.trim())
+            }
+            _ => root,
+        };
+        root.join("media").join("generated")
     }
 }
 

@@ -10,18 +10,19 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rustclaw_memory::MemoryManager;
+use rustclaw_memory::MemoryProvider;
 use rustclaw_skill::{SkillLanguage, SkillManager};
 use rustclaw_tool::{Tool, ToolError, ToolSchema};
 use serde_json::{json, Value};
 
 /// 记忆管理工具 — Agent 自主管理持久记忆。
+/// G6: 依赖 MemoryProvider 抽象,与具体记忆后端解耦。
 pub struct MemoryTool {
-    memory: Arc<MemoryManager>,
+    memory: Arc<dyn MemoryProvider>,
 }
 
 impl MemoryTool {
-    pub fn new(memory: Arc<MemoryManager>) -> Self {
+    pub fn new(memory: Arc<dyn MemoryProvider>) -> Self {
         Self { memory }
     }
 }

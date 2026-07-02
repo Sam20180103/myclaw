@@ -9,6 +9,47 @@ pub struct Config {
     pub tools: ToolConfig,              // 工具配置
     pub providers: Vec<ProviderConfig>, // LLM 提供商配置
     pub channels: ChannelsConfig,       // 通道配置
+    /// G8: 定时任务 (config.toml `[[schedules]]`),serde default 向后兼容
+    #[serde(default)]
+    pub schedules: Vec<ScheduleConfig>,
+}
+
+/// G8: 一条定时任务 — 按固定间隔驱动一次 Agent 循环。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    /// 任务名 (日志 / session_key 派生)
+    pub name: String,
+    /// 间隔,如 "30s" / "10m" / "2h" / "1d"
+    pub every: String,
+    /// 每次触发发给 Agent 的指令
+    pub prompt: String,
+    /// 是否启用 (默认 true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 会话 key (默认 `schedule:<name>`,同名任务共享会话上下文)
+    #[serde(default)]
+    pub session_key: Option<String>,
+}
+
+/// G8: 解析 "30s" / "10m" / "2h" / "1d" 形式的间隔;非法返回 None。最小 10s。
+pub fn parse_interval(spec: &str) -> Option<std::time::Duration> {
+    let spec = spec.trim().to_lowercase();
+    if spec.len() < 2 {
+        return None;
+    }
+    let (num, unit) = spec.split_at(spec.len() - 1);
+    let n: u64 = num.parse().ok()?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        _ => return None,
+    };
+    if secs < 10 {
+        return None; // 防误配置打爆 provider
+    }
+    Some(std::time::Duration::from_secs(secs))
 }
 
 /// 通道配置
@@ -300,6 +341,7 @@ impl Default for Config {
                 http_enabled: true,
                 webhook_enabled: false,
             },
+            schedules: vec![],
         }
     }
 }
@@ -397,18 +439,43 @@ impl Config {
         Ok(())
     }
 
+    /// G7: 当前 profile 名 (来自 `RUSTCLAW_PROFILE`)。`None` = 默认 profile (兼容旧路径)。
+    pub fn profile() -> Option<String> {
+        match std::env::var("RUSTCLAW_PROFILE") {
+            Ok(p) => {
+                let p = p.trim().to_string();
+                if p.is_empty() || p == "default" {
+                    None
+                } else {
+                    // 只允许安全字符,防路径穿越
+                    let safe: String = p
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+                    if safe.is_empty() { None } else { Some(safe) }
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// G7: 在基准目录上叠加 profile 维度:
+    /// 默认 profile → `<base>/rustclaw`;命名 profile → `<base>/rustclaw/profiles/<name>`。
+    fn profiled(base: PathBuf) -> PathBuf {
+        let root = base.join("rustclaw");
+        match Self::profile() {
+            Some(p) => root.join("profiles").join(p),
+            None => root,
+        }
+    }
+
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustclaw")
+        Self::profiled(dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")))
             .join("config.toml")
     }
 
     pub fn skills_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustclaw")
-            .join("skills")
+        Self::profiled(dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))).join("skills")
     }
 
     pub fn pending_skills_dir() -> PathBuf {
@@ -416,10 +483,19 @@ impl Config {
     }
 
     pub fn logs_dir() -> PathBuf {
-        dirs::data_local_dir()
+        Self::profiled(dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."))).join("logs")
+    }
+
+    /// G7: 运行时数据目录 (memories / state.db / media)。
+    /// 默认 profile → `~/.rustclaw` (兼容旧数据);命名 profile → `~/.rustclaw/profiles/<name>`。
+    pub fn data_dir() -> PathBuf {
+        let root = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustclaw")
-            .join("logs")
+            .join(".rustclaw");
+        match Self::profile() {
+            Some(p) => root.join("profiles").join(p),
+            None => root,
+        }
     }
 }
 

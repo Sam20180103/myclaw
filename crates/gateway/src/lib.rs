@@ -207,9 +207,8 @@ let reach_config = rustclaw_tool::ReachConfig {
         let mut agent_builder = AgentRuntime::new_with_reach_config(agent_config, Some(reach_config))
             .with_provider(provider_client);
 
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".rustclaw");
+        // G7: 数据目录按 profile 隔离 (RUSTCLAW_PROFILE)
+        let data_dir = Config::data_dir();
         std::fs::create_dir_all(&data_dir).ok();
 
         // 1. ContextCompressor
@@ -448,6 +447,48 @@ let reach_config = rustclaw_tool::ReachConfig {
                     let removed = agent.maintenance();
                     if removed > 0 {
                         tracing::debug!("session maintenance: evicted {} sessions", removed);
+                    }
+                }
+            });
+        }
+
+        // G8: 定时任务 — 每条 [[schedules]] 按固定间隔驱动一次 Agent 循环。
+        for sched in self.full_config.schedules.iter().filter(|s| s.enabled) {
+            let interval = match rustclaw_config::parse_interval(&sched.every) {
+                Some(d) => d,
+                None => {
+                    warn!("schedule '{}': invalid interval '{}', skipped (use 30s/10m/2h/1d, min 10s)",
+                        sched.name, sched.every);
+                    continue;
+                }
+            };
+            if sched.prompt.trim().is_empty() {
+                warn!("schedule '{}': empty prompt, skipped", sched.name);
+                continue;
+            }
+            let agent = self.agent.clone();
+            let name = sched.name.clone();
+            let prompt = sched.prompt.clone();
+            let session_key = sched
+                .session_key
+                .clone()
+                .unwrap_or_else(|| format!("schedule:{}", name));
+            info!("schedule '{}': every {:?} → session {}", name, interval, session_key);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let envelope = Envelope::new(
+                        "schedule",
+                        &session_key,
+                        Message { role: Role::User, content: Content::text(prompt.clone()) },
+                    );
+                    match agent.process_with_loop(envelope).await {
+                        Ok(resp) => info!(
+                            "schedule '{}' fired: {}",
+                            name,
+                            content_to_text(resp.message.content).chars().take(200).collect::<String>()
+                        ),
+                        Err(e) => error!("schedule '{}' failed: {}", name, e),
                     }
                 }
             });
