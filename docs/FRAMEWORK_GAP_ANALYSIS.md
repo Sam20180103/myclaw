@@ -201,3 +201,21 @@ Hermes 支持 `chat_completions` / `codex_responses` / `anthropic_messages`。Ru
 - G6 暂无第二个 provider 实现;trait 即扩展点。
 
 > 余下 P3 (G10 子 Agent 编排 · G11 trajectory 导出 · G12 多 API 形态) 仍待办。
+
+---
+
+## 修复进展 (P3, v0.52.0) — 全部差距闭环
+
+> 日期: 2026-07-03 · `cargo test --workspace` 220 通过 · **workspace clippy 0 警告**。
+
+| 条目 | 状态 | 实现要点 |
+|------|------|----------|
+| **G10** 子 Agent 编排 | ✅ | 新增 `spawn_subagent` 工具 (第 23 个): `SubAgentTool` 持 `Weak<AgentRuntime>` 防循环引用,`AgentRuntime::enable_subagent()` 在 Arc 包装后接线 (gateway 已接)。子会话 `sub:<uuid>`、channel `subagent`、`parent_session_id` 谱系 (`SessionManager::set_parent` 内存+SQLite 同写);迭代预算 clamp ≤10 经 `process_with_loop_budget`;并发上限 4 (AtomicUsize) 防递归爆炸;父会话 key 由内核注入保留参数 `_parent_session_key`,不来自模型。 |
+| **G11** Trajectory 导出 | ✅ | `rustclaw_storage::session_to_sharegpt` (System→system / User→human / Assistant→gpt 附 `<tool_calls>` / Tool→tool 附 `<tool_result id name>`);CLI `rustclaw sessions --export sharegpt [--session KEY] [--output FILE]` 直读 SQLite (无需网关),JSONL 输出。已用真实二进制+SQLite 冒烟验证。 |
+| **G12** OpenAI Responses API | ✅ | `OpenAiResponsesProvider` (`provider_type = "openai-responses"`): `/v1/responses`,`input` 条目数组 (`function_call`/`function_call_output` 为顶层条目)、扁平工具 schema、`output` 解析 (output_text 拼接 + function_call 归一);流式为最小实现 (全文单次吐出)。gateway 构造分支已接。 |
+
+### P3 局限
+- G10: 子 Agent 受 `tool_timeout_ms` (默认 60s) 约束——长子任务需调大该配置;并发上限/预算为常量 (可后续入 config)。
+- G12: 未实现 SSE 真流式与 `previous_response_id` 会话续传;够 complete/complete_with_tools 主链路用。
+
+> 至此 G1–G12 全部闭环: RustClaw 在对照矩阵的全部 16 项能力上与 Hermes/OpenClaw 参考架构对齐 (各项局限见上文各阶段注记)。

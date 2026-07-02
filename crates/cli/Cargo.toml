@@ -13,6 +13,7 @@ path = "src/main.rs"
 clap = { version = "4.4", features = ["derive"] }
 tokio = { workspace = true }
 rustclaw-config = { path = "../config" }
+rustclaw-storage = { path = "../storage" }
 toml = { workspace = true }
 dirs = { workspace = true }
 anyhow = { workspace = true }

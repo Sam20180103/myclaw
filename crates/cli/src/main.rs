@@ -56,12 +56,24 @@ enum Commands {
     Sessions {
         #[arg(long)]
         list: bool,
-        
+
         #[arg(long)]
         kill: Option<String>,
-        
+
         #[arg(long)]
         clear: bool,
+
+        /// G11: 导出会话为训练数据 (目前支持 "sharegpt"),直接读 SQLite,无需网关运行
+        #[arg(long)]
+        export: Option<String>,
+
+        /// 仅导出指定 session key (缺省导出全部非空会话)
+        #[arg(long)]
+        session: Option<String>,
+
+        /// 输出文件 (JSONL;缺省打印到 stdout)
+        #[arg(long)]
+        output: Option<String>,
     },
     
     /// Agent management
@@ -753,7 +765,44 @@ async fn main() -> anyhow::Result<()> {
             println!("  rustclaw config --get KEY # Get config value");
             println!("  rustclaw config --set KEY=VALUE # Set config value");
         }
-    Commands::Sessions { list, kill, clear } => {
+    Commands::Sessions { list, kill, clear, export, session, output } => {
+        // G11: 导出走本地 SQLite,不依赖网关
+        if let Some(format) = export {
+            if format != "sharegpt" {
+                println!("Unsupported export format '{}' (supported: sharegpt)", format);
+                return Ok(());
+            }
+            let db_path = rustclaw_config::Config::data_dir().join("state.db");
+            if !db_path.exists() {
+                println!("No session database at {}", db_path.display());
+                return Ok(());
+            }
+            let store = rustclaw_storage::SQLiteSessionStore::new(&db_path)
+                .map_err(|e| anyhow::anyhow!("open {}: {}", db_path.display(), e))?;
+            let sessions = match &session {
+                Some(key) => store.get(key).into_iter().collect::<Vec<_>>(),
+                None => store.list(),
+            };
+            let lines: Vec<String> = sessions
+                .iter()
+                .filter_map(rustclaw_storage::session_to_sharegpt)
+                .map(|v| v.to_string())
+                .collect();
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, lines.join("\n") + "\n")?;
+                    println!("Exported {} trajectory(ies) to {}", lines.len(), path);
+                }
+                None => {
+                    for line in &lines {
+                        println!("{}", line);
+                    }
+                    eprintln!("-- {} trajectory(ies)", lines.len());
+                }
+            }
+            return Ok(());
+        }
+
         if !is_gateway_running() {
             println!("Gateway is not running. Start it with 'rustclaw start'");
             return Ok(());

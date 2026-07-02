@@ -1187,6 +1187,210 @@ impl LlmProvider for NvProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// G12: OpenAI Responses API 形态 (/v1/responses)
+// ---------------------------------------------------------------------------
+
+/// G12: OpenAI Responses API provider — 与 Chat Completions 并列的第二种 OpenAI 形态。
+/// 请求为 `input` 条目数组 (工具调用/结果是顶层条目而非消息字段),工具 schema 为扁平结构。
+pub struct OpenAiResponsesProvider {
+    api_key: String,
+    base_url: String,
+    model: String,
+    client: reqwest::Client,
+}
+
+impl OpenAiResponsesProvider {
+    pub fn new(api_key: String, model: &str) -> Self {
+        Self {
+            api_key,
+            base_url: "https://api.openai.com".to_string(),
+            model: model.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.to_string();
+        self
+    }
+
+    async fn call(&self, body: serde_json::Value) -> Result<serde_json::Value, ProviderError> {
+        let url = format!("{}/v1/responses", self.base_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiError(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError(format!("Status {}: {}", status, text)));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| ProviderError::ParseError(e.to_string()))
+    }
+}
+
+/// G12: 内部 Message → Responses `input` 条目数组。
+/// ToolUse/ToolResult 映射为顶层 `function_call` / `function_call_output` 条目。
+fn responses_input(messages: &[Message]) -> Vec<serde_json::Value> {
+    use rustclaw_protocol::{Content, Role};
+    let mut items = Vec::new();
+    for m in messages {
+        match &m.content {
+            Content::ToolUse { tool_calls, text } => {
+                if let Some(t) = text.as_deref().filter(|t| !t.is_empty()) {
+                    items.push(serde_json::json!({ "role": "assistant", "content": t }));
+                }
+                for tc in tool_calls {
+                    items.push(serde_json::json!({
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        // Responses 与 Chat Completions 一致: arguments 为 JSON 字符串
+                        "arguments": tc.arguments.to_string(),
+                    }));
+                }
+            }
+            Content::ToolResult { tool_call_id, output, .. } => {
+                items.push(serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": output,
+                }));
+            }
+            Content::Image { image_data, image_type, description } => {
+                let mut parts = Vec::new();
+                if let Some(d) = description.as_deref().filter(|d| !d.is_empty()) {
+                    parts.push(serde_json::json!({ "type": "input_text", "text": d }));
+                }
+                parts.push(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": image_data_url(image_data, image_type),
+                }));
+                items.push(serde_json::json!({ "role": "user", "content": parts }));
+            }
+            other => {
+                let role = match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "user", // 兜底 (正常路径走 ToolResult 分支)
+                };
+                let text = match other {
+                    Content::Text(t) => t.clone(),
+                    Content::Structured { text, .. } => text.clone().unwrap_or_default(),
+                    _ => String::new(),
+                };
+                items.push(serde_json::json!({ "role": role, "content": text }));
+            }
+        }
+    }
+    items
+}
+
+/// G12: OpenAI 风格 (嵌套 function) 工具 schema → Responses 扁平工具 schema。
+fn responses_tools(tools: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    tools
+        .into_iter()
+        .map(|t| {
+            if let Some(func) = t.get("function") {
+                serde_json::json!({
+                    "type": "function",
+                    "name": func.get("name"),
+                    "description": func.get("description"),
+                    "parameters": func.get("parameters"),
+                })
+            } else {
+                t
+            }
+        })
+        .collect()
+}
+
+/// G12: 解析 Responses `output` 数组 → (拼接文本, tool_calls[{id,name,arguments}])。
+fn parse_responses_output(response: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    if let Some(output) = response.get("output").and_then(|v| v.as_array()) {
+        for item in output {
+            match item.get("type").and_then(|v| v.as_str()) {
+                Some("message") => {
+                    if let Some(parts) = item.get("content").and_then(|v| v.as_array()) {
+                        for p in parts {
+                            if p.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
+                                    text.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some("function_call") => {
+                    let args_str = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+                    let args: serde_json::Value =
+                        serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                    tool_calls.push(serde_json::json!({
+                        "id": item.get("call_id").and_then(|v| v.as_str()).unwrap_or(""),
+                        "name": item.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                        "arguments": args,
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+    (text, tool_calls)
+}
+
+#[async_trait]
+impl LlmProvider for OpenAiResponsesProvider {
+    async fn complete(&self, messages: Vec<Message>) -> Result<String, ProviderError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": responses_input(&messages),
+            "max_output_tokens": 4096,
+        });
+        let response = self.call(body).await?;
+        let (text, _) = parse_responses_output(&response);
+        Ok(text)
+    }
+
+    async fn complete_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<serde_json::Value>,
+    ) -> Result<(String, Vec<serde_json::Value>), ProviderError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": responses_input(&messages),
+            "max_output_tokens": 4096,
+            "tools": responses_tools(tools),
+        });
+        let response = self.call(body).await?;
+        Ok(parse_responses_output(&response))
+    }
+
+    async fn stream_complete(&self, messages: Vec<Message>) -> TokenStream {
+        // 最小实现: 非流式取全文后单次吐出 (真 SSE 流式为后续项)
+        match self.complete(messages).await {
+            Ok(text) => Box::pin(futures_util::stream::iter(vec![Ok(text)])),
+            Err(e) => Box::pin(futures_util::stream::iter(vec![Err(e)])),
+        }
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        Ok(vec![self.model.clone()])
+    }
+}
+
 /// G3: 某个错误是否值得重试 (限流 / 5xx / 网络瞬断),区别于鉴权/参数/解析等确定性错误。
 fn is_retryable(e: &ProviderError) -> bool {
     match e {
@@ -1406,6 +1610,61 @@ mod tests {
         let err = client.complete(vec![]).await;
         assert!(err.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1); // AuthError 不重试
+    }
+
+    // --- G12: OpenAI Responses API ---
+
+    #[test]
+    fn test_g12_responses_input_mapping() {
+        use rustclaw_protocol::{Content, Message, Role, ToolCallSpec};
+        let msgs = vec![
+            Message { role: Role::System, content: Content::text("sys") },
+            Message { role: Role::User, content: Content::text("hi") },
+            Message {
+                role: Role::Assistant,
+                content: Content::tool_use(
+                    vec![ToolCallSpec { id: "c1".into(), name: "echo".into(), arguments: serde_json::json!({"x":1}) }],
+                    Some("checking".into()),
+                ),
+            },
+            Message { role: Role::Tool, content: Content::tool_result("c1", "echo", "ok") },
+        ];
+        let items = responses_input(&msgs);
+        assert_eq!(items.len(), 5); // sys, user, assistant text, function_call, function_call_output
+        assert_eq!(items[0]["role"], "system");
+        assert_eq!(items[2]["role"], "assistant");
+        assert_eq!(items[3]["type"], "function_call");
+        assert_eq!(items[3]["call_id"], "c1");
+        assert_eq!(items[3]["arguments"], "{\"x\":1}"); // JSON 字符串
+        assert_eq!(items[4]["type"], "function_call_output");
+        assert_eq!(items[4]["output"], "ok");
+    }
+
+    #[test]
+    fn test_g12_responses_tools_flatten() {
+        let nested = vec![serde_json::json!({
+            "type": "function",
+            "function": { "name": "echo", "description": "d", "parameters": {"type":"object"} }
+        })];
+        let flat = responses_tools(nested);
+        assert_eq!(flat[0]["name"], "echo");
+        assert_eq!(flat[0]["type"], "function");
+        assert!(flat[0].get("function").is_none());
+    }
+
+    #[test]
+    fn test_g12_parse_responses_output() {
+        let response = serde_json::json!({
+            "output": [
+                { "type": "message", "content": [ { "type": "output_text", "text": "hello " }, { "type": "output_text", "text": "world" } ] },
+                { "type": "function_call", "call_id": "c9", "name": "echo", "arguments": "{\"a\":2}" }
+            ]
+        });
+        let (text, calls) = parse_responses_output(&response);
+        assert_eq!(text, "hello world");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "c9");
+        assert_eq!(calls[0]["arguments"]["a"], 2);
     }
 
     // --- G2: Anthropic prompt 缓存 ---

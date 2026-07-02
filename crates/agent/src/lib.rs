@@ -324,6 +324,29 @@ impl SessionManager {
         }
     }
 
+    /// G10: 设置父会话 (谱系),内存与 SQLite 同步。
+    pub fn set_parent(&self, key: &str, parent: &str) {
+        let mut snapshot = None;
+        {
+            let mut sessions = self.sessions.write();
+            if let Some(session) = sessions.get_mut(key) {
+                session.parent_session_id = Some(parent.to_string());
+                snapshot = Some(session.clone());
+            }
+        }
+        if let (Some(ref store), Some(session)) = (&self.store, snapshot) {
+            let db_session = rustclaw_storage::Session {
+                key: session.key.clone(),
+                channel: session.metadata.channel.clone(),
+                parent_session_id: session.parent_session_id.clone(),
+                messages: (*session.messages).clone(),
+                created_at: session.metadata.created_at,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            };
+            let _ = store.insert(&db_session);
+        }
+    }
+
     /// 删除会话
     pub fn delete(&self, key: &str) {
         self.sessions.write().remove(key);
@@ -598,6 +621,15 @@ impl AgentRuntime {
     }
 
     pub async fn process_with_loop(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
+        self.process_with_loop_budget(envelope, None).await
+    }
+
+    /// G10: 带迭代预算覆盖的核心循环 (子 Agent 用较小预算跑同一循环)。
+    pub async fn process_with_loop_budget(
+        &self,
+        envelope: Envelope,
+        budget_override: Option<u32>,
+    ) -> Result<AgentResponse, AgentError> {
         let session_key = envelope.session_key.clone();
 
         // 1. Acquire session lock
@@ -605,16 +637,17 @@ impl AgentRuntime {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .value()
             .clone();
-        
+
         let _guard = lock.lock().await;
 
         let lane = route_lane(&session_key);
-        
+
         self.session_manager.get_or_create(&session_key, &envelope.channel, &lane);
         self.session_manager.add_message(&session_key, envelope.message);
         self.emit_event(AgentEvent::Status { status: "started".to_string() });
 
-        let max_iterations = self.iteration_budget.unwrap_or(self.config.max_loop_iterations);
+        let max_iterations = budget_override
+            .unwrap_or_else(|| self.iteration_budget.unwrap_or(self.config.max_loop_iterations));
         let mut iterations = 0;
         let mut total_tool_calls: u32 = 0;
 
@@ -764,7 +797,7 @@ impl AgentRuntime {
                     "Executing tool call"
                 );
 
-                match self.execute_tool(tool_call).await {
+                match self.execute_tool(tool_call, &session_key).await {
                     Ok(result) => {
                         // D1: 通用"工具结果含可渲染图片 → 直接回给用户"适配,
                         // 平台特例 (如 BOSS 扫码二维码) 不再硬编码在内核里。
@@ -1042,7 +1075,7 @@ impl AgentRuntime {
         tool_calls
     }
 
-    async fn execute_tool(&self, tool_call: &ToolCall) -> Result<String, AgentError> {
+    async fn execute_tool(&self, tool_call: &ToolCall, session_key: &str) -> Result<String, AgentError> {
         // G1: 策略门控 —— 黑名单拒绝
         if !self.tool_policy.is_allowed(&tool_call.name) {
             let reason = "denied by tool policy".to_string();
@@ -1071,9 +1104,20 @@ impl AgentRuntime {
         let tool = self.tool_registry.get(&tool_call.name)
             .ok_or_else(|| AgentError::ToolError(format!("Tool not found: {}", tool_call.name)))?;
 
+        // G10: spawn_subagent 需要知道父会话以记谱系 — 注入保留参数 (仅此内置工具)。
+        let mut arguments = tool_call.arguments.clone();
+        if tool_call.name == builtin_tools::SUBAGENT_TOOL_NAME {
+            if let Some(obj) = arguments.as_object_mut() {
+                obj.insert(
+                    "_parent_session_key".to_string(),
+                    serde_json::Value::String(session_key.to_string()),
+                );
+            }
+        }
+
         // A3: 强制工具超时,避免挂死的 MCP/HTTP 工具无限期占住会话锁。
         let timeout = Duration::from_millis(self.config.tool_timeout_ms);
-        let result = match tokio::time::timeout(timeout, tool.execute(tool_call.arguments.clone())).await {
+        let result = match tokio::time::timeout(timeout, tool.execute(arguments)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(AgentError::ToolError(e.to_string())),
             Err(_) => {
@@ -1107,6 +1151,46 @@ impl AgentRuntime {
         self.session_manager.delete(key);
         // R1: 同步移除会话锁,避免 DashMap 无界增长
         self.session_locks.remove(key);
+    }
+
+    /// G10: 以受限预算派生一个子 Agent 执行独立子任务。
+    ///
+    /// 子会话 key `sub:<uuid>`,channel `subagent`,谱系经 `parent_session_id` 指回父会话;
+    /// 子 Agent 复用同一工具注册表/策略/记忆,但迭代预算受 `budget` 上限约束。
+    /// 返回 (子会话 key, 最终文本)。
+    pub async fn process_subtask(
+        &self,
+        task: &str,
+        parent_session_key: &str,
+        budget: u32,
+    ) -> Result<(String, String), AgentError> {
+        let child_key = format!("sub:{}", Uuid::new_v4());
+        let lane = route_lane(&child_key);
+        self.session_manager.get_or_create(&child_key, "subagent", &lane);
+        self.session_manager.set_parent(&child_key, parent_session_key);
+
+        let envelope = Envelope::new(
+            "subagent",
+            &child_key,
+            Message { role: Role::User, content: Content::text(task) },
+        );
+        let resp = self.process_with_loop_budget(envelope, Some(budget)).await?;
+        let text = match resp.message.content {
+            Content::Text(t) => t,
+            Content::Structured { text, .. } => text.unwrap_or_default(),
+            Content::Image { description, .. } => {
+                format!("[Image: {}]", description.unwrap_or_default())
+            }
+            Content::ToolUse { text, .. } => text.unwrap_or_default(),
+            Content::ToolResult { output, .. } => output,
+        };
+        Ok((child_key, text))
+    }
+
+    /// G10: 注册 `spawn_subagent` 工具 (需在 Arc 包装后调用,工具持 Weak 防循环引用)。
+    pub fn enable_subagent(self: &Arc<Self>) {
+        self.tool_registry
+            .register(Arc::new(builtin_tools::SubAgentTool::new(Arc::downgrade(self))));
     }
 
     /// 周期性维护 (R1/R3): 清理过期/超限会话,并回收对应的会话锁。
@@ -1521,6 +1605,102 @@ mod tests {
 
         assert_eq!(msgs[3].role, Role::Assistant);
         assert!(matches!(&msgs[3].content, Content::Text(t) if t == "done"));
+    }
+
+    // --- G10: spawn_subagent ---
+
+    /// 第一次调用请求 spawn_subagent,其余直接终答 "done"。
+    struct SpawnMockProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl rustclaw_provider::LlmProvider for SpawnMockProvider {
+        async fn complete(&self, _m: Vec<Message>) -> Result<String, rustclaw_provider::ProviderError> {
+            Ok(String::new())
+        }
+        async fn complete_with_tools(
+            &self,
+            _m: Vec<Message>,
+            _t: Vec<serde_json::Value>,
+        ) -> Result<(String, Vec<serde_json::Value>), rustclaw_provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok((
+                    String::new(),
+                    vec![serde_json::json!({
+                        "id": "spawn_1",
+                        "name": "spawn_subagent",
+                        "arguments": { "task": "sub task", "max_iterations": 3 }
+                    })],
+                ))
+            } else {
+                Ok(("done".to_string(), vec![]))
+            }
+        }
+        async fn stream_complete(&self, _m: Vec<Message>) -> rustclaw_provider::TokenStream {
+            Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+        }
+        async fn list_models(&self) -> Result<Vec<String>, rustclaw_provider::ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_g10_spawn_subagent_roundtrip() {
+        let registry = Arc::new(ToolRegistry::new());
+        let provider = ProviderClient::new(Some(Arc::new(SpawnMockProvider {
+            calls: AtomicUsize::new(0),
+        })));
+        let rt = Arc::new(
+            AgentRuntime::new(AgentConfig::default())
+                .with_tools(registry)
+                .with_provider(provider),
+        );
+        rt.enable_subagent();
+
+        let env = Envelope::new("test", "sess-parent", Message {
+            role: Role::User,
+            content: Content::text("do it"),
+        });
+        let resp = rt.process_with_loop(env.clone()).await.expect("parent loop completes");
+        assert!(matches!(&resp.message.content, Content::Text(t) if t == "done"));
+
+        // 父会话里应有 spawn_subagent 的 tool_result,内含子会话最终文本与 key
+        let parent = rt.get_session("sess-parent").unwrap();
+        let (child_key, tool_output) = parent
+            .messages
+            .iter()
+            .find_map(|m| match &m.content {
+                Content::ToolResult { name, output, .. } if name == "spawn_subagent" => {
+                    let v: serde_json::Value = serde_json::from_str(output).ok()?;
+                    Some((v["session_key"].as_str()?.to_string(), output.clone()))
+                }
+                _ => None,
+            })
+            .expect("parent history should contain spawn_subagent tool_result");
+        assert!(tool_output.contains("\"success\":true"));
+        assert!(tool_output.contains("done"), "child final text should flow back: {}", tool_output);
+
+        // 子会话存在,channel=subagent,谱系指回父会话
+        assert!(child_key.starts_with("sub:"));
+        let child = rt.get_session(&child_key).expect("child session exists");
+        assert_eq!(child.metadata.channel, "subagent");
+        assert_eq!(child.parent_session_id.as_deref(), Some("sess-parent"));
+    }
+
+    #[tokio::test]
+    async fn test_g10_subagent_tool_requires_task() {
+        let registry = Arc::new(ToolRegistry::new());
+        let rt = Arc::new(
+            AgentRuntime::new(AgentConfig::default())
+                .with_tools(registry)
+                .with_provider(ProviderClient::new(None)),
+        );
+        rt.enable_subagent();
+        let tool = rt.tool_registry().get("spawn_subagent").expect("registered");
+        let err = tool.execute(serde_json::json!({})).await;
+        assert!(err.is_err(), "missing task should error");
     }
 
     // --- G1: 工具策略与人审 ---

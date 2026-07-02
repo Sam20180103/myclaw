@@ -17,7 +17,6 @@ use tracing::{info, error, warn};
 
 use rustclaw_protocol::{JsonRpcRequest, Envelope, Message, Role, Content};
 use rustclaw_agent::{AgentRuntime, AgentConfig, AgentResponse};
-use rustclaw_tool;
 use rustclaw_skill::{SkillManager, SkillConfig, SkillLanguage, SkillApprovalRequest};
 use rustclaw_config::{Config, ProviderConfig};
 use rustclaw_provider::{ProviderClient, OpenAiProvider, AnthropicProvider, LlmProvider};
@@ -251,6 +250,8 @@ let reach_config = rustclaw_tool::ReachConfig {
         }
 
         let agent = Arc::new(agent_builder);
+        // G10: 注册 spawn_subagent (需 Arc 后接线,工具持 Weak)
+        agent.enable_subagent();
 
         let gateway_config = GatewayConfig {
             host: config.gateway.host.clone(),
@@ -409,6 +410,14 @@ let reach_config = rustclaw_tool::ReachConfig {
                     "anthropic" => {
                         let model = p.default_model.as_deref().unwrap_or("claude-3-5-sonnet-20241022");
                         Arc::new(AnthropicProvider::new(key, model))
+                    }
+                    // G12: OpenAI Responses API 形态
+                    "openai-responses" | "responses" => {
+                        let model = p.default_model.as_deref().unwrap_or("gpt-4o");
+                        Arc::new(
+                            rustclaw_provider::OpenAiResponsesProvider::new(key, model)
+                                .with_base_url(p.base_url.as_deref().unwrap_or("https://api.openai.com"))
+                        )
                     }
                     _ => continue,
                 };
@@ -773,7 +782,7 @@ async fn handle_ws_connection(mut socket: axum::extract::ws::WebSocket, state: A
                     Err(e) => serde_json::json!({ "type": "error", "error": e.to_string() }),
                 };
 
-                if socket.send(WsMessage::Text(payload.to_string().into())).await.is_err() {
+                if socket.send(WsMessage::Text(payload.to_string())).await.is_err() {
                     break;
                 }
             }
@@ -1718,6 +1727,40 @@ async fn system_update_check_handler() -> Json<serde_json::Value> {
     }))
 }
 
+async fn api_key_auth(
+    State(gateway): State<Arc<Gateway>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    // Skip auth for health endpoint
+    if request.uri().path() == "/health" {
+        return Ok(next.run(request).await);
+    }
+
+    // If API key is configured, validate it
+    if let Some(ref expected_key) = gateway.full_config.gateway.auth.api_key {
+        let auth_header = request.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+
+        match auth_header {
+            Some(header) if header.starts_with("Bearer ") => {
+                let token = &header[7..];
+                if token != expected_key {
+                    warn!("Invalid API key attempt");
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+            }
+            _ => {
+                warn!("Missing or invalid Authorization header");
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+    }
+
+    Ok(next.run(request).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1806,38 +1849,4 @@ assert_eq!(envelope.channel, "http");
 assert_eq!(envelope.session_key, "session-123");
 assert!(!envelope.id.is_empty());
 }
-}
-
-async fn api_key_auth(
-    State(gateway): State<Arc<Gateway>>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Result<axum::response::Response, StatusCode> {
-    // Skip auth for health endpoint
-    if request.uri().path() == "/health" {
-        return Ok(next.run(request).await);
-    }
-
-    // If API key is configured, validate it
-    if let Some(ref expected_key) = gateway.full_config.gateway.auth.api_key {
-        let auth_header = request.headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok());
-
-        match auth_header {
-            Some(header) if header.starts_with("Bearer ") => {
-                let token = &header[7..];
-                if token != expected_key {
-                    warn!("Invalid API key attempt");
-                    return Err(StatusCode::UNAUTHORIZED);
-                }
-            }
-            _ => {
-                warn!("Missing or invalid Authorization header");
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-        }
-    }
-
-    Ok(next.run(request).await)
 }

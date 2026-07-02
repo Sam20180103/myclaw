@@ -260,10 +260,107 @@ impl SQLiteSessionStore {
     }
 }
 
+/// G11: 把会话导出为 ShareGPT 训练样本。
+///
+/// 映射: System→system, User→human, Assistant→gpt (ToolUse 附带 tool_calls JSON),
+/// Tool→tool (含 tool_call_id 配对), Image→占位文本。空会话返回 None。
+pub fn session_to_sharegpt(session: &Session) -> Option<serde_json::Value> {
+    use rustclaw_protocol::{Content, Role};
+    if session.messages.is_empty() {
+        return None;
+    }
+    let conversations: Vec<serde_json::Value> = session
+        .messages
+        .iter()
+        .map(|m| {
+            let from = match m.role {
+                Role::System => "system",
+                Role::User => "human",
+                Role::Assistant => "gpt",
+                Role::Tool => "tool",
+            };
+            let value = match &m.content {
+                Content::Text(t) => t.clone(),
+                Content::Structured { text, .. } => text.clone().unwrap_or_default(),
+                Content::Image { description, .. } => format!(
+                    "[Image: {}]",
+                    description.as_deref().filter(|d| !d.is_empty()).unwrap_or("image")
+                ),
+                Content::ToolUse { tool_calls, text } => {
+                    let calls = serde_json::to_string(tool_calls).unwrap_or_default();
+                    match text.as_deref().filter(|t| !t.is_empty()) {
+                        Some(t) => format!("{}\n<tool_calls>{}</tool_calls>", t, calls),
+                        None => format!("<tool_calls>{}</tool_calls>", calls),
+                    }
+                }
+                Content::ToolResult { tool_call_id, name, output } => {
+                    format!("<tool_result id=\"{}\" name=\"{}\">{}</tool_result>", tool_call_id, name, output)
+                }
+            };
+            serde_json::json!({ "from": from, "value": value })
+        })
+        .collect();
+    Some(serde_json::json!({
+        "id": session.key,
+        "channel": session.channel,
+        "parent_session_id": session.parent_session_id,
+        "conversations": conversations,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rustclaw_protocol::{Content, Role};
+
+    // G11: ShareGPT 导出
+    #[test]
+    fn test_g11_session_to_sharegpt() {
+        use rustclaw_protocol::ToolCallSpec;
+        let session = Session {
+            key: "s1".to_string(),
+            channel: "http".to_string(),
+            parent_session_id: None,
+            messages: vec![
+                Message { role: Role::User, content: Content::text("查热门") },
+                Message {
+                    role: Role::Assistant,
+                    content: Content::tool_use(
+                        vec![ToolCallSpec { id: "c1".into(), name: "xhs_reach".into(), arguments: serde_json::json!({"action":"hot"}) }],
+                        Some("let me check".into()),
+                    ),
+                },
+                Message { role: Role::Tool, content: Content::tool_result("c1", "xhs_reach", "{\"ok\":true}") },
+                Message { role: Role::Assistant, content: Content::text("done") },
+            ],
+            created_at: 0,
+            updated_at: 0,
+        };
+        let v = session_to_sharegpt(&session).unwrap();
+        let conv = v["conversations"].as_array().unwrap();
+        assert_eq!(conv.len(), 4);
+        assert_eq!(conv[0]["from"], "human");
+        assert_eq!(conv[1]["from"], "gpt");
+        assert!(conv[1]["value"].as_str().unwrap().contains("<tool_calls>"));
+        assert!(conv[1]["value"].as_str().unwrap().contains("xhs_reach"));
+        assert_eq!(conv[2]["from"], "tool");
+        assert!(conv[2]["value"].as_str().unwrap().contains("id=\"c1\""));
+        assert_eq!(conv[3]["value"], "done");
+        assert_eq!(v["id"], "s1");
+    }
+
+    #[test]
+    fn test_g11_empty_session_skipped() {
+        let session = Session {
+            key: "empty".to_string(),
+            channel: "http".to_string(),
+            parent_session_id: None,
+            messages: vec![],
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert!(session_to_sharegpt(&session).is_none());
+    }
 
     #[test]
     fn test_session_store_new() {

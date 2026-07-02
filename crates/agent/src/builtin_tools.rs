@@ -262,3 +262,111 @@ impl Tool for SkillManageTool {
         }
     }
 }
+
+/// G10: spawn_subagent 工具名 (agent 内核注入 `_parent_session_key` 时比对用)。
+pub const SUBAGENT_TOOL_NAME: &str = "spawn_subagent";
+
+/// G10: 子 Agent 派生工具 — 把独立子任务交给受限预算的子会话执行。
+///
+/// - 持 `Weak<AgentRuntime>` 防循环引用 (runtime 拥有注册表,注册表拥有工具)。
+/// - 并发上限 (含嵌套派生) 由 `active` 计数约束,防递归爆炸。
+/// - 子会话 `sub:<uuid>`,谱系指回父会话;工具结果为子 Agent 最终文本。
+pub struct SubAgentTool {
+    runtime: std::sync::Weak<crate::AgentRuntime>,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// 同时在跑的子 Agent 上限 (含嵌套)。
+const MAX_ACTIVE_SUBAGENTS: usize = 4;
+/// 单个子 Agent 迭代预算上限。
+const MAX_SUBAGENT_BUDGET: u32 = 10;
+
+impl SubAgentTool {
+    pub fn new(runtime: std::sync::Weak<crate::AgentRuntime>) -> Self {
+        Self {
+            runtime,
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for SubAgentTool {
+    fn name(&self) -> &str {
+        SUBAGENT_TOOL_NAME
+    }
+
+    fn description(&self) -> &str {
+        "Delegate an independent subtask to a budget-limited sub-agent. It runs its own tool loop in a child session and returns its final answer."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: SUBAGENT_TOOL_NAME.to_string(),
+            description: "Spawn a sub-agent for an independent subtask (own session, limited iterations). Use for parallelizable or exploratory work; give a complete, self-contained task description.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Complete, self-contained task description for the sub-agent"
+                    },
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Iteration budget (default 5, max 10)"
+                    }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+
+    async fn execute(&self, params: Value) -> Result<Value, ToolError> {
+        use std::sync::atomic::Ordering;
+
+        let task = params
+            .get("task")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| ToolError::InvalidParams("'task' is required".to_string()))?;
+        let budget = params
+            .get("max_iterations")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .unwrap_or(5)
+            .clamp(1, MAX_SUBAGENT_BUDGET);
+        // 由 agent 内核注入,不来自模型
+        let parent = params
+            .get("_parent_session_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| ToolError::ExecutionFailed("agent runtime dropped".to_string()))?;
+
+        // 并发/嵌套上限 (fetch_add 后检查,失败即回退)
+        let prev = self.active.fetch_add(1, Ordering::SeqCst);
+        if prev >= MAX_ACTIVE_SUBAGENTS {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            return Err(ToolError::ExecutionFailed(format!(
+                "too many active sub-agents (max {})",
+                MAX_ACTIVE_SUBAGENTS
+            )));
+        }
+
+        let result = runtime.process_subtask(task, &parent, budget).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+
+        match result {
+            Ok((child_key, text)) => Ok(json!({
+                "success": true,
+                "session_key": child_key,
+                "result": text,
+            })),
+            Err(e) => Err(ToolError::ExecutionFailed(format!("sub-agent failed: {}", e))),
+        }
+    }
+}
