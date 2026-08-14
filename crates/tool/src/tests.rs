@@ -143,6 +143,7 @@ mod tests {
             allowed_tools: vec!["file_read".to_string()],
             denied_tools: vec!["shell_exec".to_string()],
             require_approval: vec![],
+            principals: Default::default(),
         };
 
         assert!(policy.is_allowed("file_read"));
@@ -232,5 +233,65 @@ mod tests {
     fn test_g5_sandbox_default_backend_is_local() {
         let sandbox = SandboxExecutor::new(SandboxConfig::default());
         assert!(matches!(sandbox.backend(), ExecutionBackend::Local));
+    }
+    #[test]
+    fn test_policy_principal_override() {
+        // P2-17: 工具权限必须能按调用者收紧,而不是全局一份
+        let base = ToolPolicy::permissive()
+            .with_denied_tools(vec!["dangerous".to_string()])
+            .with_principal(
+                "ou_guest",
+                PrincipalPolicy {
+                    allowed_tools: Some(vec!["file_read".to_string()]),
+                    denied_tools: None,
+                    require_approval: Some(vec!["file_read".to_string()]),
+                },
+            );
+
+        // 未配置覆盖的调用者沿用全局策略
+        let admin = base.for_principal(Some("ou_admin"));
+        assert!(admin.is_allowed("shell_exec"));
+        assert!(!admin.is_allowed("dangerous"));
+        assert!(!admin.requires_approval("file_read"));
+
+        // 受限调用者: 白名单外一律拒绝, 白名单内也要审批
+        let guest = base.for_principal(Some("ou_guest"));
+        assert!(guest.is_allowed("file_read"));
+        assert!(!guest.is_allowed("shell_exec"));
+        assert!(guest.requires_approval("file_read"));
+        // 覆盖未指定 denied_tools -> 继承全局
+        assert!(!guest.is_allowed("dangerous"));
+
+        // 无 principal 时等价于全局策略
+        assert!(base.for_principal(None).is_allowed("shell_exec"));
+    }
+
+
+    #[test]
+    fn test_skill_tools_always_require_approval() {
+        // X-3: 技能是 LLM 生成的不可信代码,即便策略全放行也必须人工批准
+        let permissive = ToolPolicy::permissive();
+        assert!(!permissive.requires_approval("shell_exec"));
+        assert!(permissive.requires_approval("dyn_skill_anything"));
+        assert!(permissive.requires_approval(&format!("{}x", SKILL_TOOL_PREFIX)));
+        // 内置的技能管理工具不得被前缀规则误伤 (它叫 skill_manage)
+        assert!(!permissive.requires_approval("skill_manage"));
+
+        // per-principal 覆盖也不能把技能的审批要求摘掉
+        let per_principal = ToolPolicy::permissive().with_principal(
+            "trusted",
+            PrincipalPolicy {
+                allowed_tools: None,
+                denied_tools: None,
+                require_approval: Some(vec![]),
+            },
+        );
+        assert!(per_principal
+            .for_principal(Some("trusted"))
+            .requires_approval("dyn_skill_anything"));
+
+        // 但仍可整体禁用某个技能工具
+        let denied = ToolPolicy::permissive().with_denied_tools(vec!["dyn_skill_bad".to_string()]);
+        assert!(!denied.is_allowed("dyn_skill_bad"));
     }
 }

@@ -1,8 +1,10 @@
 # RustClaw 技术架构文档
 
-> 版本: v0.45.0
-> 日期: 2026-06-04
-> 状态: 自我进化闭环 + 视觉打通 + 通用 WS 入站完成 ✅
+> 版本: v0.54.0
+> 日期: 2026-08-14
+> 状态: 实战上线加固完成 (P0/P1/P2 + 额外发现) + 技能执行闭环 (Shell/Python) ✅
+>
+> 配套文档: [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) (上线阻塞项清单与验证记录)
 
 ---
 
@@ -16,15 +18,19 @@ RustClaw 是一个用 Rust 实现的本地 AI 智能体网关，架构理念参�
 
 | 特性 | 描述 | 优先级 |
 |------|------|--------|
-| 多通道接入 | HTTP REST、WebSocket 通用入站、飞书长连接 (Webhook 规划中) | P0 |
-| 智能体运行时 | 多会话并发、Agent循环、流式响应 | P0 |
-| 工具系统 | 原生Rust工具注册 (21: 5内置 + 14 Reach + memory/skill_manage) | P0 |
-| 记忆与持久化 | MEMORY.md 持久化记忆 + SQLite 会话存储 | P0 (v0.43.0 激活) |
-| 上下文压缩 | 双级压缩策略 (Gateway/Agent) | P0 (v0.43.0 激活) |
-| 动态Skill | Agent可以自己编写并注册新Skill | P0 |
-| 审批流程 | 用户审批后Skill才可使用 | P0 |
-| Provider抽象 | 支持 OpenAI、Anthropic、NVIDIA NIM | P1 |
-| 安全沙箱 | 进程隔离、权限控制、工具策略 | P1 |
+| 多通道接入 | HTTP REST、WebSocket、Webhook (同步/异步回调)、飞书长连接、个人微信 (连接器) | P0 ✅ |
+| 入站幂等 | 平台重推 / Webhook 重试按事件 ID 判重,避免重复副作用 | P0 ✅ (v0.53.0) |
+| 智能体运行时 | 多会话并发、Agent 循环、三重预算 (迭代/墙钟/取消) | P0 ✅ |
+| 工具系统 | 原生 Rust 工具注册 (23: 5 内置 + 15 Reach + memory/skill_manage/spawn_subagent) | P0 ✅ |
+| 工具治理 | 黑名单 / 强制审批 (fail-closed) / 按调用者策略覆盖 / 参数 schema 校验 | P0 ✅ (v0.49.0, v0.53.0) |
+| 记忆与持久化 | MEMORY.md 持久化记忆 + SQLite 会话存储 (MemoryProvider trait) | P0 ✅ (v0.43.0 激活) |
+| 上下文压缩 | 配对安全压缩 + LLM 摘要 + token 级预算 | P0 ✅ (v0.53.0 重写) |
+| 动态 Skill | Agent 自行编写、审批后**注册为可调用工具** (Shell/Python) | P0 ✅ (v0.54.0 闭环) |
+| 审批流程 | 技能审批 + 每次调用的工具审批 (REST 与聊天内 `/approve`) | P0 ✅ |
+| Provider 抽象 | OpenAI / Anthropic / NVIDIA NIM / OpenAI Responses + 重试降级 | P1 ✅ |
+| 安全沙箱 | 命令黑名单、超时、内存上限、可选 Docker 后端 | P1 ✅ |
+| 可观测性 | `GET /metrics` (Prometheus) + `GET /api/usage` (token 用量) | P1 ✅ (v0.53.0) |
+| 多角色隔离 | `RUSTCLAW_PROFILE` 隔离 config/skills/logs/data | P2 ✅ (v0.51.0, v0.53.0 修复) |
 
 
 ---
@@ -594,10 +600,49 @@ Layer 3: 会话搜索 (SQLite + LIKE搜索)    ← 已实现 (SQLiteSessionStore
 | v0.45.0 | 2026-06-05 | 通用 Webhook 入站: POST /webhook (+/webhook/{source}), 多字段文本提取, 同步响应 + callback_url 异步回调; +3 tests (共 174) |
 | v0.46.0 | 2026-06-05 | 个人微信交互通道: 新增 crates/wechat (连接器无关 HTTP 契约, 连接器推送+网关回调发送), POST /channel/wechat/inbound, 私聊/群聊/图片, 复用飞书权限范式与视觉链路; 参考连接器 vendor/wechat-connector |
 | v0.47.0 | 2026-06-06 | 小红书自动化: vendor/mcp-xhs (Playwright, 手机号+短信两步登录/热门Top/发布), xhs_reach 扩展 hot/publish/login_send_sms/login_submit_sms, 新增通用 image_gen 文生图工具 (OpenAI 兼容); +4 tests (共 187) |
+| v0.48.0 | 2026-06-20 | 工具调用转录重构 (Content::ToolUse/ToolResult 原生映射)、tool_timeout_ms、压缩落盘、通用可渲染图片适配;移除未接线的 Lane/Queue 子系统 |
+| v0.49.0 | 2026-07-04 | G1 工具策略+审批 (ApprovalRegistry/REST)、G2 Anthropic prompt 缓存、G3 多 Provider 重试与降级 |
+| v0.50.0 | 2026-07-18 | G4 工具可用性门控 (available_schemas)、G9 密钥 env 间接引用、G5 执行后端抽象 (local/docker) |
+| v0.51.0 | 2026-08-01 | G6 MemoryProvider 抽象、G7 profile 隔离、G8 定时任务 ([[schedules]]) |
+| v0.52.0 | 2026-08-08 | G10 子 Agent (spawn_subagent)、G11 轨迹导出 (ShareGPT)、G12 OpenAI Responses API |
+| **v0.53.0** | **2026-08-14** | **实战上线加固**: P0 压缩配对安全 (sanitize_pairing)/压缩摘要/token 预算/入站幂等; P1 取消/墙钟预算/部分结果/进度推送/聊天内审批/工具结果截断/参数校验/删除死代码; P2 token 用量统计/Prometheus 指标/工具并发/定时任务通知/按调用者策略; X-1 修复 axum 0.7 路由语法致所有路径参数接口 404; X-2 修复 RUSTCLAW_PROFILE 对 config/skills/logs 失效 (凭据串号) |
+| **v0.54.0** | **2026-08-14** | **技能执行闭环**: 批准后的 Shell/Python 技能注册为 `dyn_skill_*` 工具并经沙箱执行,重启自动重新上线、删除即注销;`dyn_skill_` 前缀无条件强制审批;新增 `Config::active_skills_dir()` 统一目录布局与 `GET /api/tools`; 254 tests |
 
 ---
 
 ## 八、API 端点
+
+> **完整路由表 (v0.54.0)**。下文各小节给出请求/响应示例;文档中的 `{id}` 是路径参数占位符,
+> 代码里的注册语法是 axum 0.7 的 `:id` —— 曾经误用 axum 0.8 的 `{id}` 字面量语法,
+> 导致**所有带路径参数的接口 404**,v0.53.0 修复 (见 PRODUCTION_READINESS.md X-1)。
+
+| 方法 | 路径 | 说明 | 引入 |
+|------|------|------|------|
+| GET | `/health` | 健康检查 (免鉴权) | v0.1.0 |
+| GET | `/metrics` | Prometheus 文本指标 (循环/迭代/工具/失败/provider 错误/压缩 + token) | v0.53.0 |
+| GET | `/ws` | 通用 WebSocket 入站 | v0.45.0 |
+| POST | `/webhook`、`/webhook/{source}` | 通用 Webhook 入站 (同步 / `callback_url` 异步);带 `event_id`/`id` 时判重 | v0.45.0 / 判重 v0.53.0 |
+| POST | `/channel/wechat/inbound` | 个人微信连接器入站 (按 `msg_id` 判重) | v0.46.0 |
+| POST | `/api/message` | REST 消息入口 | v0.1.0 |
+| GET | `/api/session`、`/api/session/{id}` | 会话列表 / 详情 | v0.8.0 |
+| DELETE | `/api/session/{id}` | 删除会话 | v0.8.0 |
+| POST | `/api/session/{id}/cancel` | 中止该会话正在运行的任务 (协作式,返回部分结果) | v0.53.0 |
+| GET | `/api/usage` | token 用量 (总量 + 按模型细分) | v0.53.0 |
+| GET | `/api/tools` | **实际可调用**的工具表 (`is_skill`/`available`/`allowed`/`requires_approval`) | v0.54.0 |
+| GET | `/api/tools/approvals` | 待裁决的工具调用审批 | v0.49.0 |
+| POST | `/api/tools/approvals/{id}` | 裁决一次工具调用 (`{"approved": true}`) | v0.49.0 |
+| GET/POST | `/api/skill` | 技能列表 (active + pending) / 创建 | v0.4.0 |
+| POST | `/api/skill/{id}/approve`、`/reject` | 技能审批;**批准即注册为可调用工具** | v0.4.0 / 注册 v0.54.0 |
+| GET | `/api/skill/approval/subscribe` | 技能审批事件流 (SSE) | v0.2.2 |
+| GET/POST | `/api/config`、`/api/config/save`、`/api/config/model` | 配置读写 | v0.8.0 |
+| GET | `/api/agent`、`/api/agent/{id}` | Agent 会话视图 | v0.8.0 |
+| GET/POST | `/api/channel`、`/api/channel/{name}` | 通道管理 | v0.9.0 |
+| GET | `/api/channel/feishu/status` | 飞书连接状态 | v0.40.0 |
+| GET | `/api/memory/status`、`/api/memory/stats` | 记忆状态 | v0.10.0 |
+| GET | `/api/security/audit` | 安全审计 | v0.9.0 |
+| GET | `/api/system/version`、`/api/system/update/check` | 版本 / 更新检查 | v0.10.0 |
+
+配置了 `[gateway.auth] api_key` 时,除 `/health` 外均需 `Authorization: Bearer <key>`。
 
 ### Health
 - `GET /health` - 健康检查
@@ -1125,16 +1170,24 @@ data: {"skill_id":"uuid","skill_name":"new_skill","skill_definition":{...},"requ
 
 ## 九、测试覆盖
 
-| 模块 | 单元测试 | 集成测试 |
-|------|---------|---------|
-| config | 7 | - |
-| protocol | 9 | - |
-| skill | 9 | 4 |
-| tool | 38 | - |
-| agent | - | 3 |
-| gateway | - | - |
-| provider | - | - |
-| **总计** | **69** | **7** |
+> 全量: `cargo test --workspace` → **254 passed** (29 suites);`cargo clippy --all-targets` → 0 warnings。
+
+| 模块 | 测试数 | 覆盖重点 |
+|------|--------|---------|
+| tool | 55 | 沙箱/策略 (含按调用者覆盖、技能强制审批)/Reach/执行后端 |
+| agent | 28 | 循环转录配对、取消、墙钟预算、部分结果、并发工具、参数校验、结果截断 |
+| provider | 28 | 重试降级、多模态转换、Responses API、token 用量累加 |
+| skill | 24 | 生成/校验/审批、技能→工具注册、重启重注册、注入防护 |
+| storage | 16 | 会话持久化、谱系、搜索、事件判重幂等 |
+| feishu | 16 | 消息解析、权限、卡片、频率限制 |
+| config | 15 | 路径/profile 隔离 (含 `load()` 落盘断言)、schedules、预算默认值 |
+| compression | 15 | 配对不变量、丢弃回传、token 估算、本地摘要 |
+| memory | 13 | 三层记忆、安全扫描 |
+| channel | 11 | 通道抽象 |
+| gateway | 9 | 路由与处理器 |
+| wechat | 9 | 入站契约、权限 |
+| protocol | 9 | 信封与消息类型 |
+| integration | 6 | 跨 crate 端到端 |
 
 ---
 
@@ -2461,5 +2514,107 @@ system_prompt = ""
 
 ---
 
-*文档版本: v0.45.0*
+## 二十、生产加固与技能闭环 (v0.53.0 – v0.54.0)
+
+> 逐项清单与验证记录见 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)。本节只讲机制。
+
+### 20.1 上下文压缩:配对不变量与摘要
+
+压缩曾是**会话损坏源**:阶段1 删掉 `ToolResult` 却保留配对的 assistant `ToolUse`,阶段2 从尾部
+截断又可能让历史以 `Role::Tool` 开头。两家 Provider 都要求 `tool_use` / `tool_result` 严格配对,
+于是返回 400;更糟的是结果经 `replace_messages` **落盘**,重启也修不好。
+
+现在:
+
+| 阶段 | 行为 |
+|------|------|
+| 1 | `clean_old_tool_results` 只把旧结果的**正文**换成省略标记 (保留最近 3 条完整),消息条数与配对关系不变 |
+| 2 | `truncate_to_token_limit` 从尾部保留,返回 `(保留, 丢弃)` 两段 |
+| 3 | `sanitize_pairing` 强制不变量:丢弃孤儿 `ToolResult`,为结果被截掉的 `tool_use` 合成占位结果 |
+| 4 | Agent 把 `dropped` 交给 LLM 生成摘要 (失败降级 `local_summary`,至少记住"已执行过哪些工具"),作为 System 消息插回队首 |
+
+预算单位从 UTF-8 字节改为 **token 估算** (ASCII ≈ 4 字符/token,CJK ≈ 1),窗口与阈值来自
+`[agent] context_window_tokens` / `compression_threshold`,不再在 gateway 硬编码。
+
+### 20.2 入站幂等
+
+`SQLiteSessionStore::mark_event_seen()` 用 `INSERT OR IGNORE` 到 `processed_events` 表做原子判重,
+返回 `true` 表示首次。飞书用 `message_id`、微信用 `msg_id`、Webhook 用 `event_id`/`id`,
+统一落在 `Envelope.id` 上。写库失败时放行 (宁可重复一次,也不吞消息);`cleanup_events` 每小时
+清理、保留 7 天。没有它,平台重推 = 重复发帖 / 重复投递。
+
+### 20.3 循环的三重预算与取消
+
+```
+loop {
+    if 取消        → 返回部分结果 "[已取消]"
+    if 超过 deadline → 返回部分结果 "[未完成 · 超时]"
+    if 迭代耗尽     → 返回部分结果 "[未完成 · 达到迭代上限]"
+    压缩(+摘要) → 组装 [base_system, memory?, ...history] → LLM (与取消竞速)
+    工具批次并发执行 (与取消竞速) → 截断后按序回灌
+}
+```
+
+- 取消句柄是 per-session `tokio::sync::watch`,`cancel_session()` 触发;`CancelGuard` 在任何
+  退出路径上摘除条目。取消发生在工具批次中时**先补齐 `tool_result` 占位**,保住配对不变量。
+- 三种终止都返回 `AgentResponse`(带前缀的部分结果)而非 `Err` —— 此前迭代耗尽会丢掉全部中间成果。
+- 聊天命令 `/clear` `/stop` `/approve` `/reject` 在 `Gateway::handle_chat_command` 里处理,
+  **先于会话锁**,否则"停止"会排在正在跑的任务后面永远等不到执行。
+
+### 20.4 工具执行链
+
+```
+模型给出 tool_calls
+  → ToolPolicy::for_principal(envelope.principal)   # 按调用者取策略
+  → is_allowed?                                     # 黑/白名单
+  → requires_approval?  → ApprovalHook (fail-closed) # dyn_skill_* 无条件为真
+  → validate_tool_args(schema, args)                # 必填/类型,失败回灌让模型自纠
+  → join_all 并发执行 (每个受 tool_timeout_ms 约束)
+  → truncate_tool_result(head+tail, max_tool_result_chars)
+  → 按请求顺序回灌 Role::Tool 消息
+```
+
+### 20.5 技能执行闭环 (Shell/Python)
+
+```
+生成 → <skills>/pending/<id>.json → 批准 → <skills>/active/<id>.json
+     → SkillManager::register_skill_tool → ToolRegistry: dyn_skill_<name>
+     → 每次调用仍需人工审批 → SandboxExecutor 执行
+```
+
+- 目录布局由 `Config` 单点定义:`skills_dir()` (基目录) / `pending_skills_dir()` / `active_skills_dir()`;
+  `SkillConfig::default()` 从这三者派生 (有测试钉住)。
+- 注册表由 gateway 在 `AgentRuntime` 构造后注入 (`set_tool_registry`);`init()` 重启后重新上线,
+  `delete_skill` 同步注销。
+- 执行:源码**内联**进 `sh -c`(`sh -c '<src>' <name> '<args>'` / `python3 -c '<src>' '<args>'`),
+  Local 与 Docker 后端行为一致 —— Docker 不挂宿主目录,临时文件方案在容器里不存在。
+  参数以单个 JSON 实参传入,源码与参数均做 POSIX 单引号转义。
+- 安全:前缀 `dyn_skill_` 是边界,使生成技能顶不掉内置工具,且 `requires_approval` 对该前缀
+  **无条件返回 true**(配置无法豁免;要停用请用 `disabled_tools`)。前缀特意不用 `skill_` ——
+  那会把内置的 `skill_manage` 一起拖进强制审批。
+- Rust / JavaScript 仍是"可登记不可调用"(需编译器 / node 运行时)。
+  `GET /api/skill` 看已登记,`GET /api/tools` 看真正可调用。
+
+### 20.6 可观测性
+
+- `rustclaw_agent::metrics`:`AtomicU64` 计数器 (loops_started/completed/cancelled/deadline/
+  max_iterations、iterations、tool_calls、tool_failures、provider_errors、compressions),
+  经 `GET /metrics` 以 Prometheus 文本导出。
+- `rustclaw_provider::{record_usage, usage_snapshot}`:各 provider 解析响应时回填 token 用量
+  (OpenAI `prompt/completion_tokens`、Anthropic `input/output_tokens`),经 `GET /api/usage` 暴露。
+  刻意不改 `LlmProvider` trait 签名 —— 那会波及 4 个 provider × 2 个方法及全部 mock。
+
+### 20.7 两个只有跑起来才会暴露的坑
+
+1. **路由语法错配**:路由用 axum 0.8 的 `{id}` 注册,依赖却是 `axum = "0.7"` ——
+   在 0.7 里 `{id}` 是**字面量路径段**,于是所有带路径参数的接口(含工具审批)全部 404。
+   冒烟测试逐条 curl 才发现。
+2. **`RUSTCLAW_PROFILE` 只隔离了数据目录**:`Config::load()` 与 CLI 的 4 个路径 helper、
+   `SkillConfig::default()` 都绕开 `profiled()` 就地拼死路径,命名 profile 的进程照旧读默认
+   profile 的 `config.toml` —— 连带其中的飞书 `app_secret` / provider key。
+   **约束:路径一律走 `Config::config_path()` / `skills_dir()` / `logs_dir()` / `data_dir()`。**
+
+---
+
+*文档版本: v0.54.0*
 

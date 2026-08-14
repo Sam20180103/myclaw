@@ -1,5 +1,9 @@
 # RustClaw 设计与架构评审 (Design Review)
 
+> **状态更新 (2026-08-14)**: 历史评审快照,结论多已落地或被后续版本取代。
+> 当前架构以 [architecture.md](architecture.md) 为准,上线阻塞项见 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)。
+
+
 > 版本基线: v0.47.0 · 评审日期: 2026-06-13
 > 方法: 通读核心 crate 源码 (`agent` / `gateway` / `provider` / `tool` / `config`)，结合实际调用链定位。每条问题给出 `文件:行号` 证据，并标注严重度与建议。
 > 范围: 仅评审**当前已落地的代码**与架构，不含尚未规划的新功能。

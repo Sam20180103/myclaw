@@ -54,6 +54,10 @@ pub struct Gateway {
     feishu_ws: Option<Arc<WebSocketManager>>,
     wechat_channel: Option<Arc<WeChatChannel>>,
     approval_registry: Arc<ApprovalRegistry>,
+    /// P0-4: 入站事件判重用的持久化存储 (与 Agent 共用同一个 SQLite)
+    store: Option<Arc<SQLiteSessionStore>>,
+    /// P1-8: Agent 运行事件广播 (通道侧订阅后推送进度)
+    agent_events: broadcast::Sender<rustclaw_agent::AgentEvent>,
 }
 
 pub struct GatewayConfig {
@@ -94,6 +98,9 @@ pub struct ToolApprovalRequest {
     pub tool_name: String,
     pub arguments: serde_json::Value,
     pub created_at: i64,
+    /// P1-9: 发起审批的会话,用于把审批请求推回对应聊天
+    #[serde(default)]
+    pub session_key: String,
 }
 
 /// G1: 工具审批登记处 —— Agent 的审批 hook 在此挂起,等待操作员裁决或超时。
@@ -116,7 +123,12 @@ impl ApprovalRegistry {
     }
 
     /// 发起一次审批请求并等待裁决;超时或通道关闭则默认拒绝 (fail-closed)。
-    async fn request(&self, tool_name: String, arguments: serde_json::Value) -> bool {
+    async fn request(
+        &self,
+        tool_name: String,
+        arguments: serde_json::Value,
+        session_key: String,
+    ) -> bool {
         let id = uuid::Uuid::new_v4().to_string();
         let req = ToolApprovalRequest {
             id: id.clone(),
@@ -126,6 +138,7 @@ impl ApprovalRegistry {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
+            session_key,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().insert(id.clone(), tx);
@@ -155,6 +168,11 @@ impl ApprovalRegistry {
     fn list(&self) -> Vec<ToolApprovalRequest> {
         self.meta.lock().values().cloned().collect()
     }
+
+    /// P1-9: 订阅审批请求 (供通道侧把审批推给聊天用户)
+    fn subscribe(&self) -> broadcast::Receiver<ToolApprovalRequest> {
+        self.broadcaster.subscribe()
+    }
 }
 
 /// Create an approval subscription stream that yields approval requests
@@ -169,6 +187,14 @@ fn create_approval_stream(
     }
 }
 
+/// P0-4: 入站事件判重的共享实现。无持久化存储时一律放行 (宁可重复,也不吞消息)。
+fn event_is_new(store: &Option<Arc<SQLiteSessionStore>>, event_id: &str) -> bool {
+    match store {
+        Some(store) => store.mark_event_seen(event_id),
+        None => true,
+    }
+}
+
 impl Gateway {
     pub fn new(config: Config) -> Self {
         let provider_client = Self::create_provider_client(&config.providers);
@@ -178,6 +204,8 @@ impl Gateway {
             tool_timeout_ms: config.agent.tool_timeout_ms,
             session_ttl_seconds: 3600,
             max_concurrent_per_lane: config.agent.max_concurrent_sessions,
+            max_loop_duration_ms: config.agent.max_loop_duration_ms,
+            max_tool_result_chars: config.agent.max_tool_result_chars,
         };
         
 let reach_config = rustclaw_tool::ReachConfig {
@@ -210,8 +238,11 @@ let reach_config = rustclaw_tool::ReachConfig {
         let data_dir = Config::data_dir();
         std::fs::create_dir_all(&data_dir).ok();
 
-        // 1. ContextCompressor
-        let compressor = Arc::new(ContextCompressor::new(0.50, 128000));
+        // 1. ContextCompressor (P0-3: 预算单位是 token,来自配置而非硬编码)
+        let compressor = Arc::new(ContextCompressor::new(
+            config.agent.compression_threshold,
+            config.agent.context_window_tokens,
+        ));
         agent_builder = agent_builder.with_compressor(compressor);
 
         // 2. MemoryManager
@@ -221,10 +252,17 @@ let reach_config = rustclaw_tool::ReachConfig {
 
         // 3. SQLiteSessionStore
         let db_path = data_dir.join("state.db");
-        if let Ok(store) = SQLiteSessionStore::new(&db_path) {
-            let store_arc = Arc::new(store);
-            agent_builder = agent_builder.with_session_store(store_arc);
-        }
+        let store: Option<Arc<SQLiteSessionStore>> = match SQLiteSessionStore::new(&db_path) {
+            Ok(store) => {
+                let store_arc = Arc::new(store);
+                agent_builder = agent_builder.with_session_store(store_arc.clone());
+                Some(store_arc)
+            }
+            Err(e) => {
+                warn!("SQLite store unavailable ({}); event de-duplication disabled", e);
+                None
+            }
+        };
 
         // 4. SkillManager — 同时注入 Agent (暴露 skill_manage 工具) 与 Gateway (审批 API)
         let skill_manager = Arc::new(SkillManager::new(SkillConfig::default()));
@@ -233,25 +271,50 @@ let reach_config = rustclaw_tool::ReachConfig {
         // 5. G1: 工具策略 + 审批 hook。
         // 仅接 disabled_tools(拒绝) 与 require_approval;不把 enabled_tools 当硬白名单
         // (其默认值是过时的 4 项子集,会误杀其余工具)。
-        let tool_policy = rustclaw_tool::ToolPolicy::permissive()
+        let mut tool_policy = rustclaw_tool::ToolPolicy::permissive()
             .with_denied_tools(config.tools.disabled_tools.clone())
             .with_require_approval(config.tools.require_approval.clone());
+        // P2-17: 按调用者的策略覆盖 (config.toml `[tools.principals.<id>]`)
+        for (principal, over) in &config.tools.principals {
+            tool_policy = tool_policy.with_principal(
+                principal,
+                rustclaw_tool::PrincipalPolicy {
+                    allowed_tools: over.allowed_tools.clone(),
+                    denied_tools: over.denied_tools.clone(),
+                    require_approval: over.require_approval.clone(),
+                },
+            );
+        }
         agent_builder = agent_builder.with_tool_policy(tool_policy);
 
         let approval_timeout = std::time::Duration::from_secs(120);
         let approval_registry = Arc::new(ApprovalRegistry::new(approval_timeout));
         {
             let reg = approval_registry.clone();
-            let hook: rustclaw_agent::ApprovalHook = Arc::new(move |tool_name, args| {
-                let reg = reg.clone();
-                Box::pin(async move { reg.request(tool_name, args).await })
-            });
+            let hook: rustclaw_agent::ApprovalHook =
+                Arc::new(move |tool_name, args, session_key| {
+                    let reg = reg.clone();
+                    Box::pin(async move { reg.request(tool_name, args, session_key).await })
+                });
             agent_builder = agent_builder.with_approval_hook(hook);
+        }
+
+        // P1-8: Agent 事件广播 — 通道侧据此给用户推送"正在调用 X"的进度,
+        // 否则多工具任务里用户要静默等好几分钟。
+        let (agent_events, _) = broadcast::channel::<rustclaw_agent::AgentEvent>(256);
+        {
+            let tx = agent_events.clone();
+            agent_builder = agent_builder.with_event_callback(Box::new(move |event| {
+                let _ = tx.send(event); // 无订阅者时忽略
+            }));
         }
 
         let agent = Arc::new(agent_builder);
         // G10: 注册 spawn_subagent (需 Arc 后接线,工具持 Weak)
         agent.enable_subagent();
+        // X-3: 把工具注册表交给 SkillManager,已批准的 Shell/Python 技能才能真正被调用。
+        // 实际注册发生在 start() 里的 skill_manager.init() (重启后重新上线) 与每次批准时。
+        skill_manager.set_tool_registry(agent.tool_registry().clone());
 
         let gateway_config = GatewayConfig {
             host: config.gateway.host.clone(),
@@ -382,7 +445,95 @@ let reach_config = rustclaw_tool::ReachConfig {
             feishu_ws,
             wechat_channel,
             approval_registry,
+            store,
+            agent_events,
         }
+    }
+
+    /// P1-5/P1-9: 聊天内控制命令。返回 `Some(回执)` 表示命令已处理,不应再进 Agent 循环。
+    /// 这些命令必须在拿会话锁之前处理 —— 否则 "停止" / "批准" 会排在正在跑的任务后面,
+    /// 永远等不到执行。
+    fn handle_chat_command(&self, session_key: &str, text: &str) -> Option<String> {
+        let text = text.trim();
+        let (cmd, arg) = match text.split_once(char::is_whitespace) {
+            Some((c, a)) => (c, a.trim()),
+            None => (text, ""),
+        };
+        match cmd {
+            "/clear" => {
+                self.agent.session_manager().delete(session_key);
+                Some("会话已清空".to_string())
+            }
+            "/stop" | "/cancel" => {
+                if self.agent.cancel_session(session_key) {
+                    Some("已请求中止,当前步骤结束后会返回已完成的部分结果。".to_string())
+                } else {
+                    Some("当前没有正在运行的任务。".to_string())
+                }
+            }
+            "/approve" | "/reject" => {
+                let approved = cmd == "/approve";
+                if arg.is_empty() {
+                    return Some(format!("用法: {} <审批ID>", cmd));
+                }
+                if self.approval_registry.resolve(arg, approved) {
+                    Some(format!(
+                        "审批 {} 已{}",
+                        arg,
+                        if approved { "批准" } else { "拒绝" }
+                    ))
+                } else {
+                    Some(format!("审批 {} 不存在或已超时", arg))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// P1-8/P1-9: 按会话所属通道把一条文本推给用户 (进度 / 审批提示 / 取消回执)。
+    /// 会话不存在或所属通道未启用时静默丢弃。
+    async fn notify_session(&self, session_key: &str, text: &str) {
+        self.notify_target(session_key, None, text).await
+    }
+
+    /// P2-16: 向指定会话推送文本。`channel` 为 None 时按会话元数据推断所属通道
+    /// (定时任务的推送目标可能还没有会话记录,必须允许显式指定)。
+    async fn notify_target(&self, session_key: &str, channel: Option<&str>, text: &str) {
+        let channel = match channel {
+            Some(c) => c.to_string(),
+            None => match self.agent.get_session(session_key) {
+                Some(s) => s.metadata.channel.clone(),
+                None => return,
+            },
+        };
+        let message = Message {
+            role: Role::Assistant,
+            content: Content::text(text.to_string()),
+        };
+        match channel.as_str() {
+            "feishu" => {
+                if let Some(ch) = self.feishu_channel.as_ref() {
+                    let env = Envelope::new("feishu", session_key, message);
+                    if let Err(e) = ch.send(env).await {
+                        warn!("notify_session (feishu) failed: {}", e);
+                    }
+                }
+            }
+            "wechat" => {
+                if let Some(ch) = self.wechat_channel.as_ref() {
+                    let env = Envelope::new("wechat", session_key, message);
+                    if let Err(e) = ch.send(env).await {
+                        warn!("notify_session (wechat) failed: {}", e);
+                    }
+                }
+            }
+            _ => {} // http/ws/webhook 为请求-响应模型,无带外推送通道
+        }
+    }
+
+    /// P0-4: 入站事件判重。`true` = 首次见到,应当处理;`false` = 重复投递,必须丢弃。
+    fn is_new_event(&self, event_id: &str) -> bool {
+        event_is_new(&self.store, event_id)
     }
 
     fn create_provider_client(providers: &[ProviderConfig]) -> ProviderClient {
@@ -449,13 +600,22 @@ let reach_config = rustclaw_tool::ReachConfig {
         // 此前 cleanup_expired 无任何调用方,会话与锁均无界增长。
         {
             let agent = self.agent.clone();
+            let store = self.store.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                let mut ticks: u64 = 0;
                 loop {
                     ticker.tick().await;
                     let removed = agent.maintenance();
                     if removed > 0 {
                         tracing::debug!("session maintenance: evicted {} sessions", removed);
+                    }
+                    // P0-4: 每小时清一次判重表 (保留 7 天,覆盖任何平台的重推窗口)
+                    ticks += 1;
+                    if ticks.is_multiple_of(60) {
+                        if let Some(ref store) = store {
+                            let _ = store.cleanup_events(7 * 24 * 3600);
+                        }
                     }
                 }
             });
@@ -482,6 +642,10 @@ let reach_config = rustclaw_tool::ReachConfig {
                 .session_key
                 .clone()
                 .unwrap_or_else(|| format!("schedule:{}", name));
+            // P2-16: 结果/失败推送目标 (未配置则退回只写日志的老行为)
+            let notify_session = sched.notify_session.clone();
+            let notify_channel = sched.notify_channel.clone();
+            let gw = self.clone();
             info!("schedule '{}': every {:?} → session {}", name, interval, session_key);
             tokio::spawn(async move {
                 loop {
@@ -491,13 +655,24 @@ let reach_config = rustclaw_tool::ReachConfig {
                         &session_key,
                         Message { role: Role::User, content: Content::text(prompt.clone()) },
                     );
-                    match agent.process_with_loop(envelope).await {
-                        Ok(resp) => info!(
-                            "schedule '{}' fired: {}",
-                            name,
-                            content_to_text(resp.message.content).chars().take(200).collect::<String>()
-                        ),
-                        Err(e) => error!("schedule '{}' failed: {}", name, e),
+                    let text = match agent.process_with_loop(envelope).await {
+                        Ok(resp) => {
+                            let body = content_to_text(resp.message.content);
+                            info!(
+                                "schedule '{}' fired: {}",
+                                name,
+                                body.chars().take(200).collect::<String>()
+                            );
+                            format!("⏰ 定时任务 [{}]\n{}", name, body)
+                        }
+                        Err(e) => {
+                            error!("schedule '{}' failed: {}", name, e);
+                            format!("⏰ 定时任务 [{}] 执行失败: {}", name, e)
+                        }
+                    };
+                    // P2-16: 失败也要推,否则定时任务静默挂掉没人发现
+                    if let Some(ref target) = notify_session {
+                        gw.notify_target(target, notify_channel.as_deref(), &text).await;
                     }
                 }
             });
@@ -528,22 +703,25 @@ let reach_config = rustclaw_tool::ReachConfig {
             .route("/health", get(health_handler))
             .route("/ws", get(ws_handler))
             .route("/webhook", axum::routing::post(webhook_handler))
-            .route("/webhook/{source}", axum::routing::post(webhook_source_handler))
+            .route("/webhook/:source", axum::routing::post(webhook_source_handler))
             .route("/channel/wechat/inbound", axum::routing::post(wechat_inbound_handler))
             .route("/api/message", axum::routing::post(message_handler))
             .route("/api/session", axum::routing::get(session_list_handler))
-            .route("/api/session/{id}", axum::routing::delete(session_delete_handler))
-            .route("/api/session/{id}", axum::routing::get(session_get_handler))
+            .route("/api/session/:id", axum::routing::delete(session_delete_handler))
+            .route("/api/session/:id/cancel", axum::routing::post(session_cancel_handler))
+            .route("/api/usage", axum::routing::get(usage_handler))
+            .route("/metrics", get(metrics_handler))
+            .route("/api/session/:id", axum::routing::get(session_get_handler))
             .route("/api/agent", axum::routing::get(agent_list_handler))
-            .route("/api/agent/{id}", axum::routing::get(agent_get_handler))
+            .route("/api/agent/:id", axum::routing::get(agent_get_handler))
             .route("/api/config", axum::routing::get(config_get_handler))
             .route("/api/config", axum::routing::post(config_update_handler))
             .route("/api/config/save", axum::routing::post(config_save_handler))
             .route("/api/config/model", axum::routing::post(config_model_handler))
             .route("/api/channel/feishu/status", get(feishu_status_handler))
             .route("/api/channel", axum::routing::get(channel_list_handler))
-            .route("/api/channel/{name}", axum::routing::get(channel_get_handler))
-            .route("/api/channel/{name}", axum::routing::post(channel_update_handler))
+            .route("/api/channel/:name", axum::routing::get(channel_get_handler))
+            .route("/api/channel/:name", axum::routing::post(channel_update_handler))
             .route("/api/security/audit", axum::routing::get(security_audit_handler))
             .route("/api/memory/status", axum::routing::get(memory_status_handler))
             .route("/api/memory/stats", axum::routing::get(memory_stats_handler))
@@ -551,37 +729,108 @@ let reach_config = rustclaw_tool::ReachConfig {
             .route("/api/system/update/check", axum::routing::get(system_update_check_handler))
             .route("/api/skill", axum::routing::get(skill_list_handler))
             .route("/api/skill", axum::routing::post(skill_create_handler))
-            .route("/api/skill/{id}/approve", axum::routing::post(skill_approve_handler))
-            .route("/api/skill/{id}/reject", axum::routing::post(skill_reject_handler))
+            .route("/api/skill/:id/approve", axum::routing::post(skill_approve_handler))
+            .route("/api/skill/:id/reject", axum::routing::post(skill_reject_handler))
             .route("/api/skill/approval/subscribe", get(skill_approval_subscribe_handler))
+            .route("/api/tools", axum::routing::get(tools_list_handler))
             .route("/api/tools/approvals", axum::routing::get(tool_approvals_list_handler))
-            .route("/api/tools/approvals/{id}", axum::routing::post(tool_approval_resolve_handler))
+            .route("/api/tools/approvals/:id", axum::routing::post(tool_approval_resolve_handler))
             .layer(cors)
             .layer(axum::middleware::from_fn_with_state(Arc::new(self.clone()), api_key_auth))
             .with_state(Arc::new(self.clone()));
 
         info!("Starting Gateway on {}", addr);
 
+        // P1-8: Agent 进度推送 — 订阅事件,把"正在调用 X"按会话推给用户 (带节流)
+        {
+            let gw = self.clone();
+            let mut rx = self.agent_events.subscribe();
+            tokio::spawn(async move {
+                let mut last_sent: HashMap<String, std::time::Instant> = HashMap::new();
+                const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+                loop {
+                    match rx.recv().await {
+                        Ok(rustclaw_agent::AgentEvent::ToolStart { session, tool_name, .. }) => {
+                            let now = std::time::Instant::now();
+                            // 首个工具立即通知,之后每会话至少间隔 5s,避免刷屏
+                            let due = last_sent
+                                .get(&session)
+                                .map(|t| now.duration_since(*t) >= MIN_INTERVAL)
+                                .unwrap_or(true);
+                            if !due {
+                                continue;
+                            }
+                            last_sent.insert(session.clone(), now);
+                            gw.notify_session(&session, &format!("⏳ 正在调用工具: {}", tool_name))
+                                .await;
+                        }
+                        Ok(rustclaw_agent::AgentEvent::Status { session, status }) => {
+                            if status == "completed" || status == "cancelled" {
+                                last_sent.remove(&session);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("agent event subscriber lagged, dropped {} events", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+
+        // P1-9: 工具审批推送 — 审批请求直接发到发起它的聊天,用户回复 /approve|/reject 即可。
+        // 此前审批只能走 REST,聊天用户无从批准,require_approval 的工具等于永久禁用。
+        {
+            let gw = self.clone();
+            let mut rx = self.approval_registry.subscribe();
+            tokio::spawn(async move {
+                while let Ok(req) = rx.recv().await {
+                    if req.session_key.is_empty() {
+                        continue;
+                    }
+                    let args = {
+                        let raw = req.arguments.to_string();
+                        let t: String = raw.chars().take(300).collect();
+                        t
+                    };
+                    let text = format!(
+                        "⚠️ 需要审批\n工具: {}\n参数: {}\n\n回复 `/approve {}` 批准,或 `/reject {}` 拒绝 (超时自动拒绝)",
+                        req.tool_name, args, req.id, req.id
+                    );
+                    gw.notify_session(&req.session_key, &text).await;
+                }
+            });
+        }
+
         // 启动飞书消息处理循环 (在启动连接之前, 确保消息能被处理)
         if let Some(feishu_ch) = self.feishu_channel.as_ref() {
             let feishu_ch = feishu_ch.clone();
             let agent = self.agent.clone();
+            let store = self.store.clone();
+            let gw = self.clone();
             tokio::spawn(async move {
                 use futures_util::StreamExt;
                 let mut events = feishu_ch.events();
                 while let Some(event) = events.next().await {
                     if let ChannelEvent::Message(envelope) = event {
                         info!("Feishu message received: session_key={}", envelope.session_key);
+
+                        // P0-4: 飞书会重推事件,重复投递必须丢弃,否则副作用动作会执行两次
+                        if !event_is_new(&store, &format!("feishu:{}", envelope.id)) {
+                            warn!("duplicate feishu event {} dropped", envelope.id);
+                            continue;
+                        }
                         
+                        // P1-5/P1-9: 控制命令 (/clear /stop /approve /reject) 不进 Agent 循环,
+                        // 否则会排在正在跑的任务之后 (会话锁) 而永远等不到执行。
                         if let Content::Text(ref text) = envelope.message.content {
-                            if text.trim() == "/clear" {
-                                info!("Received /clear command from Feishu, clearing session {}", envelope.session_key);
-                                agent.session_manager().delete(&envelope.session_key);
+                            if let Some(reply) = gw.handle_chat_command(&envelope.session_key, text) {
                                 let response = rustclaw_agent::AgentResponse {
                                     session_key: envelope.session_key.clone(),
                                     message: Message {
                                         role: Role::Assistant,
-                                        content: Content::text("会话已清空".to_string()),
+                                        content: Content::text(reply),
                                     },
                                     tool_calls: vec![],
                                 };
@@ -639,6 +888,8 @@ let reach_config = rustclaw_tool::ReachConfig {
         if let Some(wechat_ch) = self.wechat_channel.as_ref() {
             let wechat_ch = wechat_ch.clone();
             let agent = self.agent.clone();
+            let store = self.store.clone();
+            let gw = self.clone();
             tokio::spawn(async move {
                 use futures_util::StreamExt;
                 let mut events = wechat_ch.events();
@@ -646,19 +897,23 @@ let reach_config = rustclaw_tool::ReachConfig {
                     if let ChannelEvent::Message(envelope) = event {
                         info!("WeChat message received: session_key={}", envelope.session_key);
 
-                        // /clear 清空会话
+                        // P0-4: 连接器重试的同一 msg_id 必须丢弃
+                        if !event_is_new(&store, &format!("wechat:{}", envelope.id)) {
+                            warn!("duplicate wechat event {} dropped", envelope.id);
+                            continue;
+                        }
+
+                        // P1-5/P1-9: 控制命令 (/clear /stop /approve /reject) 不进 Agent 循环
                         if let Content::Text(ref text) = envelope.message.content {
-                            if text.trim() == "/clear" {
-                                agent.session_manager().delete(&envelope.session_key);
-                                let response = rustclaw_agent::AgentResponse {
-                                    session_key: envelope.session_key.clone(),
-                                    message: Message {
+                            if let Some(reply) = gw.handle_chat_command(&envelope.session_key, text) {
+                                let resp_env = Envelope::new(
+                                    "wechat",
+                                    &envelope.session_key,
+                                    Message {
                                         role: Role::Assistant,
-                                        content: Content::text("会话已清空".to_string()),
+                                        content: Content::text(reply),
                                     },
-                                    tool_calls: vec![],
-                                };
-                                let resp_env = Envelope::new("wechat", &response.session_key, response.message);
+                                );
                                 let _ = wechat_ch.send(resp_env).await;
                                 continue;
                             }
@@ -900,6 +1155,27 @@ async fn process_webhook(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // P0-4: 调用方带 event_id/id 时判重。Webhook 重试是常态,不判重会重复执行副作用动作。
+    // 未提供 id 的请求不判重 (调用方自负重试语义)。
+    if let Some(event_id) = body
+        .get("event_id")
+        .or_else(|| body.get("eventId"))
+        .or_else(|| body.get("id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        if !state.is_new_event(&format!("webhook:{}:{}", source, event_id)) {
+            warn!("duplicate webhook event {} dropped", event_id);
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "success": true,
+                    "data": { "duplicate": true, "event_id": event_id }
+                })),
+            );
+        }
+    }
+
     let envelope = Envelope::new(
         "webhook",
         &session_key,
@@ -988,6 +1264,43 @@ async fn session_delete_handler(
 ) -> Json<serde_json::Value> {
     state.agent.delete_session(&id);
     api_success(serde_json::json!({ "deleted": id }))
+}
+
+/// P1-5: 取消一个正在运行的会话。协作式取消 —— Agent 在下一个检查点收工并返回部分结果。
+async fn session_cancel_handler(
+    State(state): State<Arc<Gateway>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let cancelled = state.agent.cancel_session(&id);
+    api_success(serde_json::json!({ "session": id, "cancelled": cancelled }))
+}
+
+/// P2-13: token 用量统计 (进程启动以来累计,含按模型细分)。
+async fn usage_handler() -> Json<serde_json::Value> {
+    let usage = rustclaw_provider::usage_snapshot();
+    api_success(serde_json::to_value(usage).unwrap_or_default())
+}
+
+/// P2-14: Prometheus 文本格式指标。
+async fn metrics_handler() -> impl axum::response::IntoResponse {
+    let usage = rustclaw_provider::usage_snapshot();
+    let mut body = rustclaw_agent::metrics::render();
+    body.push_str(&format!(
+        "# HELP rustclaw_llm_requests LLM requests with reported usage\n\
+         # TYPE rustclaw_llm_requests counter\n\
+         rustclaw_llm_requests {}\n\
+         # HELP rustclaw_prompt_tokens Prompt tokens consumed\n\
+         # TYPE rustclaw_prompt_tokens counter\n\
+         rustclaw_prompt_tokens {}\n\
+         # HELP rustclaw_completion_tokens Completion tokens produced\n\
+         # TYPE rustclaw_completion_tokens counter\n\
+         rustclaw_completion_tokens {}\n",
+        usage.requests, usage.prompt_tokens, usage.completion_tokens
+    ));
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        body,
+    )
 }
 
 async fn message_handler(
@@ -1266,6 +1579,36 @@ async fn session_get_handler(
             "error": format!("Session not found: {}", id)
         }))
     }
+}
+
+/// X-3: 当前**实际可被调用**的工具表 (含已上线的 skill_* 技能)。
+/// `GET /api/skill` 只说明技能被登记了;能不能调用要看这里 ——
+/// Rust/JS 技能会出现在前者、不会出现在这里。
+async fn tools_list_handler(State(state): State<Arc<Gateway>>) -> Json<serde_json::Value> {
+    let registry = state.agent.tool_registry();
+    let available: std::collections::HashSet<String> = registry
+        .available_schemas()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    let policy = state.agent.tool_policy();
+
+    let tools: Vec<serde_json::Value> = registry
+        .list()
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+                "is_skill": s.name.starts_with(rustclaw_tool::SKILL_TOOL_PREFIX),
+                "available": available.contains(&s.name),
+                "allowed": policy.is_allowed(&s.name),
+                "requires_approval": policy.requires_approval(&s.name),
+            })
+        })
+        .collect();
+
+    api_success(serde_json::json!({ "count": tools.len(), "tools": tools }))
 }
 
 async fn agent_list_handler(

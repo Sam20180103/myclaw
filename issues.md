@@ -8,6 +8,31 @@
 
 ## 已完成的修复 (Completed) ✅
 
+### v0.53.0 实战上线加固 (P0/P1/P2, 详见 `docs/PRODUCTION_READINESS.md`)
+
+| # | 模块/文件 | 问题描述 | 修复方案 |
+|---|---|---|---|
+| P0-1 | `crates/compression/src/lib.rs` | 压缩删除 ToolResult 却保留配对的 assistant ToolUse → 孤儿 tool_use,Provider 返回 400,且经 `replace_messages` 永久落盘损坏会话 | 旧结果改为**正文省略**(保留最近 3 条完整);新增 `sanitize_pairing()` 强制配对不变量(丢孤儿结果 / 合成缺失结果) |
+| P0-2 | `crates/compression`, `crates/agent` | 压缩是纯丢弃,Agent 长任务失忆后重复执行有副作用动作 | `CompressionResult.dropped` 回传被弃历史;Agent `summarize_dropped()` 生成摘要插回队首,LLM 不可用时降级 `local_summary()` |
+| P0-3 | `crates/compression`, `crates/config`, `crates/gateway` | 预算按 UTF-8 字节算(中文高估 3 倍),窗口在 gateway 硬编码 | `estimate_tokens()`(ASCII 4 字符/token, CJK 1 字符/token);窗口/阈值移入 `[agent] context_window_tokens` / `compression_threshold` |
+| P0-4 | `crates/storage`, `crates/gateway`, `crates/feishu`, `crates/wechat` | 无入站幂等,飞书重推 / Webhook 重试导致重复发帖、重复投递 | `processed_events` 表 + `mark_event_seen()`(INSERT OR IGNORE 原子判重);三个入站通道统一按 `Envelope.id` 判重,`cleanup_events` 每小时清理保留 7 天 |
+| P1-5 | `crates/agent`, `crates/gateway` | 无取消,用户"停"的消息阻塞在会话锁上最坏等百分钟 | per-session `watch` 取消句柄 + `cancel_session()`;循环与 LLM 调用、工具批次竞速;`POST /api/session/:id/cancel` 与聊天 `/stop` |
+| P1-6 | `crates/agent`, `crates/config` | 整轮无墙钟预算 | `max_loop_duration_ms`(默认 600s),超时返回部分结果 |
+| P1-7 | `crates/agent` | 迭代耗尽返回 `Err`,中间成果全丢 | 改为返回带 `[未完成 · …]` 前缀的部分结果 |
+| P1-8 | `crates/agent`, `crates/gateway` | 循环期间零反馈,用户静默等数分钟 | `AgentEvent` 增 `session` 字段 + 网关事件广播,按会话推送"正在调用工具 X"(每会话 ≥5s 节流) |
+| P1-9 | `crates/agent`, `crates/gateway` | 审批只能走 REST,聊天用户无法批准 → `require_approval` 工具形同禁用 | `ApprovalHook` 增 `session_key`;审批请求推送到发起会话;聊天 `/approve <id>` `/reject <id>`(在会话锁之前处理) |
+| P1-10 | `crates/agent` | `process` / `process_stream` 为零调用方死代码,且绕过工具/记忆/压缩 | 直接删除 |
+| P1-11 | `crates/agent`, `crates/config` | 工具结果无上限,一次大抓取顶爆上下文 | `max_tool_result_chars`(默认 16000)保头保尾截断 |
+| P1-12 | `crates/agent` | 模型参数不校验,直接丢进工具 | `validate_tool_args()` 按 JSON Schema 校验必填与类型,失败作为 tool_result 回灌供模型自纠 |
+| P2-13 | `crates/provider`, `crates/gateway` | `Usage` 结构体全仓无人写入,不知道烧了多少 token | provider 解析响应回填进程级 `UsageStats`(不改 trait 签名);`GET /api/usage` |
+| P2-14 | `crates/agent/src/metrics.rs` (新), `crates/gateway` | 只有 `/health`,无任何运行指标 | 原子计数器(循环/迭代/工具/失败/provider 错误/压缩)+ `GET /metrics` Prometheus 文本 |
+| P2-15 | `crates/agent` | 同轮多工具串行执行 | `join_all` 并发执行,结果按请求顺序回灌 |
+| P2-16 | `crates/config`, `crates/gateway` | 定时任务结果只写日志,失败无人知 | `[[schedules]]` 增 `notify_session` / `notify_channel`,成功与失败都推送 |
+| P2-17 | `crates/tool`, `crates/protocol`, `crates/config`, 通道 | 工具策略全局单一,不区分调用者 | `Envelope.principal` + `ToolPolicy::for_principal()` + `[tools.principals.<id>]` 覆盖 |
+| X-3 | `crates/skill/src/skill_tool.rs` (新), `crates/skill/src/lib.rs`, `crates/tool`, `crates/gateway` | 技能"批准后可调用"的闭环不存在(批准只改状态,`get_active_skills` 仅用于列表);技能目录布局两处定义、文档写错 | 新增 `SkillTool` 把已批准的 **Shell/Python** 技能注册为 `dyn_skill_*` 工具(经 `SandboxExecutor` 执行、源码内联兼容 docker 后端、参数 JSON 单引号转义);`init()` 重启后重新上线、`delete` 注销;`requires_approval` 对 `dyn_skill_` 前缀无条件为真;新增 `Config::active_skills_dir()` 统一布局与 `GET /api/tools` |
+| X-2 | `crates/config`, `crates/cli`, `crates/skill` | `RUSTCLAW_PROFILE` 只隔离了 `data_dir`:`Config::load()`、CLI 的 4 个路径 helper、`SkillConfig::default()` 都绕开 `profiled()` 就地拼死路径 → 命名 profile 的进程仍读默认 profile 的 config.toml 与其中的飞书/provider 凭据 | 6 处统一改走 `Config::config_path()` / `logs_dir()` / `skills_dir()`;`test_g7_profile_paths` 增加 `load()` 落盘断言 + 网关实测 |
+| X-1 | `crates/gateway/src/lib.rs` | 路由用 axum 0.8 的 `{id}` 语法但依赖是 axum 0.7 → **所有带路径参数的接口 404**(含工具审批接口) | 10 条路由改为 0.7 的 `:id` 语法,起网关逐条 curl 验证 |
+
 ### v0.47.0 小红书自动化
 
 | # | 模块/文件 | 问题描述 | 修复方案 |

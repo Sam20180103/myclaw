@@ -29,6 +29,13 @@ pub struct ScheduleConfig {
     /// 会话 key (默认 `schedule:<name>`,同名任务共享会话上下文)
     #[serde(default)]
     pub session_key: Option<String>,
+    /// P2-16: 结果推送目标会话 (如飞书 `p2p:oc_xxx:ou_xxx`)。
+    /// 不配则结果只进日志 —— 定时任务等于黑洞,失败也没人知道。
+    #[serde(default)]
+    pub notify_session: Option<String>,
+    /// P2-16: 推送通道 (`feishu` | `wechat`),默认按 `notify_session` 所属会话推断
+    #[serde(default)]
+    pub notify_channel: Option<String>,
 }
 
 /// G8: 解析 "30s" / "10m" / "2h" / "1d" 形式的间隔;非法返回 None。最小 10s。
@@ -148,6 +155,34 @@ pub struct AgentConfig {
     pub default_model: String,          // 默认模型
     pub max_loop_iterations: u32,       // 最大循环迭代次数
     pub tool_timeout_ms: u64,           // 工具超时 (毫秒)
+    /// P1-6: 单次 Agent 循环的墙钟预算 (毫秒),超时返回部分结果
+    #[serde(default = "default_max_loop_duration_ms")]
+    pub max_loop_duration_ms: u64,
+    /// P1-11: 单条工具结果写入历史前的最大字符数 (超出保头保尾截断)
+    #[serde(default = "default_max_tool_result_chars")]
+    pub max_tool_result_chars: usize,
+    /// P0-3: 上下文预算 (token,非字节)。压缩以此为基准
+    #[serde(default = "default_context_window_tokens")]
+    pub context_window_tokens: usize,
+    /// P0-3: 压缩触发阈值 (占 context_window_tokens 的比例)
+    #[serde(default = "default_compression_threshold")]
+    pub compression_threshold: f64,
+}
+
+fn default_max_loop_duration_ms() -> u64 {
+    600_000 // 10 分钟
+}
+
+fn default_max_tool_result_chars() -> usize {
+    16_000
+}
+
+fn default_context_window_tokens() -> usize {
+    128_000
+}
+
+fn default_compression_threshold() -> f64 {
+    0.6
 }
 
 /// 工具配置 — 工具策略和沙箱设置
@@ -161,6 +196,21 @@ pub struct ToolConfig {
     pub max_timeout_ms: u64,           // 最大超时 (毫秒)
     #[serde(default)]
     pub reach: ReachConfig, // Agent-Reach 配置
+    /// P2-17: 按调用者的工具策略覆盖,key 为 principal (飞书 open_id / 微信 wxid)。
+    /// 缺省为空 = 所有调用者共用全局策略 (旧行为)。
+    #[serde(default)]
+    pub principals: std::collections::HashMap<String, PrincipalPolicyConfig>,
+}
+
+/// P2-17: 单个调用者的工具策略覆盖 (字段缺省表示沿用全局)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrincipalPolicyConfig {
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub denied_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub require_approval: Option<Vec<String>>,
 }
 
 /// Agent-Reach 配置
@@ -312,6 +362,10 @@ impl Default for Config {
                 default_model: "claude-3-5-sonnet-20241022".to_string(),
                 max_loop_iterations: 100,
                 tool_timeout_ms: 60000,
+                max_loop_duration_ms: default_max_loop_duration_ms(),
+                max_tool_result_chars: default_max_tool_result_chars(),
+                context_window_tokens: default_context_window_tokens(),
+                compression_threshold: default_compression_threshold(),
             },
             tools: ToolConfig {
                 enabled_tools: vec![
@@ -326,6 +380,7 @@ impl Default for Config {
                 max_memory_mb: 512,
                 max_timeout_ms: 30000,
                 reach: ReachConfig::default(),
+                principals: std::collections::HashMap::new(),
             },
             providers: vec![ProviderConfig {
                 name: "anthropic".to_string(),
@@ -373,12 +428,10 @@ fn resolve_secret_str(value: &mut String) {
 
 impl Config {
     pub fn load(path: Option<PathBuf>) -> anyhow::Result<Self> {
-        let config_path = path.unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("rustclaw")
-                .join("config.toml")
-        });
+        // G7 修复: 必须走 config_path(),它才带 profile 维度。
+        // 此前这里就地拼死路径,导致 RUSTCLAW_PROFILE 对 config.toml 完全失效 —— 命名
+        // profile 的进程会读到默认 profile 的凭据 (飞书 app_secret / provider key)。
+        let config_path = path.unwrap_or_else(Self::config_path);
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
@@ -478,8 +531,16 @@ impl Config {
         Self::profiled(dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))).join("skills")
     }
 
+    /// 待审批技能目录 (`<skills>/pending`)
     pub fn pending_skills_dir() -> PathBuf {
         Self::skills_dir().join("pending")
+    }
+
+    /// 已生效技能目录 (`<skills>/active`)。
+    /// 此前只有 `SkillConfig::default()` 里写死 `skills/active`,而 config 侧没有对应
+    /// 访问器 —— 两处对"生效技能放哪"各说各话,文档也因此写错。
+    pub fn active_skills_dir() -> PathBuf {
+        Self::skills_dir().join("active")
     }
 
     pub fn logs_dir() -> PathBuf {

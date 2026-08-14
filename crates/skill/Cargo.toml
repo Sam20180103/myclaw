@@ -18,6 +18,7 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 which = "6.0"
+rustclaw-config = { path = "../config" }
 rustclaw-protocol = { path = "../protocol" }
 rustclaw-tool = { path = "../tool" }
 

@@ -1,4 +1,5 @@
 pub mod builtin_tools;
+pub mod metrics;
 
 use rustclaw_protocol::{Message, Envelope, Role, Content, ToolCallSpec};
 use rustclaw_tool::{ToolRegistry, ToolCall, ToolPolicy};
@@ -13,18 +14,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use futures_util::stream::StreamExt;
 
-/// Agent 事件枚举 — 用于回调系统，通知外部 Agent 的运行状态
+/// Agent 事件枚举 — 用于回调系统，通知外部 Agent 的运行状态。
+///
+/// P1-8: 事件带 `session` 字段,否则订阅方无法把进度推回正确的聊天会话。
+#[derive(Clone, Debug)]
 pub enum AgentEvent {
     /// 工具开始执行
-    ToolStart { tool_name: String, args: String },
+    ToolStart { session: String, tool_name: String, args: String },
     /// 工具执行结束
-    ToolEnd { tool_name: String, success: bool },
+    ToolEnd { session: String, tool_name: String, success: bool },
     /// 迭代步骤
-    Step { iteration: u32, message_count: usize },
-    /// 状态变化 (started/completed/max_iterations/provider_error)
-    Status { status: String },
+    Step { session: String, iteration: u32, message_count: usize },
+    /// 状态变化 (started/completed/max_iterations/deadline/cancelled/provider_error)
+    Status { session: String, status: String },
     /// 思考内容
     Thinking { content: String },
     /// Skill 创建建议 (复杂任务完成后触发)
@@ -40,8 +43,12 @@ pub type EventCallback = Box<dyn Fn(AgentEvent) + Send + Sync>;
 
 /// G1: 工具审批回调 — 对 `require_approval` 名单内的工具,在执行前异步征求批准。
 /// 返回 `true` 放行、`false` 拒绝。未设置时,需审批的工具一律拒绝 (fail-closed)。
-pub type ApprovalHook =
-    Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+/// P1-9: 回调签名带 `session_key`,审批请求才能推送回发起它的聊天会话。
+pub type ApprovalHook = Arc<
+    dyn Fn(String, serde_json::Value, String) -> Pin<Box<dyn Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
 
 use dashmap::DashMap;
 
@@ -57,6 +64,7 @@ pub struct AgentRuntime {
     event_callback: Option<Arc<EventCallback>>, // 可选: 事件回调
     iteration_budget: Option<u32>,             // 可选: 迭代预算 (父子Agent共享)
     session_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>, // 会话锁
+    cancel_tokens: DashMap<String, tokio::sync::watch::Sender<bool>>, // P1-5: 会话取消句柄
     base_system_prompt: String,                 // 基础系统提示
     tool_policy: ToolPolicy,                    // G1: 工具策略 (允许/拒绝/需审批)
     approval_hook: Option<ApprovalHook>,        // G1: 工具审批回调 (fail-closed)
@@ -95,6 +103,10 @@ pub struct AgentConfig {
     pub tool_timeout_ms: u64,       // 工具执行超时 (毫秒)
     pub session_ttl_seconds: u64,   // 会话过期时间 (秒)
     pub max_concurrent_per_lane: usize, // 每车道最大并发数
+    /// P1-6: 单次循环的墙钟预算 (毫秒),超时返回部分结果而非报错
+    pub max_loop_duration_ms: u64,
+    /// P1-11: 单条工具结果写入历史的最大字符数
+    pub max_tool_result_chars: usize,
 }
 
 impl Default for AgentConfig {
@@ -104,6 +116,8 @@ impl Default for AgentConfig {
             tool_timeout_ms: 60000,      // 默认工具超时60秒
             session_ttl_seconds: 3600,   // 默认会话TTL 1小时
             max_concurrent_per_lane: 10, // 默认每车道10并发
+            max_loop_duration_ms: 600_000, // 默认整轮 10 分钟
+            max_tool_result_chars: 16_000, // 默认单条工具结果 16k 字符
         }
     }
 }
@@ -444,6 +458,7 @@ impl AgentRuntime {
             event_callback: None,
             iteration_budget: None,
             session_locks: DashMap::new(),
+            cancel_tokens: DashMap::new(),
             base_system_prompt: DEFAULT_BASE_SYSTEM_PROMPT.to_string(),
             tool_policy: ToolPolicy::permissive(),
             approval_hook: None,
@@ -526,111 +541,30 @@ impl AgentRuntime {
         }
     }
 
-    pub async fn process(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
-        tracing::debug!("Agent processing envelope: channel={}, session_key={}", 
-            envelope.channel, envelope.session_key);
-        
-        let session_key = &envelope.session_key;
-        let lane = route_lane(session_key);
-        
-        let _session = self.session_manager.get_or_create(
-            session_key,
-            &envelope.channel,
-            &lane,
-        );
-
-        self.session_manager.add_message(session_key, envelope.message);
-
-        let mut messages = self.session_manager.get(session_key)
-            .map(|s| (*s.messages).clone())
-            .unwrap_or_default();
-
-        // Inject base system prompt
-        messages.insert(0, Message {
-            role: Role::System,
-            content: Content::text(self.base_system_prompt.clone()),
-        });
-
-        if let Some(ref memory) = self.memory_manager {
-            let memory_text = memory.get_memory_text();
-            if !memory_text.is_empty() {
-                messages.insert(0, Message {
-                    role: Role::System,
-                    content: Content::text(format!("Memory:\n{}", memory_text)),
-                });
-            }
-        }
-
-        if let Some(ref compressor) = self.context_compressor {
-            let result = compressor.compress(&messages, 100000);
-            if result.compressed {
-                messages = result.messages;
-            }
-        }
-
-        tracing::debug!("Agent about to call LLM with {} messages", messages.len());
-
-        let tool_schemas: Vec<serde_json::Value> = self.tool_registry.available_schemas()
-            .into_iter()
-            .map(|s| serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": s.name,
-                    "description": s.description,
-                    "parameters": s.parameters,
-                }
-            }))
-            .collect();
-
-        let (response_text, tool_call_results) = match self.provider_client.complete_with_tools(messages, tool_schemas).await {
-            Ok((text, calls)) => {
-                tracing::debug!("LLM response received: {} chars", text.len());
-                (text, calls)
-            },
-            Err(e) => {
-                tracing::error!("LLM call failed: {}", e);
-                return Err(AgentError::ProviderError(e.to_string()));
-            },
-        };
-
-        let mut tool_calls: Vec<ToolCall> = tool_call_results.into_iter().map(|tc| {
-            ToolCall {
-                id: tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                name: tc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                arguments: tc.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
-            }
-        }).collect();
-
-        if tool_calls.is_empty() {
-            tool_calls = self.parse_tool_calls(&response_text);
-        }
-
-        tracing::debug!("Parsed {} tool calls from response", tool_calls.len());
-
-        let assistant_message = Message {
-            role: Role::Assistant,
-            content: Content::text(response_text.clone()),
-        };
-        self.session_manager.add_message(session_key, assistant_message.clone());
-
-        Ok(AgentResponse {
-            session_key: session_key.to_string(),
-            message: assistant_message,
-            tool_calls,
-        })
-    }
-
     pub async fn process_with_loop(&self, envelope: Envelope) -> Result<AgentResponse, AgentError> {
         self.process_with_loop_budget(envelope, None).await
     }
 
     /// G10: 带迭代预算覆盖的核心循环 (子 Agent 用较小预算跑同一循环)。
+    ///
+    /// P1-5/P1-6/P1-7: 循环受三重约束 —— 迭代预算、墙钟 deadline、用户取消。
+    /// 任何一条触发都返回**部分结果**而非错误,避免整轮工作白做。
     pub async fn process_with_loop_budget(
         &self,
         envelope: Envelope,
         budget_override: Option<u32>,
     ) -> Result<AgentResponse, AgentError> {
         let session_key = envelope.session_key.clone();
+        // P2-17: 按调用者取有效工具策略 (未配置覆盖时即全局策略)
+        let policy = self.tool_policy.for_principal(envelope.principal.as_deref());
+
+        // P1-5: 注册取消句柄 (在拿会话锁之前注册,排队中的请求也能被取消)
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        self.cancel_tokens.insert(session_key.clone(), cancel_tx);
+        let _cancel_guard = CancelGuard {
+            tokens: &self.cancel_tokens,
+            key: session_key.clone(),
+        };
 
         // 1. Acquire session lock
         let lock = self.session_locks.entry(session_key.clone())
@@ -644,14 +578,35 @@ impl AgentRuntime {
 
         self.session_manager.get_or_create(&session_key, &envelope.channel, &lane);
         self.session_manager.add_message(&session_key, envelope.message);
-        self.emit_event(AgentEvent::Status { status: "started".to_string() });
+        self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "started".to_string() });
+        metrics::inc(&metrics::LOOPS_STARTED);
 
         let max_iterations = budget_override
             .unwrap_or_else(|| self.iteration_budget.unwrap_or(self.config.max_loop_iterations));
+        // P1-6: 整轮墙钟预算
+        let deadline = Instant::now() + Duration::from_millis(self.config.max_loop_duration_ms);
         let mut iterations = 0;
         let mut total_tool_calls: u32 = 0;
 
         loop {
+            // P1-5: 用户取消 → 返回已完成的部分结果
+            if *cancel_rx.borrow() {
+                self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "cancelled".to_string() });
+                metrics::inc(&metrics::LOOPS_CANCELLED);
+                return Ok(self.partial_response(&session_key, "[已取消] 任务被用户中止。"));
+            }
+
+            // P1-6: 墙钟超时 → 返回部分结果 (此前只数迭代次数,单轮最长可跑上百分钟)
+            if Instant::now() >= deadline {
+                self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "deadline".to_string() });
+                metrics::inc(&metrics::LOOPS_DEADLINE);
+                return Ok(self.partial_response(
+                    &session_key,
+                    "[未完成 · 超时] 已达到单轮时间预算,以下是当前进展。",
+                ));
+            }
+
+            // P1-7: 迭代耗尽 → 返回部分结果而非 Err (此前所有中间成果被丢弃)
             if iterations >= max_iterations {
                 if total_tool_calls >= 5 {
                     self.emit_event(AgentEvent::SkillSuggestion {
@@ -659,11 +614,16 @@ impl AgentRuntime {
                         tool_call_count: total_tool_calls,
                     });
                 }
-                self.emit_event(AgentEvent::Status { status: "max_iterations".to_string() });
-                return Err(AgentError::MaxIterationsExceeded);
+                self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "max_iterations".to_string() });
+                metrics::inc(&metrics::LOOPS_MAX_ITERATIONS);
+                return Ok(self.partial_response(
+                    &session_key,
+                    "[未完成 · 达到迭代上限] 以下是当前进展。",
+                ));
             }
 
             self.emit_event(AgentEvent::Step {
+                session: session_key.clone(),
                 iteration: iterations,
                 message_count: self.session_manager.get(&session_key)
                     .map(|s| s.messages.len())
@@ -681,7 +641,20 @@ impl AgentRuntime {
             if let Some(ref compressor) = self.context_compressor {
                 let result = compressor.compress(&history, compressor.context_window());
                 if result.compressed {
+                    metrics::inc(&metrics::COMPRESSIONS);
                     history = result.messages;
+                    // P0-2: 被整条丢弃的历史先摘要,再作为 System 消息插回队首,
+                    // 否则 Agent 会忘记自己已经做过哪些有副作用的动作 (重复发帖/投递)。
+                    if !result.dropped.is_empty() {
+                        let summary = self.summarize_dropped(&result.dropped).await;
+                        history.insert(
+                            0,
+                            Message {
+                                role: Role::System,
+                                content: Content::text(summary),
+                            },
+                        );
+                    }
                     self.session_manager
                         .replace_messages(&session_key, history.clone(), None);
                 }
@@ -717,10 +690,24 @@ impl AgentRuntime {
                 }))
                 .collect();
 
-            let (response_text, tool_call_results) = match self.provider_client.complete_with_tools(messages, tool_schemas).await {
+            // P1-5: LLM 调用与取消竞速 (长响应期间用户可中止)
+            let llm_call = self.provider_client.complete_with_tools(messages, tool_schemas);
+            let llm_result = tokio::select! {
+                biased;
+                _ = cancel_rx.changed() => {
+                    self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "cancelled".to_string() });
+                    metrics::inc(&metrics::LOOPS_CANCELLED);
+                metrics::inc(&metrics::LOOPS_CANCELLED);
+                    return Ok(self.partial_response(&session_key, "[已取消] 任务被用户中止。"));
+                }
+                r = llm_call => r,
+            };
+
+            let (response_text, tool_call_results) = match llm_result {
                 Ok((text, tool_calls)) => (text, tool_calls),
                 Err(e) => {
-                    self.emit_event(AgentEvent::Status { status: "provider_error".to_string() });
+                    self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "provider_error".to_string() });
+                    metrics::inc(&metrics::PROVIDER_ERRORS);
                     return Err(AgentError::ProviderError(e.to_string()));
                 }
             };
@@ -744,7 +731,8 @@ impl AgentRuntime {
                         tool_call_count: total_tool_calls,
                     });
                 }
-                self.emit_event(AgentEvent::Status { status: "completed".to_string() });
+                self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "completed".to_string() });
+                metrics::inc(&metrics::LOOPS_COMPLETED);
 
                 let assistant_message = Message {
                     role: Role::Assistant,
@@ -786,53 +774,73 @@ impl AgentRuntime {
 
             for tool_call in &tool_calls {
                 total_tool_calls += 1;
+                metrics::inc(&metrics::TOOL_CALLS);
                 self.emit_event(AgentEvent::ToolStart {
+                    session: session_key.clone(),
                     tool_name: tool_call.name.clone(),
                     args: tool_call.arguments.to_string(),
                 });
-
                 tracing::info!(
                     tool = %tool_call.name,
                     args = %tool_call.arguments,
                     "Executing tool call"
                 );
+            }
 
-                match self.execute_tool(tool_call, &session_key).await {
+            // P2-15: 同一轮的多个工具调用并发执行 (此前串行,只读工具也要排队);
+            // 结果按原下标回灌,顺序语义不变。
+            // P1-5: 整批执行与取消竞速。
+            let batch = futures_util::future::join_all(
+                tool_calls
+                    .iter()
+                    .map(|tc| self.execute_tool(tc, &session_key, &policy)),
+            );
+            let results = tokio::select! {
+                biased;
+                _ = cancel_rx.changed() => {
+                    // 取消时先补齐 tool_result 占位,保住 tool_use/tool_result 配对不变量
+                    for tool_call in &tool_calls {
+                        self.session_manager.add_message(
+                            &session_key,
+                            Message::tool_result(&tool_call.id, &tool_call.name, "[已取消]"),
+                        );
+                    }
+                    self.emit_event(AgentEvent::Status { session: session_key.clone(), status: "cancelled".to_string() });
+                    metrics::inc(&metrics::LOOPS_CANCELLED);
+                metrics::inc(&metrics::LOOPS_CANCELLED);
+                    return Ok(self.partial_response(&session_key, "[已取消] 任务被用户中止。"));
+                }
+                r = batch => r,
+            };
+
+            let mut pending_image: Option<Message> = None;
+            for (tool_call, result) in tool_calls.iter().zip(results.into_iter()) {
+                match result {
                     Ok(result) => {
-                        // D1: 通用"工具结果含可渲染图片 → 直接回给用户"适配,
-                        // 平台特例 (如 BOSS 扫码二维码) 不再硬编码在内核里。
-                        if let Some(image_message) = extract_renderable_image(&result) {
-                            // C1: 先回灌 tool_result 保持 tool_calls 配对,再返回图片消息
-                            self.session_manager.add_message(
-                                &session_key,
-                                Message::tool_result(&tool_call.id, &tool_call.name, &result),
-                            );
-                            self.session_manager
-                                .add_message(&session_key, image_message.clone());
-                            self.emit_event(AgentEvent::ToolEnd {
-                                tool_name: tool_call.name.clone(),
-                                success: true,
-                            });
-                            return Ok(AgentResponse {
-                                session_key,
-                                message: image_message,
-                                tool_calls: vec![],
-                            });
-                        }
-
                         tracing::info!(
                             tool = %tool_call.name,
                             result_len = result.len(),
                             "Tool execution succeeded"
                         );
                         self.emit_event(AgentEvent::ToolEnd {
+                            session: session_key.clone(),
                             tool_name: tool_call.name.clone(),
                             success: true,
                         });
+                        // D1: 通用"工具结果含可渲染图片 → 直接回给用户"适配,
+                        // 平台特例 (如 BOSS 扫码二维码) 不再硬编码在内核里。
+                        if pending_image.is_none() {
+                            pending_image = extract_renderable_image(&result);
+                        }
                         // C1: 工具结果以 tool 角色 + tool_call_id 回灌,而非 System 文本
+                        // P1-11: 超长结果截断后再入历史,防单条结果顶爆上下文
                         self.session_manager.add_message(
                             &session_key,
-                            Message::tool_result(&tool_call.id, &tool_call.name, &result),
+                            Message::tool_result(
+                                &tool_call.id,
+                                &tool_call.name,
+                                truncate_tool_result(&result, self.config.max_tool_result_chars),
+                            ),
                         );
                     }
                     Err(e) => {
@@ -843,9 +851,11 @@ impl AgentRuntime {
                             "Tool execution failed"
                         );
                         self.emit_event(AgentEvent::ToolEnd {
+                            session: session_key.clone(),
                             tool_name: tool_call.name.clone(),
                             success: false,
                         });
+                        metrics::inc(&metrics::TOOL_FAILURES);
                         // C1: 工具错误同样以 tool 角色回灌,保持 tool_calls/tool_result 配对
                         self.session_manager.add_message(
                             &session_key,
@@ -859,7 +869,91 @@ impl AgentRuntime {
                 }
             }
 
+            // 有可渲染图片时直接回给用户 (所有 tool_result 已回灌,配对完整)
+            if let Some(image_message) = pending_image {
+                self.session_manager
+                    .add_message(&session_key, image_message.clone());
+                return Ok(AgentResponse {
+                    session_key,
+                    message: image_message,
+                    tool_calls: vec![],
+                });
+            }
+
             iterations += 1;
+            metrics::inc(&metrics::ITERATIONS);
+        }
+    }
+
+    /// P1-5: 取消指定会话正在进行的 Agent 循环。返回是否命中一个在跑的会话。
+    /// 取消是协作式的: 循环会在下一个检查点 (LLM 调用 / 工具批次 / 轮次开始) 退出,
+    /// 并把已完成的部分结果回给用户。
+    pub fn cancel_session(&self, session_key: &str) -> bool {
+        match self.cancel_tokens.get(session_key) {
+            Some(tx) => tx.send(true).is_ok(),
+            None => false,
+        }
+    }
+
+    /// P1-6/P1-7: 构造"未完成但有进展"的响应。
+    /// 取最后一条 assistant 文本作为进展,加上原因前缀,并写回历史保持对话连贯。
+    fn partial_response(&self, session_key: &str, note: &str) -> AgentResponse {
+        let progress = self
+            .session_manager
+            .get(session_key)
+            .and_then(|s| {
+                s.messages.iter().rev().find_map(|m| match (&m.role, &m.content) {
+                    (Role::Assistant, Content::Text(t)) if !t.trim().is_empty() => {
+                        Some(t.clone())
+                    }
+                    (Role::Assistant, Content::ToolUse { text: Some(t), .. })
+                        if !t.trim().is_empty() =>
+                    {
+                        Some(t.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+
+        let text = if progress.is_empty() {
+            note.to_string()
+        } else {
+            format!("{}\n\n{}", note, progress)
+        };
+        let message = Message {
+            role: Role::Assistant,
+            content: Content::text(text),
+        };
+        self.session_manager.add_message(session_key, message.clone());
+        AgentResponse {
+            session_key: session_key.to_string(),
+            message,
+            tool_calls: vec![],
+        }
+    }
+
+    /// P0-2: 把即将被丢弃的历史压成摘要。优先让 LLM 写,失败时降级为本地摘要
+    /// (本地版至少保住"已执行过哪些工具",防止压缩后重复执行副作用动作)。
+    async fn summarize_dropped(&self, dropped: &[Message]) -> String {
+        let fallback = ContextCompressor::local_summary(dropped);
+        if !self.provider_client.is_configured() {
+            return fallback;
+        }
+        let prompt = ContextCompressor::summary_prompt(dropped);
+        let req = vec![Message {
+            role: Role::User,
+            content: Content::text(prompt),
+        }];
+        match self.provider_client.complete(req).await {
+            Ok(text) if !text.trim().is_empty() => {
+                format!("[历史摘要]\n{}\n\n{}", text.trim(), fallback)
+            }
+            Ok(_) => fallback,
+            Err(e) => {
+                tracing::warn!("summarize_dropped failed, using local summary: {}", e);
+                fallback
+            }
         }
     }
 
@@ -1075,9 +1169,14 @@ impl AgentRuntime {
         tool_calls
     }
 
-    async fn execute_tool(&self, tool_call: &ToolCall, session_key: &str) -> Result<String, AgentError> {
-        // G1: 策略门控 —— 黑名单拒绝
-        if !self.tool_policy.is_allowed(&tool_call.name) {
+    async fn execute_tool(
+        &self,
+        tool_call: &ToolCall,
+        session_key: &str,
+        policy: &ToolPolicy,
+    ) -> Result<String, AgentError> {
+        // G1: 策略门控 —— 黑名单拒绝 (P2-17: policy 已按调用者解析)
+        if !policy.is_allowed(&tool_call.name) {
             let reason = "denied by tool policy".to_string();
             self.emit_event(AgentEvent::ToolDenied {
                 tool_name: tool_call.name.clone(),
@@ -1086,9 +1185,16 @@ impl AgentRuntime {
             return Err(AgentError::ToolError(format!("tool '{}' {}", tool_call.name, reason)));
         }
         // G1: 需审批的工具,执行前征求批准 (无 hook → fail-closed 拒绝)
-        if self.tool_policy.requires_approval(&tool_call.name) {
+        if policy.requires_approval(&tool_call.name) {
             let approved = match &self.approval_hook {
-                Some(hook) => hook(tool_call.name.clone(), tool_call.arguments.clone()).await,
+                Some(hook) => {
+                    hook(
+                        tool_call.name.clone(),
+                        tool_call.arguments.clone(),
+                        session_key.to_string(),
+                    )
+                    .await
+                }
                 None => false,
             };
             if !approved {
@@ -1103,6 +1209,15 @@ impl AgentRuntime {
 
         let tool = self.tool_registry.get(&tool_call.name)
             .ok_or_else(|| AgentError::ToolError(format!("Tool not found: {}", tool_call.name)))?;
+
+        // P1-12: 先按 schema 校验参数。校验失败直接回错误,由模型自行修正重试,
+        // 避免把脏参数丢进工具后拿到五花八门的底层报错。
+        if let Err(msg) = validate_tool_args(&tool.schema().parameters, &tool_call.arguments) {
+            return Err(AgentError::ToolError(format!(
+                "invalid arguments for tool '{}': {}",
+                tool_call.name, msg
+            )));
+        }
 
         // G10: spawn_subagent 需要知道父会话以记谱系 — 注入保留参数 (仅此内置工具)。
         let mut arguments = tool_call.arguments.clone();
@@ -1151,6 +1266,7 @@ impl AgentRuntime {
         self.session_manager.delete(key);
         // R1: 同步移除会话锁,避免 DashMap 无界增长
         self.session_locks.remove(key);
+        self.cancel_tokens.remove(key);
     }
 
     /// G10: 以受限预算派生一个子 Agent 执行独立子任务。
@@ -1206,53 +1322,106 @@ impl AgentRuntime {
         removed.len()
     }
 
-    pub async fn process_stream(
-        &self,
-        envelope: Envelope,
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<String, AgentError>>, AgentError> {
-        let session_key = envelope.session_key.clone();
-        let lane = route_lane(&session_key);
-        
-        self.session_manager.get_or_create(
-            &session_key,
-            &envelope.channel,
-            &lane,
-        );
+}
 
-        self.session_manager.add_message(&session_key, envelope.message);
+/// P1-5: 循环结束时(含 early return / panic 展开)自动摘掉取消句柄,防止 DashMap 无界增长。
+struct CancelGuard<'a> {
+    tokens: &'a DashMap<String, tokio::sync::watch::Sender<bool>>,
+    key: String,
+}
 
-        let mut messages = self.session_manager.get(&session_key)
-            .map(|s| (*s.messages).clone())
-            .unwrap_or_default();
-
-        // Inject base system prompt
-        messages.insert(0, Message {
-            role: Role::System,
-            content: Content::text(self.base_system_prompt.clone()),
-        });
-
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        
-        let provider = self.provider_client.clone();
-        tokio::spawn(async move {
-            let mut stream = provider.stream_complete(messages).await;
-            while let Some(token_result) = stream.next().await {
-                match token_result {
-                    Ok(token) => {
-                        if tx.send(Ok(token)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(AgentError::ProviderError(e.to_string()))).await;
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
+impl Drop for CancelGuard<'_> {
+    fn drop(&mut self) {
+        self.tokens.remove(&self.key);
     }
+}
+
+/// P1-11: 截断超长工具结果 —— 保头保尾并标注,避免一次大抓取顶爆上下文。
+/// 保头是为了留住结构/状态码,保尾是为了留住结论/错误信息。
+fn truncate_tool_result(result: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return result.to_string();
+    }
+    let total = result.chars().count();
+    if total <= max_chars {
+        return result.to_string();
+    }
+    let head_len = max_chars * 2 / 3;
+    let tail_len = max_chars - head_len;
+    let head: String = result.chars().take(head_len).collect();
+    let tail: String = result
+        .chars()
+        .skip(total.saturating_sub(tail_len))
+        .collect();
+    format!(
+        "{}\n\n... [工具结果过长,已截断 {} 个字符;如需完整内容请缩小查询范围或分页] ...\n\n{}",
+        head,
+        total - max_chars,
+        tail
+    )
+}
+
+/// P1-12: 按工具 JSON Schema 校验模型给的参数。返回 Err(说明) 时,
+/// 说明会作为 tool_result 回灌给模型,让它自己改参数重试,而不是把脏参数丢进工具。
+fn validate_tool_args(schema: &serde_json::Value, args: &serde_json::Value) -> Result<(), String> {
+    let props = match schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return Ok(()), // 无 schema 约束 (自由参数工具) → 放行
+    };
+
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return Err("arguments must be a JSON object".to_string()),
+    };
+
+    // 必填字段
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+        let missing: Vec<String> = required
+            .iter()
+            .filter_map(|r| r.as_str())
+            .filter(|name| !obj.contains_key(*name) || obj[*name].is_null())
+            .map(|s| s.to_string())
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "missing required parameter(s): {}. expected schema: {}",
+                missing.join(", "),
+                schema
+            ));
+        }
+    }
+
+    // 类型检查 (只查显式声明了 type 的字段)
+    for (name, value) in obj {
+        if value.is_null() {
+            continue;
+        }
+        let expected = match props
+            .get(name)
+            .and_then(|p| p.get("type"))
+            .and_then(|t| t.as_str())
+        {
+            Some(t) => t,
+            None => continue,
+        };
+        let ok = match expected {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "boolean" => value.is_boolean(),
+            "array" => value.is_array(),
+            "object" => value.is_object(),
+            _ => true,
+        };
+        if !ok {
+            return Err(format!(
+                "parameter '{}' must be of type {}, got: {}",
+                name, expected, value
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// D1: 通用地从工具结果 JSON 里识别"可直接渲染给用户的图片"。
@@ -1757,7 +1926,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_approval_with_granting_hook_runs() {
         let policy = ToolPolicy::permissive().with_require_approval(vec!["echo".to_string()]);
-        let rt = rt_with_policy(policy).with_approval_hook(Arc::new(|_name, _args| {
+        let rt = rt_with_policy(policy).with_approval_hook(Arc::new(|_name, _args, _session| {
             Box::pin(async { true })
         }));
         let env = Envelope::new("test", "sess-appr-ok", Message {
@@ -1769,5 +1938,329 @@ mod tests {
         let ran = session.messages.iter().any(|m| matches!(&m.content,
             Content::ToolResult { output, .. } if output.contains("echoed")));
         assert!(ran, "approved tool should execute and produce its result");
+    }
+
+    // --- P1: 取消 / 墙钟预算 / 部分结果 / 结果截断 / 参数校验 ---
+
+    /// 永远请求工具的 provider — 用于把循环逼到预算边界
+    struct LoopingProvider;
+
+    #[async_trait::async_trait]
+    impl rustclaw_provider::LlmProvider for LoopingProvider {
+        async fn complete(&self, _m: Vec<Message>) -> Result<String, rustclaw_provider::ProviderError> {
+            Ok(String::new())
+        }
+        async fn complete_with_tools(
+            &self,
+            _m: Vec<Message>,
+            _t: Vec<serde_json::Value>,
+        ) -> Result<(String, Vec<serde_json::Value>), rustclaw_provider::ProviderError> {
+            Ok((
+                "还在干活".to_string(),
+                vec![serde_json::json!({ "id": "c", "name": "echo", "arguments": { "x": 1 } })],
+            ))
+        }
+        async fn stream_complete(&self, _m: Vec<Message>) -> rustclaw_provider::TokenStream {
+            Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+        }
+        async fn list_models(&self) -> Result<Vec<String>, rustclaw_provider::ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    /// 慢工具 — 用于测试取消不必等工具跑完
+    struct SlowTool;
+
+    #[async_trait::async_trait]
+    impl rustclaw_tool::Tool for SlowTool {
+        fn name(&self) -> &str { "slow" }
+        fn description(&self) -> &str { "sleeps" }
+        fn schema(&self) -> rustclaw_tool::ToolSchema {
+            rustclaw_tool::ToolSchema {
+                name: "slow".to_string(),
+                description: "sleeps".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            _p: serde_json::Value,
+        ) -> Result<serde_json::Value, rustclaw_tool::ToolError> {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+    }
+
+    fn looping_rt(config: AgentConfig) -> Arc<AgentRuntime> {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        registry.register(Arc::new(SlowTool));
+        Arc::new(
+            AgentRuntime::new(config)
+                .with_tools(registry)
+                .with_provider(ProviderClient::new(Some(Arc::new(LoopingProvider)))),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_max_iterations_returns_partial_response() {
+        // P1-7: 迭代耗尽必须返回进展,而不是丢弃全部工作只报错
+        let config = AgentConfig { max_loop_iterations: 2, ..AgentConfig::default() };
+        let rt = looping_rt(config);
+        let env = Envelope::new("test", "sess-maxiter", Message {
+            role: Role::User,
+            content: Content::text("干活"),
+        });
+        let resp = rt.process_with_loop(env).await.expect("应返回部分结果而非 Err");
+        match &resp.message.content {
+            Content::Text(t) => {
+                assert!(t.contains("达到迭代上限"), "got: {}", t);
+                assert!(t.contains("还在干活"), "部分进展必须带上, got: {}", t);
+            }
+            other => panic!("unexpected content: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deadline_returns_partial() {
+        // P1-6: 墙钟预算到点必须收工返回进展
+        let config = AgentConfig {
+            max_loop_iterations: 1000,
+            max_loop_duration_ms: 150,
+            ..AgentConfig::default()
+        };
+        let rt = looping_rt(config);
+        let env = Envelope::new("test", "sess-deadline", Message {
+            role: Role::User,
+            content: Content::text("干活"),
+        });
+        let started = Instant::now();
+        let resp = rt.process_with_loop(env).await.expect("应返回部分结果");
+        assert!(started.elapsed() < Duration::from_secs(10), "必须在预算附近收工");
+        assert!(matches!(&resp.message.content, Content::Text(t) if t.contains("超时")));
+    }
+
+    #[tokio::test]
+    async fn test_cancel_session_stops_loop() {
+        // P1-5: 取消不必等慢工具跑完 (SlowTool 睡 30s, 工具超时 60s)
+        let config = AgentConfig { max_loop_iterations: 1000, ..AgentConfig::default() };
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(SlowTool));
+        struct SlowCaller;
+        #[async_trait::async_trait]
+        impl rustclaw_provider::LlmProvider for SlowCaller {
+            async fn complete(&self, _m: Vec<Message>) -> Result<String, rustclaw_provider::ProviderError> {
+                Ok(String::new())
+            }
+            async fn complete_with_tools(
+                &self,
+                _m: Vec<Message>,
+                _t: Vec<serde_json::Value>,
+            ) -> Result<(String, Vec<serde_json::Value>), rustclaw_provider::ProviderError> {
+                Ok((
+                    "调用慢工具".to_string(),
+                    vec![serde_json::json!({ "id": "c", "name": "slow", "arguments": {} })],
+                ))
+            }
+            async fn stream_complete(&self, _m: Vec<Message>) -> rustclaw_provider::TokenStream {
+                Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+            }
+            async fn list_models(&self) -> Result<Vec<String>, rustclaw_provider::ProviderError> {
+                Ok(vec![])
+            }
+        }
+        let rt = Arc::new(
+            AgentRuntime::new(config)
+                .with_tools(registry)
+                .with_provider(ProviderClient::new(Some(Arc::new(SlowCaller)))),
+        );
+
+        let rt2 = rt.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(rt2.cancel_session("sess-cancel"), "取消句柄应命中在跑的会话");
+        });
+
+        let env = Envelope::new("test", "sess-cancel", Message {
+            role: Role::User,
+            content: Content::text("干活"),
+        });
+        let started = Instant::now();
+        let resp = rt.process_with_loop(env).await.expect("取消应返回部分结果");
+        assert!(started.elapsed() < Duration::from_secs(10), "不应等满慢工具");
+        assert!(matches!(&resp.message.content, Content::Text(t) if t.contains("已取消")));
+
+        // 取消路径也必须保持 tool_use / tool_result 配对
+        let session = rt.get_session("sess-cancel").unwrap();
+        let uses = session.messages.iter().filter(|m| matches!(m.content, Content::ToolUse { .. })).count();
+        let results = session.messages.iter().filter(|m| matches!(m.content, Content::ToolResult { .. })).count();
+        assert_eq!(uses, results, "取消后 tool_use 与 tool_result 必须配平");
+    }
+
+    #[test]
+    fn test_tool_result_truncated() {
+        // P1-11: 超长结果保头保尾并标注
+        let long = "a".repeat(5000);
+        let out = truncate_tool_result(&long, 100);
+        assert!(out.chars().count() < 400);
+        assert!(out.contains("已截断"));
+        assert!(out.starts_with('a') && out.ends_with('a'));
+        // 未超限的原样返回
+        assert_eq!(truncate_tool_result("short", 100), "short");
+    }
+
+    #[test]
+    fn test_validate_args_missing_required() {
+        // P1-12: 缺必填 / 类型不符必须在进入工具前拦下
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" }, "limit": { "type": "integer" } },
+            "required": ["path"]
+        });
+        assert!(validate_tool_args(&schema, &serde_json::json!({ "path": "/tmp/a" })).is_ok());
+
+        let err = validate_tool_args(&schema, &serde_json::json!({ "limit": 3 })).unwrap_err();
+        assert!(err.contains("path"), "got: {}", err);
+
+        let err = validate_tool_args(&schema, &serde_json::json!({ "path": 42 })).unwrap_err();
+        assert!(err.contains("string"), "got: {}", err);
+
+        // 无 properties 的自由参数工具放行
+        assert!(validate_tool_args(&serde_json::json!({"type": "object"}), &serde_json::json!({"x": 1})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_parallel_tool_calls_preserve_order() {
+        // P2-15: 同轮多工具并发执行, 但 tool_result 顺序必须与请求顺序一致
+        struct MultiCall(AtomicUsize);
+        #[async_trait::async_trait]
+        impl rustclaw_provider::LlmProvider for MultiCall {
+            async fn complete(&self, _m: Vec<Message>) -> Result<String, rustclaw_provider::ProviderError> {
+                Ok(String::new())
+            }
+            async fn complete_with_tools(
+                &self,
+                _m: Vec<Message>,
+                _t: Vec<serde_json::Value>,
+            ) -> Result<(String, Vec<serde_json::Value>), rustclaw_provider::ProviderError> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok((
+                        String::new(),
+                        vec![
+                            serde_json::json!({ "id": "a", "name": "echo", "arguments": { "n": 1 } }),
+                            serde_json::json!({ "id": "b", "name": "echo", "arguments": { "n": 2 } }),
+                            serde_json::json!({ "id": "c", "name": "echo", "arguments": { "n": 3 } }),
+                        ],
+                    ))
+                } else {
+                    Ok(("done".to_string(), vec![]))
+                }
+            }
+            async fn stream_complete(&self, _m: Vec<Message>) -> rustclaw_provider::TokenStream {
+                Box::pin(futures_util::stream::iter(vec![Ok("x".to_string())]))
+            }
+            async fn list_models(&self) -> Result<Vec<String>, rustclaw_provider::ProviderError> {
+                Ok(vec![])
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let rt = AgentRuntime::new(AgentConfig::default())
+            .with_tools(registry)
+            .with_provider(ProviderClient::new(Some(Arc::new(MultiCall(AtomicUsize::new(0))))));
+
+        let env = Envelope::new("test", "sess-par", Message {
+            role: Role::User,
+            content: Content::text("跑三个工具"),
+        });
+        rt.process_with_loop(env).await.expect("loop completes");
+
+        let session = rt.get_session("sess-par").unwrap();
+        let ids: Vec<String> = session.messages.iter().filter_map(|m| match &m.content {
+            Content::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_event_callback_receives_session_tagged_events() {
+        // P1-8: 事件必须带 session,否则通道侧无法把进度推回正确的聊天
+        use std::sync::Mutex;
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let rt = AgentRuntime::new(AgentConfig::default())
+            .with_tools(registry)
+            .with_provider(ProviderClient::new(Some(Arc::new(MockProvider {
+                calls: AtomicUsize::new(0),
+            }))))
+            .with_event_callback(Box::new(move |e| {
+                if let AgentEvent::ToolStart { session, tool_name, .. } = e {
+                    sink.lock().unwrap().push((session, tool_name));
+                }
+            }));
+
+        let env = Envelope::new("test", "sess-events", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        });
+        rt.process_with_loop(env).await.expect("loop completes");
+
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events, vec![("sess-events".to_string(), "echo".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_approval_notifier_invoked() {
+        // P1-9: 审批回调必须拿到 session_key,否则审批请求推不回发起它的聊天
+        use std::sync::Mutex;
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+
+        let policy = ToolPolicy::permissive().with_require_approval(vec!["echo".to_string()]);
+        let rt = rt_with_policy(policy).with_approval_hook(Arc::new(move |_tool, _args, session| {
+            *sink.lock().unwrap() = Some(session);
+            Box::pin(async { true })
+        }));
+
+        let env = Envelope::new("test", "sess-approval-session", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        });
+        rt.process_with_loop(env).await.expect("loop completes");
+
+        assert_eq!(
+            captured.lock().unwrap().as_deref(),
+            Some("sess-approval-session")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_principal_policy_applies_in_loop() {
+        // P2-17: 受限 principal 的工具调用应被拒绝, 无限制 principal 正常执行
+        let policy = ToolPolicy::permissive().with_principal(
+            "guest",
+            rustclaw_tool::PrincipalPolicy {
+                allowed_tools: Some(vec!["nothing".to_string()]),
+                denied_tools: None,
+                require_approval: None,
+            },
+        );
+        let rt = rt_with_policy(policy);
+        let env = Envelope::new("test", "sess-principal", Message {
+            role: Role::User,
+            content: Content::text("hi"),
+        })
+        .with_principal("guest");
+        rt.process_with_loop(env).await.expect("loop completes");
+
+        let session = rt.get_session("sess-principal").unwrap();
+        let denied = session.messages.iter().any(|m| matches!(&m.content,
+            Content::ToolResult { output, .. } if output.contains("denied")));
+        assert!(denied, "受限 principal 的工具调用应被策略拒绝");
     }
 }

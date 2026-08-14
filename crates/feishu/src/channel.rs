@@ -174,7 +174,14 @@ impl FeishuChannel {
             role: Role::User,
             content,
         };
-        let envelope = Envelope::new("feishu", &session_key, message);
+        let mut envelope = Envelope::new("feishu", &session_key, message);
+        // P0-4: 用平台 message_id 作为 envelope.id,网关据此判重。
+        // 飞书在网关处理慢或返回非 2xx 时会重推同一事件,不判重就会重复执行副作用动作。
+        if !msg.message_id.is_empty() {
+            envelope.id = msg.message_id.clone();
+        }
+        // P2-17: 调用者身份 = 发送者 open_id,供按人取工具策略
+        envelope.principal = Some(msg.sender_id.clone());
 
         let sender = {
             let tx = self.event_tx.read();

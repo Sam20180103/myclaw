@@ -546,11 +546,35 @@ impl ToolRegistry {
     }
 }
 
-#[derive(Clone)]
+/// X-3: 动态注册的 Skill 工具统一使用该前缀。
+///
+/// 前缀是安全边界: 生成的技能永远落在自己的命名空间(顶不掉 `shell_exec` 等内置工具),
+/// 且 `ToolPolicy::requires_approval` 据此**无条件要求人工审批**。
+///
+/// 不能用 `skill_` —— 内置的技能管理工具就叫 `skill_manage`,那样会把它一并拖进
+/// 强制审批。前缀必须落在内置工具不会占用的命名空间。
+pub const SKILL_TOOL_PREFIX: &str = "dyn_skill_";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPolicy {
     pub allowed_tools: Vec<String>,
     pub denied_tools: Vec<String>,
     pub require_approval: Vec<String>,
+    /// P2-17: 按调用者 (principal) 的策略覆盖。命中则整体替换基础规则,
+    /// 未命中的调用者沿用基础策略。用于"群里任何人都能用同一套工具"的收口。
+    #[serde(default)]
+    pub principals: std::collections::HashMap<String, PrincipalPolicy>,
+}
+
+/// P2-17: 单个调用者的策略覆盖 (字段为 None 时沿用基础策略对应项)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrincipalPolicy {
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub denied_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub require_approval: Option<Vec<String>>,
 }
 
 impl Default for ToolPolicy {
@@ -559,6 +583,7 @@ impl Default for ToolPolicy {
             allowed_tools: vec![],
             denied_tools: vec![],
             require_approval: vec!["shell_exec".to_string()],
+            principals: std::collections::HashMap::new(),
         }
     }
 }
@@ -570,6 +595,7 @@ impl ToolPolicy {
             allowed_tools: vec![],
             denied_tools: vec![],
             require_approval: vec![],
+            principals: std::collections::HashMap::new(),
         }
     }
 
@@ -599,7 +625,43 @@ impl ToolPolicy {
     }
 
     pub fn requires_approval(&self, tool_name: &str) -> bool {
+        // X-3: Skill 是 LLM 生成的不可信代码,执行前一律要人批准,
+        // 不受配置影响 (要禁用某个技能请用 disabled_tools,而不是放行它的审批)。
+        if tool_name.starts_with(SKILL_TOOL_PREFIX) {
+            return true;
+        }
         self.require_approval.contains(&tool_name.to_string())
+    }
+
+    /// P2-17: 注册一个调用者的策略覆盖。
+    pub fn with_principal(mut self, principal: &str, policy: PrincipalPolicy) -> Self {
+        self.principals.insert(principal.to_string(), policy);
+        self
+    }
+
+    /// P2-17: 取该调用者的有效策略。未配置覆盖时返回基础策略的克隆。
+    ///
+    /// 工具权限此前只有全局一份 —— 群聊里任何被放行的人都拿到同一套工具权限。
+    pub fn for_principal(&self, principal: Option<&str>) -> ToolPolicy {
+        let over = match principal.and_then(|p| self.principals.get(p)) {
+            Some(o) => o,
+            None => return self.clone(),
+        };
+        ToolPolicy {
+            allowed_tools: over
+                .allowed_tools
+                .clone()
+                .unwrap_or_else(|| self.allowed_tools.clone()),
+            denied_tools: over
+                .denied_tools
+                .clone()
+                .unwrap_or_else(|| self.denied_tools.clone()),
+            require_approval: over
+                .require_approval
+                .clone()
+                .unwrap_or_else(|| self.require_approval.clone()),
+            principals: std::collections::HashMap::new(),
+        }
     }
 }
 

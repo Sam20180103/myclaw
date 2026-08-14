@@ -1,8 +1,8 @@
 # RustClaw 开发任务进度
 
-> 版本: v0.44.0
-> 日期: 2026-04-16
-> 状态: Phase 17.5 完成，安全加固完成 ✅
+> 版本: v0.54.0
+> 日期: 2026-08-14
+> 状态: Phase 22 完成 —— 实战上线加固 + 技能执行闭环 ✅
 
 ---
 
@@ -30,8 +30,73 @@
 | Phase 17.5 | 扫码登录全自动化 | 1周 | ✅ 完成 |
 | Phase 18 | 个人微信交互通道 | 1周 | ✅ 完成 |
 | Phase 19 | 小红书自动化 (登录/热门/写文生图发布) | 1周 | ✅ 完成 |
+| Phase 20 | 框架补齐 G1-G12 (工具治理/缓存/降级/门控/后端/记忆抽象/profile/定时/子Agent/导出/Responses) | 3周 | ✅ 完成 |
+| Phase 21 | 实战上线加固 P0-P2 (压缩配对/幂等/取消/预算/可观测/按人授权) | 1周 | ✅ 完成 |
+| Phase 22 | 技能执行闭环 (Shell/Python 可调用) | 2天 | ✅ 完成 |
 
-**已完成: v0.47.0**
+**已完成: v0.54.0** (254 tests, clippy 0 warnings)
+
+---
+
+## Phase 22: 技能执行闭环 ✅
+
+> **完成日期**: 2026-08-14
+> **背景**: 技能系统此前只到"生成→校验→存盘→能列出来",批准之后**没有任何代码**把技能注册进
+> `ToolRegistry`,技能永远调不起来。本阶段闭环 Shell/Python 两种语言。
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 22.1 | `SkillTool` 封装 (Shell/Python;Rust/JS 仅登记不可调用) | ✅ 完成 |
+| 22.2 | 批准即注册 / `init()` 重启重新上线 / 删除即注销 | ✅ 完成 |
+| 22.3 | 沙箱执行 (源码内联,兼容 docker 后端;参数 JSON 单引号转义) | ✅ 完成 |
+| 22.4 | `dyn_skill_` 前缀强制审批 (配置无法豁免) + 不与内置 `skill_manage` 撞名 | ✅ 完成 |
+| 22.5 | `Config::active_skills_dir()` 统一目录布局 + `GET /api/tools` | ✅ 完成 |
+
+> 遗留: JavaScript 技能 (需 node 运行时,与 Python 同构,成本低);技能级资源配额。
+
+---
+
+## Phase 21: 实战上线加固 ✅
+
+> **完成日期**: 2026-08-14
+> **背景**: 对 Agent 架构做实测代码审查,按"会不会炸 / 能不能用 / 看不看得见"分三级。
+> 完整清单与验证记录: [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)
+
+| 级别 | 项 | 状态 |
+|------|-----|------|
+| P0 | 压缩孤儿 `tool_use` → Provider 400 且损坏落盘 | ✅ 完成 |
+| P0 | 压缩纯丢弃导致失忆 → 重复执行副作用动作 | ✅ 完成 |
+| P0 | 上下文预算按字节且硬编码 → 中文高估 3 倍 | ✅ 完成 |
+| P0 | 无入站幂等 → 平台重推造成重复发帖/投递 | ✅ 完成 |
+| P1 | 无取消 / 无墙钟预算 / 迭代耗尽丢弃成果 | ✅ 完成 |
+| P1 | 循环期间零反馈 / 审批在聊天场景不可用 | ✅ 完成 |
+| P1 | 流式路径为残废死代码 / 工具结果无上限 / 参数不校验 | ✅ 完成 |
+| P2 | 零 token 统计 / 无 metrics / 工具串行 / 定时任务黑洞 / 权限只到通道 | ✅ 完成 |
+| X-1 | axum 0.7 路由语法错配 → 所有路径参数接口 404 | ✅ 完成 |
+| X-2 | `RUSTCLAW_PROFILE` 对 config/skills/logs 失效 (凭据串号) | ✅ 完成 |
+| X-3 | 技能目录布局两处定义 + 批准后不可调用 | ✅ 完成 (Phase 22) |
+
+---
+
+## Phase 20: 框架补齐 G1-G12 ✅
+
+> **完成日期**: 2026-08-08 (v0.49.0 – v0.52.0)
+> **背景**: 对照 Hermes Agent / OpenClaw 的差距分析 (`FRAMEWORK_GAP_ANALYSIS.md`)。
+
+| # | 缺口 | 交付 | 状态 |
+|---|------|------|------|
+| G1 | 工具治理 | `ToolPolicy` 拒绝/审批 + `ApprovalRegistry` + REST | ✅ |
+| G2 | Prompt 缓存 | Anthropic system/tools 前缀 `cache_control` | ✅ |
+| G3 | Provider 韧性 | 重试退避 + 多 provider 降级 | ✅ |
+| G4 | 工具可用性门控 | `is_available()` + `available_schemas()` | ✅ |
+| G5 | 执行后端 | `ExecutionBackend` local / docker | ✅ |
+| G6 | 记忆抽象 | `MemoryProvider` trait | ✅ |
+| G7 | Profile 隔离 | `RUSTCLAW_PROFILE` | ✅ (v0.53.0 修复失效) |
+| G8 | 定时任务 | `[[schedules]]` | ✅ (v0.53.0 补通知) |
+| G9 | 密钥间接引用 | `env:VARNAME` | ✅ |
+| G10 | 子 Agent | `spawn_subagent` | ✅ |
+| G11 | 轨迹导出 | ShareGPT JSONL | ✅ |
+| G12 | Responses API | `openai-responses` provider | ✅ |
 
 ---
 

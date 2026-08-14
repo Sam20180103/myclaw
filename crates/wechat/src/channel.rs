@@ -93,11 +93,17 @@ impl WeChatChannel {
         };
 
         let session_key = msg.session_key();
-        let envelope = Envelope::new(
+        let mut envelope = Envelope::new(
             "wechat",
             &session_key,
             Message { role: Role::User, content },
         );
+        // P0-4: 连接器重试时携带同一 msg_id,网关据此判重
+        if let Some(id) = msg.msg_id.as_ref().filter(|s| !s.is_empty()) {
+            envelope.id = id.clone();
+        }
+        // P2-17: 调用者身份 = 发送者 wxid
+        envelope.principal = Some(msg.from_user.clone());
 
         let sender = { self.event_tx.read().clone() };
         if let Some(sender) = sender {

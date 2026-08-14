@@ -152,6 +152,10 @@ pub struct Envelope {
     pub session_key: String,
     pub message: Message,
     pub timestamp: i64,
+    /// P2-17: 调用者身份 (如飞书 open_id / 微信 wxid),用于按人取工具策略。
+    /// 为 None 时沿用全局策略。
+    #[serde(default)]
+    pub principal: Option<String>,
 }
 
 impl Envelope {
@@ -162,7 +166,14 @@ impl Envelope {
             session_key: session_key.to_string(),
             message,
             timestamp: chrono::Utc::now().timestamp_millis(),
+            principal: None,
         }
+    }
+
+    /// P2-17: 标注调用者身份
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
+        self.principal = Some(principal.into());
+        self
     }
 }
 

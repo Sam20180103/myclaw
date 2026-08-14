@@ -84,6 +84,82 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// P2-13: 进程级 token 用量统计。
+///
+/// `Usage` 此前只是个没人写入的结构体 —— 实战跑起来根本不知道烧了多少 token。
+/// 这里用全局计数器在各 provider 解析响应时累加,避免改动 `LlmProvider` trait 签名
+/// (那会波及 4 个 provider × 2 个方法和全部 mock)。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageStats {
+    pub requests: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    /// 按模型细分 (requests, prompt, completion)
+    pub by_model: HashMap<String, ModelUsage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub requests: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+static USAGE: std::sync::OnceLock<std::sync::Mutex<UsageStats>> = std::sync::OnceLock::new();
+
+fn usage_cell() -> &'static std::sync::Mutex<UsageStats> {
+    USAGE.get_or_init(|| std::sync::Mutex::new(UsageStats::default()))
+}
+
+/// P2-13: 记录一次 LLM 调用的 token 用量。
+pub fn record_usage(model: &str, prompt_tokens: u32, completion_tokens: u32) {
+    if let Ok(mut u) = usage_cell().lock() {
+        u.requests += 1;
+        u.prompt_tokens += prompt_tokens as u64;
+        u.completion_tokens += completion_tokens as u64;
+        u.total_tokens += (prompt_tokens + completion_tokens) as u64;
+        let e = u.by_model.entry(model.to_string()).or_default();
+        e.requests += 1;
+        e.prompt_tokens += prompt_tokens as u64;
+        e.completion_tokens += completion_tokens as u64;
+    }
+}
+
+/// P2-13: 取当前累计用量快照。
+pub fn usage_snapshot() -> UsageStats {
+    usage_cell().lock().map(|u| u.clone()).unwrap_or_default()
+}
+
+/// OpenAI 兼容响应里的 usage 段
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApiUsage {
+    #[serde(default)]
+    pub prompt_tokens: u32,
+    #[serde(default)]
+    pub completion_tokens: u32,
+    /// Anthropic 用 input_tokens/output_tokens
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+}
+
+impl ApiUsage {
+    fn prompt(&self) -> u32 {
+        if self.prompt_tokens > 0 { self.prompt_tokens } else { self.input_tokens }
+    }
+    fn completion(&self) -> u32 {
+        if self.completion_tokens > 0 { self.completion_tokens } else { self.output_tokens }
+    }
+    /// 记录到全局统计 (缺 usage 段的响应不计)
+    fn record(&self, model: &str) {
+        if self.prompt() > 0 || self.completion() > 0 {
+            record_usage(model, self.prompt(), self.completion());
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("API request failed: {0}")]
@@ -201,6 +277,9 @@ struct OpenAiRequest {
 #[derive(Deserialize)]
 struct OpenAiResponse {
     choices: Vec<OpenAiChoice>,
+    /// P2-13
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 #[derive(Deserialize)]
@@ -475,6 +554,11 @@ impl LlmProvider for OpenAiProvider {
             .await
             .map_err(|e| ProviderError::ParseError(e.to_string()))?;
 
+        // P2-13: 回填 token 用量到进程级统计
+        if let Some(ref u) = response.usage {
+            u.record(&self.model);
+        }
+
         response
             .choices
             .first()
@@ -520,6 +604,11 @@ impl LlmProvider for OpenAiProvider {
             .json()
             .await
             .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        // P2-13: 回填 token 用量到进程级统计
+        if let Some(ref u) = response.usage {
+            u.record(&self.model);
+        }
 
         let content = response
             .choices
@@ -712,6 +801,9 @@ struct AnthropicStreamRequest {
 #[derive(Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
+    /// P2-13
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 #[derive(Deserialize)]
@@ -755,6 +847,11 @@ impl LlmProvider for AnthropicProvider {
             .json()
             .await
             .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        // P2-13: 回填 token 用量到进程级统计
+        if let Some(ref u) = response.usage {
+            u.record(&self.model);
+        }
 
         response
             .content
@@ -1069,6 +1166,11 @@ impl LlmProvider for NvProvider {
             .json()
             .await
             .map_err(|e| ProviderError::ParseError(e.to_string()))?;
+
+        // P2-13: 回填 token 用量到进程级统计
+        if let Some(ref u) = response.usage {
+            u.record(&self.model);
+        }
 
         let content = response
             .choices
@@ -1842,5 +1944,40 @@ mod tests {
         let v = anthropic_content(&c);
         // Anthropic 不支持远程 URL,降级为文本
         assert!(v.is_string());
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn test_usage_accumulates() {
+        // P2-13: 用量必须真的被累加 (此前 Usage 结构体全仓无人写入)
+        let before = usage_snapshot();
+        record_usage("test-model", 100, 20);
+        record_usage("test-model", 50, 10);
+        let after = usage_snapshot();
+
+        assert_eq!(after.requests, before.requests + 2);
+        assert_eq!(after.prompt_tokens, before.prompt_tokens + 150);
+        assert_eq!(after.completion_tokens, before.completion_tokens + 30);
+        assert_eq!(after.total_tokens, before.total_tokens + 180);
+        let m = after.by_model.get("test-model").expect("per-model breakdown");
+        assert!(m.requests >= 2 && m.prompt_tokens >= 150);
+    }
+
+    #[test]
+    fn test_api_usage_handles_both_shapes() {
+        // OpenAI 用 prompt/completion_tokens, Anthropic 用 input/output_tokens
+        let openai: ApiUsage =
+            serde_json::from_value(serde_json::json!({"prompt_tokens": 7, "completion_tokens": 3}))
+                .unwrap();
+        assert_eq!((openai.prompt(), openai.completion()), (7, 3));
+
+        let anthropic: ApiUsage =
+            serde_json::from_value(serde_json::json!({"input_tokens": 9, "output_tokens": 4}))
+                .unwrap();
+        assert_eq!((anthropic.prompt(), anthropic.completion()), (9, 4));
     }
 }

@@ -1,3 +1,5 @@
+pub mod skill_tool;
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,6 +76,9 @@ pub struct SkillManager {
     pending_skills: Arc<RwLock<HashMap<String, SkillRecord>>>,
     active_skills: Arc<RwLock<HashMap<String, SkillRecord>>>,
     approval_tx: Option<mpsc::Sender<SkillApprovalRequest>>,
+    /// X-3: 工具注册表 —— 已批准的 Shell/Python 技能注册进去后才真正可被 Agent 调用。
+    /// 用 RwLock 是因为注册表要等 `AgentRuntime` 建好之后才能注入。
+    tool_registry: RwLock<Option<Arc<rustclaw_tool::ToolRegistry>>>,
 }
 
 #[derive(Clone)]
@@ -87,15 +92,14 @@ pub struct SkillConfig {
 
 impl Default for SkillConfig {
     fn default() -> Self {
-        let base_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustclaw")
-            .join("skills");
-        
+        // G7 修复: 走 Config 的访问器,才带 profile 维度,且技能目录布局只有一处定义
+        // (此前这里自行拼 pending/active,与 config 侧的 helper 各说各话)。
+        use rustclaw_config::Config;
+
         Self {
-            pending_dir: base_dir.join("pending"),
-            active_dir: base_dir.join("active"),
-            skills_dir: base_dir,
+            pending_dir: Config::pending_skills_dir(),
+            active_dir: Config::active_skills_dir(),
+            skills_dir: Config::skills_dir(),
             require_approval: true,
             allowed_languages: vec![
                 SkillLanguage::Python,
@@ -149,6 +153,7 @@ impl SkillManager {
             config: config.clone(),
             pending_skills: Arc::new(RwLock::new(HashMap::with_capacity(8))),
             active_skills: Arc::new(RwLock::new(HashMap::with_capacity(32))),
+            tool_registry: RwLock::new(None),
             approval_tx: None,
         }
     }
@@ -170,8 +175,50 @@ impl SkillManager {
             .map_err(|e| SkillError::IoError(e.to_string()))?;
         
         self.load_existing_skills().await?;
-        
+
+        // X-3: 重启后把盘上的已批准技能重新注册为可调用工具
+        let registered = self.register_active_skill_tools();
+        if registered > 0 {
+            info!("{} active skill(s) registered as callable tools", registered);
+        }
+
         Ok(())
+    }
+
+    /// X-3: 注入工具注册表。必须在 `AgentRuntime` 构造完成后调用 (注册表由它持有)。
+    pub fn set_tool_registry(&self, registry: Arc<rustclaw_tool::ToolRegistry>) {
+        *self.tool_registry.write() = Some(registry);
+    }
+
+    /// X-3: 把一个已批准技能注册为可调用工具。返回工具名;语言不受支持则返回 None。
+    fn register_skill_tool(&self, definition: &SkillDefinition) -> Option<String> {
+        use rustclaw_tool::Tool as _;
+        let registry = self.tool_registry.read().clone()?;
+        let tool = skill_tool::SkillTool::from_definition(definition)?;
+        let name = tool.name().to_string();
+        registry.register(Arc::new(tool));
+        info!("skill '{}' registered as tool '{}'", definition.name, name);
+        Some(name)
+    }
+
+    /// X-3: 撤销注册 (删除技能时调用),避免工具表里留下指向已删技能的僵尸条目。
+    fn unregister_skill_tool(&self, definition: &SkillDefinition) {
+        if let Some(registry) = self.tool_registry.read().clone() {
+            registry.unregister(&skill_tool::tool_name_for(&definition.name, &definition.id));
+        }
+    }
+
+    /// X-3: 批量注册当前所有已批准技能,返回成功注册的数量。
+    fn register_active_skill_tools(&self) -> usize {
+        let defs: Vec<SkillDefinition> = self
+            .active_skills
+            .read()
+            .values()
+            .map(|r| r.definition.clone())
+            .collect();
+        defs.iter()
+            .filter(|d| self.register_skill_tool(d).is_some())
+            .count()
     }
 
     async fn load_existing_skills(&self) -> Result<(), SkillError> {
@@ -408,9 +455,17 @@ async fn load_skills_from_dir(
         approved_record.approved_at = Some(chrono::Utc::now().timestamp_millis());
         approved_record.approved_by = Some(approver.to_string());
 
+        let definition = approved_record.definition.clone();
         self.active_skills.write().insert(skill_id.to_string(), approved_record);
 
-        info!("Skill {} approved by {}", skill_id, approver);
+        // X-3: 批准即上线 —— 此前批准只是改了状态,技能永远调不起来
+        match self.register_skill_tool(&definition) {
+            Some(tool) => info!("Skill {} approved by {} → tool '{}'", skill_id, approver, tool),
+            None => info!(
+                "Skill {} approved by {} (language {} is catalog-only, not callable)",
+                skill_id, approver, definition.language
+            ),
+        }
         Ok(())
     }
 
@@ -431,6 +486,7 @@ async fn load_skills_from_dir(
         Ok(())
     }
 
+    /// 直接激活 (仅当 `require_approval = false`)。同样会注册为可调用工具。
     async fn activate_skill(&self, definition: SkillDefinition) -> Result<String, SkillError> {
         let path = self.config.active_dir.join(format!("{}.json", definition.id));
         let content = serde_json::to_string_pretty(&definition)
@@ -451,6 +507,7 @@ async fn load_skills_from_dir(
 
         let id = definition.id.clone();
         self.active_skills.write().insert(id.clone(), record);
+        self.register_skill_tool(&definition);
 
         info!("Skill {} activated directly", id);
         Ok(id)
@@ -546,6 +603,8 @@ fn validate_language_syntax(&self, language: &SkillLanguage, source_code: &str) 
             tokio::fs::remove_file(&record.path)
                 .await
                 .map_err(|e| SkillError::IoError(e.to_string()))?;
+            // X-3: 同步摘掉工具,否则删掉的技能还能被调用
+            self.unregister_skill_tool(&record.definition);
             return Ok(());
         }
 

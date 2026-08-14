@@ -114,6 +114,27 @@ mod tests {
         std::env::set_var("RUSTCLAW_PROFILE", "../evil");
         assert_eq!(Config::profile().as_deref(), Some("evil"));
 
+        // G7 回归: Config::load(None) 必须落在 profile 目录下。
+        // 此前 load() 就地拼死路径,命名 profile 的进程会读到默认 profile 的 config.toml
+        // (连带其中的飞书/provider 凭据)。
+        let tmp = std::env::temp_dir().join(format!("rustclaw_profile_{}", uuid::Uuid::new_v4()));
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        std::env::set_var("RUSTCLAW_PROFILE", "isolated");
+
+        let expected = tmp.join("rustclaw").join("profiles").join("isolated").join("config.toml");
+        assert_eq!(Config::config_path(), expected);
+        assert!(!expected.exists());
+        let _ = Config::load(None).expect("load should create the profiled config");
+        assert!(expected.exists(), "load(None) 必须写到 profile 目录: {:?}", expected);
+        // 默认 profile 的路径不应被创建
+        assert!(!tmp.join("rustclaw").join("config.toml").exists());
+
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        std::fs::remove_dir_all(&tmp).ok();
         std::env::remove_var("RUSTCLAW_PROFILE");
     }
 
@@ -165,5 +186,49 @@ session_key = "custom-key"
         // 旧 config (无 schedules 段) 仍可解析
         let old: Partial = toml::from_str("").unwrap();
         assert!(old.schedules.is_empty());
+    }
+
+
+    #[test]
+    fn test_schedule_notify_config() {
+        // P2-16: 定时任务可配推送目标; 不配时退回"只写日志"的旧行为
+        let toml_str = r#"
+[[schedules]]
+name = "daily-report"
+every = "1d"
+prompt = "汇总昨天的数据"
+notify_session = "p2p:oc_x:ou_y"
+notify_channel = "feishu"
+
+[[schedules]]
+name = "silent"
+every = "10m"
+prompt = "检查"
+"#;
+        #[derive(serde::Deserialize)]
+        struct Partial {
+            #[serde(default)]
+            schedules: Vec<crate::ScheduleConfig>,
+        }
+        let p: Partial = toml::from_str(toml_str).unwrap();
+        assert_eq!(p.schedules[0].notify_session.as_deref(), Some("p2p:oc_x:ou_y"));
+        assert_eq!(p.schedules[0].notify_channel.as_deref(), Some("feishu"));
+        assert!(p.schedules[1].notify_session.is_none());
+    }
+
+    #[test]
+    fn test_agent_budget_defaults_are_backward_compatible() {
+        // P0-3/P1-6/P1-11: 旧 config.toml 无这些字段时必须能用默认值解析
+        let toml_str = r#"
+max_concurrent_sessions = 10
+default_model = "claude-3-5-sonnet-20241022"
+max_loop_iterations = 50
+tool_timeout_ms = 30000
+"#;
+        let a: crate::AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(a.max_loop_duration_ms, 600_000);
+        assert_eq!(a.max_tool_result_chars, 16_000);
+        assert_eq!(a.context_window_tokens, 128_000);
+        assert!((a.compression_threshold - 0.6).abs() < f64::EPSILON);
     }
 }

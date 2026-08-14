@@ -12,3 +12,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }

@@ -88,7 +88,12 @@ impl SQLiteSessionStore {
              );
              CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
              CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);
-             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);",
+             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+             CREATE TABLE IF NOT EXISTS processed_events (
+                 event_id TEXT PRIMARY KEY,
+                 seen_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_events_seen ON processed_events(seen_at);",
         )?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -212,6 +217,39 @@ impl SQLiteSessionStore {
             [cutoff.to_string()],
         )?;
         Ok(deleted)
+    }
+
+    /// P0-4: 入站事件判重。返回 `true` 表示这是**首次**见到该 event_id (应当处理),
+    /// `false` 表示重复投递 (飞书事件重推 / Webhook 重试),必须跳过。
+    ///
+    /// 依赖 SQLite 主键的原子性,并发调用下也只有一个调用方拿到 `true`。
+    /// 写库失败时返回 `true` (放行) — 宁可重复一次,也不因存储故障丢消息。
+    pub fn mark_event_seen(&self, event_id: &str) -> bool {
+        if event_id.is_empty() {
+            return true;
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock();
+        match conn.execute(
+            "INSERT OR IGNORE INTO processed_events (event_id, seen_at) VALUES (?, ?)",
+            rusqlite::params![event_id, now],
+        ) {
+            Ok(rows) => rows > 0,
+            Err(e) => {
+                tracing::warn!("mark_event_seen failed for {}: {}", event_id, e);
+                true
+            }
+        }
+    }
+
+    /// P0-4: 清理过期的判重记录 (默认保留 7 天足以覆盖任何平台的重推窗口)。
+    pub fn cleanup_events(&self, ttl_seconds: i64) -> Result<usize, rusqlite::Error> {
+        let cutoff = chrono::Utc::now().timestamp_millis() - (ttl_seconds * 1000);
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM processed_events WHERE seen_at < ?",
+            [cutoff.to_string()],
+        )
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Session> {
@@ -616,6 +654,23 @@ mod tests {
         assert_eq!(lineage.len(), 2);
         assert_eq!(lineage[0].key, "child-session");
         assert_eq!(lineage[1].key, "parent-session");
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_mark_event_seen_is_idempotent() {
+        // P0-4: 同一 event_id 只允许处理一次 (飞书重推 / Webhook 重试)
+        let temp_dir = std::env::temp_dir().join(format!("rustclaw_events_{}", uuid::Uuid::new_v4()));
+        let store = SQLiteSessionStore::new(temp_dir.join("state.db")).unwrap();
+
+        assert!(store.mark_event_seen("om_msg_1"), "首次必须放行");
+        assert!(!store.mark_event_seen("om_msg_1"), "重复投递必须拦截");
+        assert!(store.mark_event_seen("om_msg_2"), "不同事件互不影响");
+        assert!(store.mark_event_seen(""), "空 id 不判重, 直接放行");
+
+        assert_eq!(store.cleanup_events(-1).unwrap(), 2, "清理应删掉两条记录");
+        assert!(store.mark_event_seen("om_msg_1"), "清理后可再次处理");
+
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

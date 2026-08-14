@@ -601,10 +601,8 @@ fn show_status() {
 }
 
 fn load_config_file() -> Option<rustclaw_config::Config> {
-    let config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustclaw")
-        .join("config.toml");
+    // G7 修复: 走 Config::config_path() 才带 profile 维度
+    let config_path = rustclaw_config::Config::config_path();
     
     if config_path.exists() {
         if let Ok(content) = fs::read_to_string(&config_path) {
@@ -615,29 +613,24 @@ fn load_config_file() -> Option<rustclaw_config::Config> {
 }
 
 fn get_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustclaw")
-        .join("config.toml")
+    rustclaw_config::Config::config_path()
 }
 
 fn ensure_config_dir() -> anyhow::Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustclaw");
-    
+    let config_dir = get_config_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)?;
     }
-    
+
     Ok(config_dir)
 }
 
 fn get_log_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustclaw")
-        .join("logs")
+    rustclaw_config::Config::logs_dir()
 }
 
 #[allow(dead_code)]

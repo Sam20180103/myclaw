@@ -1,5 +1,11 @@
 # 对标 Hermes Agent / OpenClaw 的框架差距分析
 
+> **状态更新 (2026-08-14)**: 本文是 2026-07 的差距分析快照。其中 G1–G12 已在
+> v0.49.0–v0.52.0 全部落地,后续的实战加固 (P0–P2) 与技能执行闭环见
+> [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) 与 [roadmap.md](roadmap.md) Phase 20–22。
+> 本文保留为当时的分析记录,不再更新。
+
+
 > 日期: 2026-06-20 · 基线: RustClaw v0.48.0
 > 方法: 调研两个参考框架 (RustClaw CLAUDE.md 自述"架构理念参考 OpenClaw 和 Nous Research Hermes Agent") 的公开架构文档,逐项对照 RustClaw 当前代码 (附 `文件:行号` 证据)。
 > 目的: 找出"参考框架有、RustClaw 缺或没接线"的能力,给出优先级。
